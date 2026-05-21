@@ -78,87 +78,78 @@
 
 ---
 
-## Phase 5 — Plugin system
+## Phase 5 — Plugin system ✓
 
 **Crate: `aura-core`**
 
-- [ ] Define `PluginPanel` struct: `title: String`, `lines: Vec<PluginLine>`, `error: Option<String>`
-- [ ] Define `PluginLine`: `label: String`, `value: String`, `highlight: bool`
-- [ ] Implement `PluginRunner::run(config: &PluginConfig) -> Result<PluginPanel>`:
+- [x] Define `PluginPanel` struct: `title: String`, `lines: Vec<PluginLine>`, `error: Option<String>`
+- [x] Define `PluginLine`: `label: String`, `value: String`, `highlight: bool`
+- [x] Implement `PluginRunner::run(config: &PluginConfig) -> PluginPanel`:
   - Spawn subprocess via `std::process::Command`
-  - 500ms timeout (use `std::thread` + channel, or `tokio::time::timeout`)
+  - 500ms timeout via `std::thread` + `mpsc::recv_timeout`
   - Read stdout, parse JSON into `PluginPanel`
-  - On non-zero exit or timeout: return `PluginPanel` with `error` set
-- [ ] Unit tests: mock plugin binary that outputs valid JSON; mock that times out; mock with bad JSON
+  - On non-zero exit, timeout, missing binary, or bad JSON: return `PluginPanel` with `error` set (never panics, never returns Err)
+- [x] Unit tests: valid JSON, missing binary, timeout, bad JSON, non-zero exit (5 cases)
 
 **Plugin: `plugins/rtk-gains`**
 
-- [ ] Research RTK gains data location: check `~/.local/share/rtk/` or `rtk gain --format json` output
-- [ ] Implement binary: read RTK gains data, print `PluginPanel` JSON to stdout, exit 0
-- [ ] Output fields: `Tokens saved today`, `Tokens saved this month`, `Savings rate (%)`, `Commands intercepted`
-- [ ] Handle missing RTK data gracefully (output `error` field, not panic)
-- [ ] Integration test: run binary directly, assert valid JSON output
+- [x] Uses `rtk gain -a --format json` (covers summary + daily + monthly in one call)
+- [x] Outputs `PluginPanel` JSON with: tokens saved today / this month / all-time, savings rate, commands intercepted
+- [x] Graceful fallback if `rtk` is missing or fails (emits error panel)
+- [x] Unit tests: `format_thousands` formatting, real `rtk gain` JSON parsing
 
 ---
 
-## Phase 6 — GPUI modal (UI)
+## Phase 6 — GPUI modal (UI) ✓ (needs interactive visual verification)
 
 **Crate: `aura`**
 
-- [ ] Add `gpui` dependency; confirm it builds on Linux (X11 / Wayland)
-- [ ] Create `AppModel` holding: `config`, `active_profile`, `snapshot: Option<UsageSnapshot>`, `plugin_panels: Vec<PluginPanel>`, `active_period: Period`, `active_tab: Tab`, `is_loading: bool`
-- [ ] Scaffold a minimal GPUI window that opens, shows "Aura", closes on Escape — smoke-test
-- [ ] Style: borderless window, dark background, monospace numbers, system UI for labels
-- [ ] **Profile picker** (header row): active profile name + dropdown on click; selecting a profile triggers re-fetch
-- [ ] **Period selector** row: three pills (All time / Last 7 days / Last 30 days); active pill highlighted
-- [ ] **Overview panel**:
-  - Row: Favorite model | Total tokens
-  - Row: Sessions | Longest session
-  - Row: Active days / total | Peak hour
-  - Row: Current streak | Longest streak
-- [ ] **Models panel**:
-  - Tokens per Day chart (ASCII; reuse GPUI text rendering with monospace font)
-  - Per-model cards (name, %, In · Out)
-- [ ] **Loading state**: spinner on stats area while fetching; never blank labels
-- [ ] **Plugin panels**: one panel per plugin below the usage tabs; title + lines; error state
-- [ ] **Tab switching** (Overview ↔ Models): click or keyboard
-- [ ] Wire `ProjectsWatcher` events to trigger incremental snapshot update + re-render
-- [ ] Close on click-outside and Escape; save active profile to state on close
+- [x] Add `gpui = "0.2"` (crates.io release); builds on Linux X11/Wayland
+- [x] `AuraView` holding: `config`, `state`, `active_profile`, `active_period`, `active_tab`, `snapshot`, `plugin_panels`, `error`
+- [x] Borderless 520×640 window, dark background (Zed-ish palette), monospace font
+- [x] **Profile picker** — pills in the header row; click switches profile, persists to state, refreshes snapshot
+- [x] **Period selector** — three pills (All time / Last 7 days / Last 30 days); active pill in accent color
+- [x] **Overview panel** — 2-col grid of stat cards: Favorite model, Total tokens, Sessions, Longest session, Active days, Peak hour, Current/Longest streak
+- [x] **Models panel** — daily token bar chart + per-model rows with horizontal % bar
+- [x] **Loading / error states** — "Loading…" placeholder; red error message replaces body when snapshot fails
+- [x] **Plugin panels** — RTK gains rendered as title + key/value lines with highlight + error variant
+- [x] **Tab switching** (Overview ↔ Models) via accent-underlined header
+- [x] Click `Aura ⟳` title to manually refresh
+- [x] Active profile saved to state on selection change
+- [ ] **Deferred** — wire `ProjectsWatcher` to GPUI background executor for auto-refresh. Manual refresh via title click works today.
+- [ ] **Manual test required** — UI rendering can't be verified from headless CLI. Launch with `cargo run -p aura` to confirm layout
 
 ---
 
-## Phase 7 — System tray integration
+## Phase 7 — System tray integration ✓ (basic; tooltip+click integration deferred)
 
 **Crate: `aura`**
 
-- [ ] Add `tray-icon` dependency
-- [ ] Create tray icon (SVG/PNG asset at `assets/icon.png`; 16×16, 32×32, 64×64)
-- [ ] Set tray tooltip: `Aura · <active profile> · <total tokens today>`
-- [ ] On tray click: open GPUI modal anchored near click position
-- [ ] Update tray tooltip after every `ProjectsWatcher` event (total tokens for today, without opening modal)
-- [ ] On modal close: remove focus from modal, return to tray-idle state
-- [ ] Test: tray appears in system tray, click opens modal, tooltip updates live
+- [x] Add `tray-icon = "0.24"` with `default-features = false, features = ["gtk"]` (drops `libxdo` system dep)
+- [x] Programmatic 32×32 RGBA placeholder icon (purple/violet square); real SVG asset is a follow-up
+- [x] Tray installed at startup with tooltip "Aura — Agent Usage Reporter"; handle held by main fn so it persists for app lifetime
+- [x] Best-effort install: warns and continues if no tray host is available
+- [ ] **Deferred** — dynamic tooltip ("Aura · profile · tokens today") and click-to-toggle-window. Requires bridging tray-icon's event channel into the GPUI main loop; left as a future iteration since main flow is "window opens on launch"
 
 ---
 
-## Phase 8 — Codex adapter (stub → real)
+## Phase 8 — Codex adapter (stub → real) ✓ (stub only)
 
 **Crate: `aura-core`**
 
-- [ ] Stub: implement `AgentReader` for `CodexReader` returning `UsageSnapshot::empty()` with a "not yet supported" note
-- [ ] Research Codex data location (local files vs. OpenAI API usage endpoint)
-- [ ] Implement real `CodexReader` once data source is confirmed
-- [ ] Register `CodexReader` in the adapter factory; wire into config `kind = "codex"`
+- [x] Stub `CodexReader` returning `UsageSnapshot::default()`
+- [x] `reader::make_reader(agent)` factory dispatches on `AgentKind` (ClaudeCode → real, Codex → stub)
+- [ ] **Future** — research Codex data source (local files vs. OpenAI usage endpoint) and replace stub
 
 ---
 
-## Phase 9 — Packaging & install
+## Phase 9 — Packaging & install ✓
 
-- [ ] `Makefile` (or `just`) targets: `build`, `install` (copies binary to `~/.local/bin/`), `install-plugin-rtk`
-- [ ] Systemd user service unit: `aura.service` (autostart on login, `ExecStart=aura`)
-- [ ] `install.sh`: copies binaries, installs systemd unit, enables it
-- [ ] Update `README.md` Installation section with actual steps
-- [ ] Verify install on clean user session: tray appears, modal opens, stats match `claude /usage`
+- [x] `justfile` with targets: `build`, `run`, `test`, `lint`, `install`, `install-plugin-rtk`, `uninstall`, `start/stop/status/logs`
+- [x] Systemd user unit `packaging/aura.service` (`graphical-session.target`, restart-on-failure, inherits DISPLAY/WAYLAND_DISPLAY)
+- [x] `install.sh` — checks prereqs, builds release, installs binaries to `~/.local/bin/`, drops the systemd unit
+- [x] Updated `README.md` Installation section with system deps, one-shot install, manual install, and common commands
+- [ ] **Manual test required** — verify on a clean session: `./install.sh`, `systemctl --user enable --now aura`, tray icon appears, app launches
 
 ---
 

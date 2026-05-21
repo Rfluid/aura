@@ -89,7 +89,48 @@ kind = "codex"
 
 ## Installation
 
-_Coming soon_
+Aura builds from source via Cargo. Rust 1.80+ is required.
+
+### System dependencies (Linux)
+
+```bash
+# Debian/Ubuntu
+sudo apt install build-essential pkg-config libgtk-3-dev \
+                 libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev \
+                 libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev
+```
+
+### One-shot install
+
+```bash
+./install.sh        # builds + installs to ~/.local/bin + sets up systemd unit
+```
+
+Or, with [`just`](https://github.com/casey/just):
+
+```bash
+just install                 # build + install everything
+systemctl --user enable --now aura
+```
+
+### Manual
+
+```bash
+cargo build --release --workspace
+cp target/release/aura            ~/.local/bin/
+cp target/release/aura-plugin-rtk ~/.local/bin/
+cp packaging/aura.service         ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now aura
+```
+
+### Common commands
+
+| Command | What it does |
+|---|---|
+| `just run` | Launch Aura (debug build) without installing |
+| `just status` / `just logs` | Service status / tail journal |
+| `just uninstall` | Remove binaries + unit (keeps config & state) |
 
 ## Contributing
 

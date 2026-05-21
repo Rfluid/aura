@@ -1,4 +1,5 @@
 pub mod claude_code;
+pub mod codex;
 mod dates;
 mod incremental;
 mod scan;
@@ -6,8 +7,20 @@ mod stats_cache;
 mod watcher;
 
 pub use claude_code::ClaudeCodeReader;
+pub use codex::CodexReader;
 pub use incremental::read_jsonl_since;
 pub use watcher::ProjectsWatcher;
+
+use crate::config::{AgentConfig, AgentKind};
+
+/// Construct the right `AgentReader` for an agent profile.
+pub fn make_reader(agent: &AgentConfig) -> Box<dyn AgentReader> {
+    let path = agent.resolved_config_path();
+    match agent.kind {
+        AgentKind::ClaudeCode => Box::new(ClaudeCodeReader::new(path)),
+        AgentKind::Codex => Box::new(CodexReader::new(path)),
+    }
+}
 
 use std::collections::HashMap;
 

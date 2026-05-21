@@ -7,3 +7,5 @@ license.workspace  = true
 [dependencies]
 aura-core  = { path = "../aura-core" }
 anyhow.workspace = true
+gpui       = "0.2"
+tray-icon  = { version = "0.24", default-features = false, features = ["gtk"] }

@@ -1,46 +1,46 @@
-use aura_core::{
-    config::AppConfig,
-    reader::{AgentReader, ClaudeCodeReader, Period},
-    state::AppState,
-};
+mod app;
+mod format;
+mod tray;
 
-fn main() -> anyhow::Result<()> {
+use anyhow::Result;
+use aura_core::{config::AppConfig, state::AppState};
+use gpui::{prelude::*, px, size, Application, Bounds, WindowBounds, WindowOptions};
+
+use crate::app::AuraView;
+
+fn main() -> Result<()> {
+    // ── Load config + state ───────────────────────────────────────────────────
     let config_path = AppConfig::default_path();
     let config = AppConfig::load(&config_path)?;
-
     let state = AppState::load()?;
 
-    let active = state
-        .active_profile
-        .as_deref()
-        .or_else(|| config.agents.first().map(|a| a.name.as_str()))
-        .unwrap_or("(no profiles configured)");
-
-    println!("Aura — Agent Usage Reporter & Analyzer");
-    println!("Active profile : {active}");
-    println!("Config         : {}", config_path.display());
-    println!("Agents         : {}", config.agents.len());
-    println!("Plugins        : {}", config.plugins.len());
-
-    // ── Smoke-test: read snapshot from the first Claude Code agent ────────────
-    if let Some(agent) = config.agents.first() {
-        let claude_path = agent.resolved_config_path();
-        let reader = ClaudeCodeReader::new(claude_path);
-        match reader.snapshot(Period::Last7Days) {
-            Ok(snap) => {
-                println!("\n── Last 7 Days ───────────────────────────────────");
-                println!("Total tokens   : {}", snap.total_tokens);
-                println!("Sessions       : {}", snap.total_sessions);
-                println!("Active days    : {}", snap.active_days);
-                println!(
-                    "Favorite model : {}",
-                    snap.favorite_model.as_deref().unwrap_or("—")
-                );
-                println!("Current streak : {} day(s)", snap.streaks.current);
-            }
-            Err(e) => eprintln!("snapshot error: {e}"),
+    // ── Install tray icon (best-effort: warn on failure but keep going) ───────
+    let _tray = match tray::install() {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("warning: could not install tray icon: {e}");
+            None
         }
-    }
+    };
+
+    // ── Launch GPUI app ───────────────────────────────────────────────────────
+    Application::new().run(move |cx| {
+        let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: None,
+            ..Default::default()
+        };
+
+        let config = config.clone();
+        let state = state.clone();
+        cx.open_window(opts, |_window, cx| {
+            cx.new(|cx| AuraView::new(config, state, cx))
+        })
+        .expect("failed to open window");
+
+        cx.activate(true);
+    });
 
     Ok(())
 }
