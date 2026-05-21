@@ -18,19 +18,19 @@
 
 ---
 
-## Phase 2 — Configuration & state
+## Phase 2 — Configuration & state ✓
 
 **Crate: `aura-core`**
 
-- [ ] Define `AgentConfig` and `AgentKind` (enum: `ClaudeCode`, `Codex`) in `config.rs`
-- [ ] Define `PluginConfig` (name + command path) in `config.rs`
-- [ ] Define `AppConfig` (agents list, plugins list, display defaults) — deserialize from TOML via `serde` + `toml`
-- [ ] Implement `AppConfig::load(path)` — reads `~/.config/aura/config.toml`; creates default file on first run
-- [ ] Write default config template (two Claude Code profiles + RTK plugin entry)
-- [ ] Define `AppState` (active profile name) in `state.rs`
-- [ ] Implement `AppState::load()` / `AppState::save()` — reads/writes `~/.local/share/aura/state.json` via `serde_json`
-- [ ] Unit tests: round-trip serialize/deserialize for both config and state
-- [ ] Smoke-test: binary loads config and prints active profile
+- [x] Define `AgentConfig` and `AgentKind` (enum: `ClaudeCode`, `Codex`) in `config.rs`
+- [x] Define `PluginConfig` (name + command path) in `config.rs`
+- [x] Define `AppConfig` (agents list, plugins list, display defaults) — deserialize from TOML via `serde` + `toml`
+- [x] Implement `AppConfig::load(path)` — reads `~/.config/aura/config.toml`; creates default file on first run
+- [x] Write default config template (two Claude Code profiles + RTK plugin entry)
+- [x] Define `AppState` (active profile name) in `state.rs`
+- [x] Implement `AppState::load()` / `AppState::save()` — reads/writes `~/.local/share/aura/state.json` via `serde_json`
+- [x] Unit tests: round-trip serialize/deserialize for both config and state
+- [x] Smoke-test: binary loads config and prints active profile
 
 ---
 
