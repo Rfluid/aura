@@ -1,9 +1,13 @@
 pub mod claude_code;
 mod dates;
+mod incremental;
 mod scan;
 mod stats_cache;
+mod watcher;
 
 pub use claude_code::ClaudeCodeReader;
+pub use incremental::read_jsonl_since;
+pub use watcher::ProjectsWatcher;
 
 use std::collections::HashMap;
 

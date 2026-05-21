@@ -64,16 +64,17 @@
 
 ---
 
-## Phase 4 — File watcher (live updates)
+## Phase 4 — File watcher (live updates) ✓
 
 **Crate: `aura-core`**
 
-- [ ] Add `notify = "9"` dependency
-- [ ] Implement `ProjectsWatcher` wrapping a `notify::RecommendedWatcher` on `{config_path}/projects/`
-- [ ] Expose an async channel / callback: fires with `(file_path, new_tail_offset)` on `MODIFY` / `CREATE` events for `*.jsonl` files
-- [ ] Implement incremental re-scan: given a path and a previous byte offset, read only new lines appended since offset; merge into the current `UsageSnapshot` for the active period
-- [ ] Debounce: coalesce events within 500ms (rapid appends from a streaming response)
-- [ ] Unit test: write lines to a temp JSONL file, assert watcher fires and snapshot updates within 1s
+- [x] Add `notify-debouncer-mini = "0.7"` dependency (pairs with notify 8.2; stable; built-in debouncing)
+- [x] Implement `ProjectsWatcher` wrapping `notify::RecommendedWatcher` on `{config_path}/projects/`
+- [x] Expose channel via `try_recv()` / `recv_timeout()` returning `Vec<PathBuf>` of changed `*.jsonl` files (non-JSONL events filtered out)
+- [x] Implement `read_jsonl_since(path, offset)`: returns parsed new entries + new byte offset; respects partial trailing lines mid-write
+- [ ] **Deferred to Phase 6** — `UsageSnapshot` merge logic lives with the UI consumer; for now the UI calls `snapshot()` after watcher events (mtime fast-skip already keeps this cheap)
+- [x] Debounce: 500ms quiet-window coalescing handled by `notify-debouncer-mini`
+- [x] Unit tests: file create fires event, non-JSONL ignored, rapid writes coalesced, `read_jsonl_since` byte-offset correctness incl. partial trailing line
 
 ---
 
