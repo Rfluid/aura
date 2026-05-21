@@ -22,6 +22,10 @@ pub struct AgentConfig {
     /// Path to the agent's config directory. Falls back to the agent's default
     /// when absent (e.g. `~/.claude` for `claude-code`).
     pub config_path: Option<String>,
+    /// Optional override for the agent's accent color. Hex string with a
+    /// leading `#` (3- or 6-digit). When absent, the per-kind default applies.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 impl AgentConfig {
@@ -48,6 +52,17 @@ pub struct PluginConfig {
     pub name: String,
     /// Binary name on `$PATH` or absolute path.
     pub command: String,
+    /// Optional accent color for the plugin pill / active highlights. Hex
+    /// string with a leading `#`. When absent, the global accent applies.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Optional path to an SVG icon. Resolution order:
+    /// 1. Embedded asset name (`"icons/foo.svg"` matching a baked-in file)
+    /// 2. Absolute path on disk
+    /// 3. Path relative to the config file's parent directory
+    /// When absent, a generic `blocks` glyph is used.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 // ── Display ──────────────────────────────────────────────────────────────────
@@ -119,16 +134,20 @@ impl AppConfig {
                     name: "Claude Code (Personal)".to_string(),
                     kind: AgentKind::ClaudeCode,
                     config_path: None,
+                    color: None,
                 },
                 AgentConfig {
                     name: "Claude Code (Enterprise)".to_string(),
                     kind: AgentKind::ClaudeCode,
                     config_path: Some("~/.claude-enterprise".to_string()),
+                    color: None,
                 },
             ],
             plugins: vec![PluginConfig {
                 name: "RTK Gains".to_string(),
                 command: "aura-plugin-rtk".to_string(),
+                color: Some("#f59e0b".to_string()),
+                icon: Some("icons/rtk.svg".to_string()),
             }],
             display: DisplayConfig::default(),
         }
@@ -136,6 +155,22 @@ impl AppConfig {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Parse a hex color string like `"#rrggbb"`, `"#rgb"`, `"rrggbb"`, or
+/// `"rgb"` into a `0x00rrggbb` u32. Returns `None` if the string isn't a
+/// recognized hex shape — callers should fall back to a default.
+pub fn parse_hex_color(s: &str) -> Option<u32> {
+    let raw = s.trim().trim_start_matches('#');
+    let expanded = match raw.len() {
+        3 => {
+            let chars: Vec<char> = raw.chars().collect();
+            format!("{0}{0}{1}{1}{2}{2}", chars[0], chars[1], chars[2])
+        }
+        6 => raw.to_string(),
+        _ => return None,
+    };
+    u32::from_str_radix(&expanded, 16).ok()
+}
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -220,6 +255,7 @@ kind = "claude-code"
             name: "test".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-test".to_string()),
+            color: None,
         };
         let resolved = agent.resolved_config_path();
         assert!(resolved.to_string_lossy().contains(".claude-test"));
@@ -232,6 +268,7 @@ kind = "claude-code"
             name: "test".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            color: None,
         };
         let resolved = agent.resolved_config_path();
         assert!(resolved.ends_with(".claude"));

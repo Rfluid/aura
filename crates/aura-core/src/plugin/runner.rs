@@ -136,6 +136,8 @@ mod tests {
         PluginConfig {
             name: "Test".to_string(),
             command: cmd.to_string_lossy().to_string(),
+            color: None,
+            icon: None,
         }
     }
 
@@ -192,6 +194,8 @@ EOF
         let panel = PluginRunner::run(&PluginConfig {
             name: "Missing".to_string(),
             command: "/definitely/does/not/exist/aura-plugin-xyz".to_string(),
+            color: None,
+            icon: None,
         });
         assert!(panel.error.is_some());
         assert_eq!(panel.title, "Missing");

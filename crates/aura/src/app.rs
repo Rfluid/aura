@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use aura_core::{
-    config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
+    config::{parse_hex_color, AgentConfig, AgentKind, AppConfig, PluginConfig},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     reader::{make_reader, Period, UsageSnapshot},
@@ -481,9 +481,12 @@ impl AuraView {
         match self.mode {
             Mode::Agent => self
                 .current_agent()
-                .map(|a| agent_accent(a.kind))
+                .map(agent_accent)
                 .unwrap_or(COLOR_ACCENT),
-            Mode::Plugin => COLOR_ACCENT,
+            Mode::Plugin => self
+                .current_plugin_config()
+                .map(plugin_accent)
+                .unwrap_or(COLOR_ACCENT),
         }
     }
 }
@@ -603,7 +606,7 @@ impl AuraView {
             let name = agent.name.clone();
             let active = self.active_profile == agent.name;
             let pill_name = name.clone();
-            let accent = agent_accent(agent.kind);
+            let accent = agent_accent(agent);
             let icon = agent_icon(agent);
             picker = picker.child(
                 div()
@@ -646,6 +649,9 @@ impl AuraView {
             let name = plugin.name.clone();
             let active = self.active_plugin.as_deref() == Some(name.as_str());
             let pill_name = name.clone();
+            let accent = plugin_accent(plugin);
+            let icon_path = plugin_icon_path(plugin);
+            let icon_color = if active { accent } else { COLOR_TEXT_DIM };
             picker = picker.child(
                 div()
                     .id(SharedString::from(format!("plugin-{}", plugin.name)))
@@ -658,12 +664,13 @@ impl AuraView {
                     .rounded_md()
                     .text_xs()
                     .when(active, |d| {
-                        d.bg(rgb(COLOR_ACCENT_DIM)).text_color(rgb(COLOR_TEXT))
+                        d.bg(rgb(blend(accent, COLOR_BG, 0.75)))
+                            .text_color(rgb(COLOR_TEXT))
                     })
                     .when(!active, |d| {
                         d.bg(rgb(COLOR_SURFACE_HI)).text_color(rgb(COLOR_TEXT_DIM))
                     })
-                    .child(svg_icon("icons/blocks.svg", COLOR_TEXT_DIM, 12.0))
+                    .child(svg_icon_dynamic(icon_path, icon_color, 12.0))
                     .child(SharedString::from(name))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.set_plugin(pill_name.clone(), cx);
@@ -710,6 +717,12 @@ impl AuraView {
             ("Last 30 days", Period::Last30Days, "period-30"),
         ];
 
+        // Selected filter background uses the active agent's (or plugin's)
+        // accent color so the filter row reads as "belonging to" the
+        // currently-selected profile — see .design/agents.md.
+        let accent = self.current_accent();
+        let on_accent = on_accent_text(accent);
+
         let mut row = div()
             .flex()
             .flex_row()
@@ -728,9 +741,7 @@ impl AuraView {
                     .py_1()
                     .rounded_md()
                     .text_xs()
-                    .when(active, |d| {
-                        d.bg(rgb(COLOR_ACCENT)).text_color(rgb(0xffffff))
-                    })
+                    .when(active, |d| d.bg(rgb(accent)).text_color(rgb(on_accent)))
                     .when(!active, |d| {
                         d.bg(rgb(COLOR_SURFACE)).text_color(rgb(COLOR_TEXT_DIM))
                     })
@@ -1473,6 +1484,27 @@ fn svg_icon(path: &'static str, color: u32, size: f32) -> impl IntoElement {
         .text_color(rgb(color))
 }
 
+/// Same as `svg_icon` but accepts a `SharedString` so callers can pass an
+/// owned path (e.g. one resolved from plugin config at runtime).
+fn svg_icon_dynamic(path: SharedString, color: u32, size: f32) -> impl IntoElement {
+    svg()
+        .path(path)
+        .size(px(size))
+        .flex_none()
+        .text_color(rgb(color))
+}
+
+/// Resolve the icon path for a plugin. Returns the configured `icon` field
+/// when present, otherwise the generic `blocks` glyph. Path resolution (asset
+/// name vs. absolute vs. relative-to-config) happens in the asset loader.
+fn plugin_icon_path(plugin: &PluginConfig) -> SharedString {
+    plugin
+        .icon
+        .clone()
+        .map(SharedString::from)
+        .unwrap_or_else(|| SharedString::from("icons/blocks.svg"))
+}
+
 /// A click-target wrapping an SVG icon. Caller chains `.on_click(...)`.
 fn icon_button(id: &'static str, path: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
@@ -1489,29 +1521,58 @@ fn icon_button(id: &'static str, path: &'static str) -> gpui::Stateful<gpui::Div
 
 /// Icon for the given agent profile, tinted with the agent's brand color.
 fn agent_icon(agent: &AgentConfig) -> impl IntoElement {
-    let (path, color) = match agent.kind {
-        AgentKind::ClaudeCode => ("icons/claude.svg", agent_accent(AgentKind::ClaudeCode)),
-        AgentKind::Codex => ("icons/openai.svg", agent_accent(AgentKind::Codex)),
+    let path = match agent.kind {
+        AgentKind::ClaudeCode => "icons/claude.svg",
+        AgentKind::Codex => "icons/openai.svg",
     };
     svg()
         .path(path)
         .size(px(14.0))
         .flex_none()
-        .text_color(rgb(color))
+        .text_color(rgb(agent_accent(agent)))
 }
 
-/// Accent color for an agent kind. Spec: see `.design/agents.md`.
-/// If the brand color has relative luminance > 0.85 (would wash out on the
-/// dark surface), substitute a neutral light grey.
-pub fn agent_accent(kind: AgentKind) -> u32 {
-    let brand = match kind {
+/// Default accent color for an agent kind. Spec: see `.design/agents.md`.
+pub fn agent_kind_default_color(kind: AgentKind) -> u32 {
+    match kind {
         AgentKind::ClaudeCode => COLOR_CLAUDE,
         AgentKind::Codex => COLOR_OPENAI,
-    };
-    if relative_luminance(brand) > 0.85 {
+    }
+}
+
+/// Resolve the accent color for a configured agent. Precedence:
+/// 1. `config.color` (hex string from `~/.config/aura/config.toml`)
+/// 2. Per-kind default (`COLOR_CLAUDE`, `COLOR_OPENAI`, …)
+///
+/// The luminance fallback applies last — any color (override or default) whose
+/// relative luminance exceeds 0.85 is replaced with the neutral light grey
+/// fallback so it reads against `COLOR_BG`. See `.design/agents.md`.
+pub fn agent_accent(agent: &AgentConfig) -> u32 {
+    let resolved = agent
+        .color
+        .as_deref()
+        .and_then(parse_hex_color)
+        .unwrap_or_else(|| agent_kind_default_color(agent.kind));
+    if relative_luminance(resolved) > 0.85 {
         COLOR_AGENT_FALLBACK
     } else {
-        brand
+        resolved
+    }
+}
+
+/// Resolve the accent color for a configured plugin. Falls back to the global
+/// `COLOR_ACCENT` when no override is set. The same luminance fallback as for
+/// agents applies.
+pub fn plugin_accent(plugin: &PluginConfig) -> u32 {
+    let resolved = plugin
+        .color
+        .as_deref()
+        .and_then(parse_hex_color)
+        .unwrap_or(COLOR_ACCENT);
+    if relative_luminance(resolved) > 0.85 {
+        COLOR_AGENT_FALLBACK
+    } else {
+        resolved
     }
 }
 
@@ -1542,6 +1603,17 @@ fn blend(a: u32, b: u32, t: f64) -> u32 {
 
 /// Light-grey fallback for agents whose brand color is too light.
 const COLOR_AGENT_FALLBACK: u32 = 0xb8b8c0;
+
+/// Pick a legible text color to render on top of `bg`. White over light
+/// pastels (e.g. the agent-fallback grey) reads as a smudge; flip to the dark
+/// app background instead when the accent is too light.
+fn on_accent_text(bg: u32) -> u32 {
+    if relative_luminance(bg) > 0.55 {
+        COLOR_BG
+    } else {
+        0xffffff
+    }
+}
 
 fn rgba(value: u32) -> gpui::Rgba {
     let r = ((value >> 24) & 0xff) as f32 / 255.0;
