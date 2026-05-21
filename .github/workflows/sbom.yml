@@ -1,0 +1,39 @@
+name: SBOM
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main, develop]
+    schedule:
+        - cron: "0 6 * * 1"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    generate-sbom:
+        name: Generate SBOM (CycloneDX for Rust)
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Install Syft
+              uses: anchore/sbom-action/download-syft@v0
+
+            - name: Generate SBOM (JSON)
+              run: syft dir:. -o cyclonedx-json=sbom.json
+
+            - name: Generate SBOM (XML)
+              run: syft dir:. -o cyclonedx-xml=sbom.xml
+
+            - name: Upload SBOM artifacts
+              uses: actions/upload-artifact@v7
+              with:
+                  name: sbom
+                  path: |
+                      sbom.json
+                      sbom.xml

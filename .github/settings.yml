@@ -1,0 +1,44 @@
+repository:
+    allow_merge_commit: false
+    allow_squash_merge: true
+    allow_rebase_merge: true
+
+    squash_merge_commit_title: "pull_request_title"
+    squash_merge_commit_message: "pull_request_body"
+
+branches:
+    - name: main
+      protection:
+          required_status_checks:
+              strict: true
+              contexts:
+                  - "Quality & Security (Rust) / Code Quality – Format, Clippy & Tests"
+                  - "Quality & Security (Rust) / Platform Validation (linux)"
+                  - "Quality & Security (Rust) / Dependency Security Scan (cargo-audit)"
+                  - "CodeQL Analysis / CodeQL SAST Scan"
+          required_pull_request_reviews:
+              required_approving_review_count: 1
+              dismiss_stale_reviews: true
+              require_code_owner_reviews: false
+
+          required_conversation_resolution: true
+
+          enforce_admins: false
+
+          allow_force_pushes: false
+          allow_deletions: false
+
+          required_linear_history: true
+
+labels:
+    - name: "security"
+      color: "d73a4a"
+      description: "Security-related fixes, CVEs, SAST, supply chain"
+
+    - name: "ci"
+      color: "0e8a16"
+      description: "CI/CD workflow updates"
+
+    - name: "dependencies"
+      color: "1d76db"
+      description: "Dependency updates and maintenance"
