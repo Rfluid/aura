@@ -5,16 +5,16 @@
 
 ---
 
-## Phase 1 — Cargo workspace & CI
+## Phase 1 — Cargo workspace & CI ✓
 
-- [ ] Create `Cargo.toml` workspace at repo root with members: `crates/aura`, `crates/aura-core`, `plugins/rtk-gains`
-- [ ] `crates/aura-core` — library crate (data layer, plugin runner, config, state); no UI deps
-- [ ] `crates/aura` — binary crate (GPUI app, tray icon, modal); depends on `aura-core`
-- [ ] `plugins/rtk-gains` — standalone binary crate (the RTK Gains plugin)
-- [ ] Add `.rustfmt.toml` (defaults) and `clippy.toml`
-- [ ] Add `.github/workflows/ci.yml`: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`
-- [ ] Add `.gitignore` (standard Rust + `target/`)
-- [ ] Smoke-test: `cargo build --workspace` passes
+- [x] Create `Cargo.toml` workspace at repo root with members: `crates/aura`, `crates/aura-core`, `plugins/rtk-gains`
+- [x] `crates/aura-core` — library crate (data layer, plugin runner, config, state); no UI deps
+- [x] `crates/aura` — binary crate (GPUI app, tray icon, modal); depends on `aura-core`
+- [x] `plugins/rtk-gains` — standalone binary crate (the RTK Gains plugin)
+- [x] Add `.rustfmt.toml` (defaults) and `clippy.toml`
+- [x] Add `.github/workflows/ci.yml`: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`
+- [x] Add `.gitignore` (standard Rust + `target/`)
+- [x] Smoke-test: `cargo build --workspace` passes
 
 ---
 

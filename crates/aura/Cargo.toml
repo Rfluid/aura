@@ -1,0 +1,9 @@
+[package]
+name        = "aura"
+version.workspace  = true
+edition.workspace  = true
+license.workspace  = true
+
+[dependencies]
+aura-core  = { path = "../aura-core" }
+anyhow.workspace = true
