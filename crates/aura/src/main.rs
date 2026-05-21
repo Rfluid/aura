@@ -1,4 +1,5 @@
 mod app;
+mod assets;
 mod format;
 mod tray;
 
@@ -6,7 +7,7 @@ use anyhow::Result;
 use aura_core::{config::AppConfig, state::AppState};
 use gpui::{prelude::*, px, size, Application, Bounds, WindowBounds, WindowOptions};
 
-use crate::app::AuraView;
+use crate::{app::AuraView, assets::EmbeddedAssets};
 
 fn main() -> Result<()> {
     // ── Load config + state ───────────────────────────────────────────────────
@@ -24,23 +25,26 @@ fn main() -> Result<()> {
     };
 
     // ── Launch GPUI app ───────────────────────────────────────────────────────
-    Application::new().run(move |cx| {
-        let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
-        let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            ..Default::default()
-        };
+    Application::new()
+        .with_assets(EmbeddedAssets)
+        .run(move |cx| {
+            let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
+            let opts = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                ..Default::default()
+            };
 
-        let config = config.clone();
-        let state = state.clone();
-        cx.open_window(opts, |_window, cx| {
-            cx.new(|cx| AuraView::new(config, state, cx))
-        })
-        .expect("failed to open window");
+            let config = config.clone();
+            let config_path = config_path.clone();
+            let state = state.clone();
+            cx.open_window(opts, |_window, cx| {
+                cx.new(|cx| AuraView::new(config, config_path, state, cx))
+            })
+            .expect("failed to open window");
 
-        cx.activate(true);
-    });
+            cx.activate(true);
+        });
 
     Ok(())
 }

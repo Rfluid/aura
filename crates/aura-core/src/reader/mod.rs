@@ -2,7 +2,7 @@ pub mod claude_code;
 pub mod codex;
 mod dates;
 mod incremental;
-mod scan;
+pub(crate) mod scan;
 mod stats_cache;
 mod watcher;
 

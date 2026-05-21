@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Agent ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentKind {
     ClaudeCode,

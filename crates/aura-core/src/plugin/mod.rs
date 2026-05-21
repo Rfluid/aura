@@ -4,7 +4,9 @@ pub use runner::PluginRunner;
 
 use serde::{Deserialize, Serialize};
 
-/// A single key/value line rendered in a plugin panel.
+// ── Section content variants ──────────────────────────────────────────────────
+
+/// A single key/value line rendered in a plugin section.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginLine {
     pub label: String,
@@ -13,25 +15,121 @@ pub struct PluginLine {
     pub highlight: bool,
 }
 
-/// The full payload a plugin emits on stdout. The UI renders one
-/// per plugin under the usage tabs.
+/// One row in a `Table`-typed section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginRow {
+    pub cells: Vec<String>,
+    #[serde(default)]
+    pub highlight: bool,
+}
+
+/// What kind of content a section holds. Tagged on the wire as
+/// `{"type": "lines", ...}` / `{"type": "table", ...}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PluginContent {
+    /// Key/value lines (the original layout).
+    Lines { lines: Vec<PluginLine> },
+    /// Tabular data with headers + rows.
+    Table {
+        headers: Vec<String>,
+        rows: Vec<PluginRow>,
+    },
+    /// Free-form text block (preformatted). Useful for ASCII charts.
+    Text { text: String },
+}
+
+impl Default for PluginContent {
+    fn default() -> Self {
+        Self::Lines { lines: Vec::new() }
+    }
+}
+
+// ── Section + payload ────────────────────────────────────────────────────────
+
+/// One tab/section inside a plugin panel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginSection {
+    /// Stable identifier (used for tab selection state).
+    pub id: String,
+    /// Human label shown on the tab.
+    pub label: String,
+    /// Whether this section filters data by the active period. When `false`
+    /// the UI hides the period-pill row so the pills aren't misleading.
+    /// Defaults to `true` for backwards compatibility.
+    #[serde(default = "default_true")]
+    pub uses_period: bool,
+    #[serde(flatten)]
+    pub content: PluginContent,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The full payload a plugin emits on stdout.
+///
+/// Backwards-compatible: if a plugin still emits the old flat
+/// `{title, lines, error}` shape, the runner wraps it into a single
+/// "default" section.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginPanel {
     pub title: String,
     #[serde(default)]
-    pub lines: Vec<PluginLine>,
-    /// If `Some`, the UI shows the error in place of the lines.
+    pub sections: Vec<PluginSection>,
+    /// If `Some`, the UI shows the error in place of the sections.
     #[serde(default)]
     pub error: Option<String>,
 }
 
 impl PluginPanel {
-    /// Construct an error panel — used by the runner when spawn/timeout/parse fails.
     pub fn from_error(title: impl Into<String>, msg: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            lines: Vec::new(),
+            sections: Vec::new(),
             error: Some(msg.into()),
+        }
+    }
+
+    /// Find a section by id.
+    pub fn section(&self, id: &str) -> Option<&PluginSection> {
+        self.sections.iter().find(|s| s.id == id)
+    }
+}
+
+// ── Legacy wire format (single flat panel) ────────────────────────────────────
+
+/// Older plugins emit `{title, lines: [...], error}` with no `sections` field.
+/// The runner accepts that shape and wraps it into a default section.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LegacyPluginPanel {
+    pub title: String,
+    #[serde(default)]
+    pub lines: Vec<PluginLine>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl From<LegacyPluginPanel> for PluginPanel {
+    fn from(legacy: LegacyPluginPanel) -> Self {
+        if legacy.error.is_some() || legacy.lines.is_empty() {
+            return PluginPanel {
+                title: legacy.title,
+                sections: Vec::new(),
+                error: legacy.error,
+            };
+        }
+        PluginPanel {
+            title: legacy.title,
+            sections: vec![PluginSection {
+                id: "default".to_string(),
+                label: "Overview".to_string(),
+                uses_period: true,
+                content: PluginContent::Lines {
+                    lines: legacy.lines,
+                },
+            }],
+            error: None,
         }
     }
 }

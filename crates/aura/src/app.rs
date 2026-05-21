@@ -1,10 +1,14 @@
+use std::{path::PathBuf, time::Duration};
+
 use aura_core::{
-    config::AppConfig,
-    plugin::{PluginPanel, PluginRunner},
+    config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
+    plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
+    quota::{QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
 };
-use gpui::{div, prelude::*, px, rgb, AnyElement, ClickEvent, Context, SharedString, Window};
+use chrono::{DateTime, Local, Utc};
+use gpui::{div, prelude::*, px, rgb, svg, AnyElement, ClickEvent, Context, SharedString, Window};
 
 use crate::format::{duration, hour_of_day, thousands};
 
@@ -18,25 +22,116 @@ const COLOR_TEXT_DIM: u32 = 0x8a8a9a;
 const COLOR_ACCENT: u32 = 0x8b5cf6;
 const COLOR_ACCENT_DIM: u32 = 0x4c1d95;
 
+// Per-agent brand tints used for the icon next to each profile name.
+const COLOR_CLAUDE: u32 = 0xd97757;
+const COLOR_OPENAI: u32 = 0xffffff;
+
+/// Maximum height of the body region in pixels. The window itself is 640px
+/// tall and the header / selector / period / tab rows together use ~200px,
+/// so 440px is roughly the most the body can claim before the window starts
+/// to feel cramped. When the body's natural height exceeds this, the
+/// wrapping container becomes vertically scrollable.
+const MAX_BODY_HEIGHT: f32 = 440.0;
+
+/// Braille spinner frames. Matches the `cli-spinners` "dots" preset
+/// (see `.design/loading.md`). 10 frames, advanced every 80ms while
+/// `is_loading == true`.
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_TICK_MS: u64 = 80;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Overview,
+enum Mode {
+    Agent,
+    Plugin,
+}
+
+/// Section identifiers used by the agent (Claude Code) view. Plugin
+/// sections are addressed by their `id` string instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentSection {
+    Quota,
+    Summary,
     Models,
+}
+
+impl AgentSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Quota => "Quota",
+            Self::Summary => "Summary",
+            Self::Models => "Models",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Quota => "quota",
+            Self::Summary => "summary",
+            Self::Models => "models",
+        }
+    }
+
+    /// Whether this section filters data by the active period. Quota
+    /// reports rolling 5h / 7d subscription windows fixed by the API, so
+    /// the period pills don't apply.
+    fn uses_period(self) -> bool {
+        match self {
+            Self::Quota => false,
+            Self::Summary | Self::Models => true,
+        }
+    }
 }
 
 pub struct AuraView {
     config: AppConfig,
+    config_path: PathBuf,
     state: AppState,
     active_profile: String,
     active_period: Period,
-    active_tab: Tab,
+
+    /// Whether we're showing an agent (Claude Code etc.) or a plugin.
+    mode: Mode,
+    /// When `mode == Mode::Plugin`, which plugin (by name) is selected.
+    active_plugin: Option<String>,
+
+    /// Active section within the agent's view.
+    active_agent_section: AgentSection,
+    /// Active section within the plugin's view (by section id).
+    active_plugin_section: Option<String>,
+
     snapshot: Option<UsageSnapshot>,
-    plugin_panels: Vec<PluginPanel>,
+    quota: Option<QuotaSnapshot>,
+    /// Indexed by plugin name.
+    plugin_panels: Vec<(String, PluginPanel)>,
+
+    show_more_modal: bool,
+    is_loading: bool,
+    /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
+    spinner_frame: usize,
+    error: Option<String>,
+}
+
+/// Bundle of results produced by the background refresh task. Errors that
+/// previously landed on `self.error` are bubbled up here so they survive
+/// the trip across threads.
+struct RefreshResult {
+    /// Reloaded config — `None` means "keep the old one".
+    config: Option<AppConfig>,
+    /// `Some` if the active profile had to fall back to the first agent.
+    fallback_profile: Option<String>,
+    snapshot: Option<UsageSnapshot>,
+    quota: Option<QuotaSnapshot>,
+    plugin_panels: Vec<(String, PluginPanel)>,
     error: Option<String>,
 }
 
 impl AuraView {
-    pub fn new(config: AppConfig, state: AppState, _cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        config: AppConfig,
+        config_path: PathBuf,
+        state: AppState,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let active_profile = state
             .active_profile
             .clone()
@@ -51,44 +146,233 @@ impl AuraView {
 
         let mut view = Self {
             config,
+            config_path,
             state,
             active_profile,
             active_period,
-            active_tab: Tab::Overview,
+            mode: Mode::Agent,
+            active_plugin: None,
+            active_agent_section: AgentSection::Quota,
+            active_plugin_section: None,
             snapshot: None,
+            quota: None,
             plugin_panels: Vec::new(),
+            show_more_modal: false,
+            is_loading: false,
+            spinner_frame: 0,
             error: None,
         };
-        view.refresh();
+        // Initial load: kick off the async refresh now so the spinner can
+        // render on first paint instead of blocking construction.
+        view.refresh(cx);
         view
     }
 
-    fn refresh(&mut self) {
-        self.error = None;
-        let Some(agent) = self
-            .config
-            .agents
-            .iter()
-            .find(|a| a.name == self.active_profile)
-        else {
-            self.snapshot = None;
-            self.error = Some(format!(
-                "Profile `{}` not found in config",
-                self.active_profile
-            ));
+    /// Kick off an async refresh. Returns immediately — the heavy work
+    /// (snapshot scan, quota API call, plugin subprocesses) runs on the
+    /// background executor. The result is applied via `apply_refresh_result`
+    /// back on the foreground thread.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.is_loading {
+            // A refresh is already in flight; don't double-spawn.
             return;
+        }
+        self.is_loading = true;
+        self.error = None;
+        cx.notify();
+        self.spawn_spinner_tick(cx);
+
+        let config_path = self.config_path.clone();
+        let active_profile = self.active_profile.clone();
+        let period = self.active_period;
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { do_refresh(config_path, active_profile, period) })
+                .await;
+
+            this.update(cx, |view, cx| {
+                view.apply_refresh_result(result, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply a `RefreshResult` back to the view on the foreground thread.
+    fn apply_refresh_result(&mut self, result: RefreshResult, cx: &mut Context<Self>) {
+        if let Some(cfg) = result.config {
+            self.config = cfg;
+        }
+        if let Some(fallback) = result.fallback_profile {
+            self.active_profile = fallback;
+        }
+        self.snapshot = result.snapshot;
+        self.quota = result.quota;
+        self.plugin_panels = result.plugin_panels;
+        self.error = result.error;
+
+        // Initialize the active plugin selection if absent or stale.
+        if self.active_plugin.is_none() {
+            self.active_plugin = self.plugin_panels.first().map(|(name, _)| name.clone());
+        }
+        // Initialize the plugin section if absent or no longer present.
+        let known_section = self
+            .active_plugin
+            .as_deref()
+            .and_then(|name| self.plugin_panels.iter().find(|(n, _)| n == name))
+            .and_then(|(_, panel)| {
+                self.active_plugin_section
+                    .as_deref()
+                    .and_then(|id| panel.section(id))
+                    .map(|s| s.id.clone())
+            });
+        if known_section.is_none() {
+            self.active_plugin_section = self
+                .active_plugin
+                .as_deref()
+                .and_then(|name| self.plugin_panels.iter().find(|(n, _)| n == name))
+                .and_then(|(_, panel)| panel.sections.first().map(|s| s.id.clone()));
+        }
+
+        self.is_loading = false;
+        cx.notify();
+    }
+
+    /// Schedule a single spinner-frame tick. While `is_loading` remains true
+    /// the tick re-schedules itself; once loading ends the chain stops. This
+    /// gives us animation without needing a continuous animation driver.
+    fn spawn_spinner_tick(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(SPINNER_TICK_MS))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.is_loading {
+                    view.spinner_frame = (view.spinner_frame + 1) % SPINNER_FRAMES.len();
+                    cx.notify();
+                    view.spawn_spinner_tick(cx);
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// Pure background-thread refresh worker. All the heavy I/O (config reload,
+/// snapshot scan, quota API call, plugin subprocesses) happens here so the UI
+/// thread can keep rendering the spinner. Errors are bundled into the
+/// returned `RefreshResult` rather than returned via `Result` so partial
+/// success (e.g. quota OK but snapshot failed) still surfaces.
+fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> RefreshResult {
+    // Reload config so edits made via the settings button take effect.
+    let config = match AppConfig::load(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return RefreshResult {
+                config: None,
+                fallback_profile: None,
+                snapshot: None,
+                quota: None,
+                plugin_panels: Vec::new(),
+                error: Some(format!("Could not reload config: {e}")),
+            };
+        }
+    };
+
+    // If the active profile vanished from the reloaded config, fall back to
+    // the first agent. We capture this so the foreground thread can apply it.
+    let (resolved_profile, fallback_profile) =
+        if config.agents.iter().any(|a| a.name == active_profile) {
+            (active_profile.clone(), None)
+        } else if let Some(first) = config.agents.first() {
+            (first.name.clone(), Some(first.name.clone()))
+        } else {
+            (active_profile.clone(), None)
         };
 
-        let reader = make_reader(agent);
-        match reader.snapshot(self.active_period) {
-            Ok(snap) => self.snapshot = Some(snap),
-            Err(e) => {
-                self.snapshot = None;
-                self.error = Some(format!("Snapshot failed: {e}"));
+    let Some(agent) = config
+        .agents
+        .iter()
+        .find(|a| a.name == resolved_profile)
+        .cloned()
+    else {
+        return RefreshResult {
+            config: Some(config),
+            fallback_profile,
+            snapshot: None,
+            quota: None,
+            plugin_panels: Vec::new(),
+            error: Some(format!("Profile `{resolved_profile}` not found in config")),
+        };
+    };
+
+    let mut error: Option<String> = None;
+
+    let snapshot = match make_reader(&agent).snapshot(period) {
+        Ok(snap) => Some(snap),
+        Err(e) => {
+            error = Some(format!("Snapshot failed: {e}"));
+            None
+        }
+    };
+
+    // Quota windows: API → local-fallback → unavailable, never `Err`.
+    let claude_path = agent.resolved_config_path();
+    let quota = Some(QuotaApi::new(claude_path).snapshot());
+
+    // Plugins: each runs as a subprocess with `--period` passed through.
+    let plugin_panels = config
+        .plugins
+        .iter()
+        .map(|p| (p.name.clone(), PluginRunner::run_with_period(p, period)))
+        .collect();
+
+    RefreshResult {
+        config: Some(config),
+        fallback_profile,
+        snapshot,
+        quota,
+        plugin_panels,
+        error,
+    }
+}
+
+impl AuraView {
+    /// Open the config file in the desktop's default editor.
+    /// Tries `xdg-open` first (right call from a GUI context), falls back to
+    /// `$EDITOR` if it's set.
+    fn open_config(&mut self, cx: &mut Context<Self>) {
+        use std::process::{Command, Stdio};
+
+        // Ensure the file exists so the editor doesn't open a blank buffer.
+        if !self.config_path.exists() {
+            if let Err(e) = AppConfig::load(&self.config_path) {
+                self.error = Some(format!("Could not create config: {e}"));
+                cx.notify();
+                return;
             }
         }
 
-        self.plugin_panels = self.config.plugins.iter().map(PluginRunner::run).collect();
+        let spawned = Command::new("xdg-open")
+            .arg(&self.config_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        if spawned.is_err() {
+            if let Ok(editor) = std::env::var("EDITOR") {
+                let _ = Command::new(editor).arg(&self.config_path).spawn();
+            } else {
+                self.error = Some(format!(
+                    "Could not open editor (no `xdg-open` and `$EDITOR` unset). \
+                     Edit {} manually.",
+                    self.config_path.display()
+                ));
+                cx.notify();
+            }
+        }
     }
 
     fn set_profile(&mut self, name: String, cx: &mut Context<Self>) {
@@ -96,23 +380,110 @@ impl AuraView {
             self.active_profile = name.clone();
             self.state.active_profile = Some(name);
             let _ = self.state.save();
-            self.refresh();
-            cx.notify();
+            // Reset the spinner so a profile switch feels like a fresh start.
+            self.spinner_frame = 0;
+            self.refresh(cx);
         }
     }
 
     fn set_period(&mut self, period: Period, cx: &mut Context<Self>) {
         if self.active_period != period {
             self.active_period = period;
-            self.refresh();
+            self.refresh(cx);
+        }
+    }
+
+    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        if self.mode != mode {
+            self.mode = mode;
             cx.notify();
         }
     }
 
-    fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        if self.active_tab != tab {
-            self.active_tab = tab;
+    fn set_agent_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
+        if self.active_agent_section != section {
+            self.active_agent_section = section;
             cx.notify();
+        }
+    }
+
+    fn set_plugin(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.active_plugin.as_deref() != Some(name.as_str()) {
+            self.active_plugin = Some(name);
+            // Reset the active section to the new plugin's first section.
+            self.active_plugin_section = self
+                .current_plugin_panel()
+                .and_then(|p| p.sections.first().map(|s| s.id.clone()));
+            cx.notify();
+        }
+    }
+
+    fn set_plugin_section(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.active_plugin_section.as_deref() != Some(id.as_str()) {
+            self.active_plugin_section = Some(id);
+            cx.notify();
+        }
+    }
+
+    fn toggle_more_modal(&mut self, cx: &mut Context<Self>) {
+        self.show_more_modal = !self.show_more_modal;
+        cx.notify();
+    }
+
+    fn close_more_modal(&mut self, cx: &mut Context<Self>) {
+        self.show_more_modal = false;
+        cx.notify();
+    }
+
+    fn current_agent(&self) -> Option<&AgentConfig> {
+        self.config
+            .agents
+            .iter()
+            .find(|a| a.name == self.active_profile)
+    }
+
+    #[allow(dead_code)]
+    fn current_plugin_config(&self) -> Option<&PluginConfig> {
+        self.active_plugin
+            .as_deref()
+            .and_then(|name| self.config.plugins.iter().find(|p| p.name == name))
+    }
+
+    fn current_plugin_panel(&self) -> Option<&PluginPanel> {
+        let name = self.active_plugin.as_deref()?;
+        self.plugin_panels
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p)
+    }
+
+    /// Whether the currently-selected section actually filters its data by the
+    /// active period. Drives whether the period-pill row is rendered.
+    fn current_section_uses_period(&self) -> bool {
+        match self.mode {
+            Mode::Agent => self.active_agent_section.uses_period(),
+            Mode::Plugin => self
+                .current_plugin_panel()
+                .and_then(|p| {
+                    self.active_plugin_section
+                        .as_deref()
+                        .and_then(|id| p.section(id))
+                })
+                .map(|s| s.uses_period)
+                .unwrap_or(true),
+        }
+    }
+
+    /// Brand accent for the currently-selected agent/plugin. Falls back to the
+    /// global accent when nothing is selected or the brand color is too light
+    /// to read on the dark surface (rule from .design/agents.md).
+    fn current_accent(&self) -> u32 {
+        match self.mode {
+            Mode::Agent => self
+                .current_agent()
+                .map(|a| agent_accent(a.kind))
+                .unwrap_or(COLOR_ACCENT),
+            Mode::Plugin => COLOR_ACCENT,
         }
     }
 }
@@ -121,7 +492,7 @@ impl AuraView {
 
 impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let mut root = div()
             .flex()
             .flex_col()
             .size_full()
@@ -130,10 +501,17 @@ impl Render for AuraView {
             .font_family("monospace")
             .text_sm()
             .child(self.render_header(cx))
-            .child(self.render_period_row(cx))
+            .child(self.render_selector_row(cx))
+            .when(self.current_section_uses_period(), |d| {
+                d.child(self.render_period_row(cx))
+            })
             .child(self.render_tab_row(cx))
-            .child(self.render_body(cx))
-            .child(self.render_plugins(cx))
+            .child(self.render_body(cx));
+
+        if self.show_more_modal {
+            root = root.child(self.render_more_modal(cx));
+        }
+        root
     }
 }
 
@@ -141,7 +519,7 @@ impl Render for AuraView {
 
 impl AuraView {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div()
+        let row = div()
             .flex()
             .flex_row()
             .items_center()
@@ -152,15 +530,129 @@ impl AuraView {
             .border_color(rgb(COLOR_BORDER))
             .bg(rgb(COLOR_SURFACE));
 
-        // Profile pills
+        // Left: brand (+ spinner when a fetch is in flight)
+        let frame = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
+        let brand = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(svg_icon("icons/aura.svg", COLOR_ACCENT, 18.0))
+            .when(self.is_loading, |d| {
+                d.child(div().text_color(rgb(COLOR_TEXT_DIM)).child(frame))
+            });
+
+        // Right: action buttons (refresh, config, more)
+        let actions =
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(
+                    icon_button("act-refresh", "icons/rotate_cw.svg").on_click(cx.listener(
+                        |view, _: &ClickEvent, _, cx| {
+                            // Early-return if a refresh is already running so we
+                            // don't double-spawn.
+                            if view.is_loading {
+                                return;
+                            }
+                            view.refresh(cx);
+                        },
+                    )),
+                )
+                .child(
+                    icon_button("act-config", "icons/settings.svg")
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_config(cx))),
+                )
+                .child(icon_button("act-more", "icons/ellipsis.svg").on_click(
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_more_modal(cx)),
+                ));
+
+        row.child(brand).child(actions).into_any_element()
+    }
+
+    /// Pill row + agent/plugin mode toggle.
+    fn render_selector_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER));
+
+        // Left: agent pills (Agent mode) or plugin pills (Plugin mode)
+        let left = match self.mode {
+            Mode::Agent => self.render_agent_pills(cx),
+            Mode::Plugin => self.render_plugin_pills(cx),
+        };
+        row = row.child(left);
+
+        // Right: mode toggle
+        row = row.child(self.render_mode_toggle(cx));
+        row.into_any_element()
+    }
+
+    fn render_agent_pills(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut picker = div().flex().flex_row().gap_2();
         for agent in &self.config.agents {
             let name = agent.name.clone();
             let active = self.active_profile == agent.name;
             let pill_name = name.clone();
+            let accent = agent_accent(agent.kind);
+            let icon = agent_icon(agent);
             picker = picker.child(
                 div()
                     .id(SharedString::from(format!("profile-{}", agent.name)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .when(active, |d| {
+                        d.bg(rgb(blend(accent, COLOR_BG, 0.75)))
+                            .text_color(rgb(COLOR_TEXT))
+                    })
+                    .when(!active, |d| {
+                        d.bg(rgb(COLOR_SURFACE_HI)).text_color(rgb(COLOR_TEXT_DIM))
+                    })
+                    .child(icon)
+                    .child(SharedString::from(name))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.set_profile(pill_name.clone(), cx);
+                    })),
+            );
+        }
+        picker.into_any_element()
+    }
+
+    fn render_plugin_pills(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.config.plugins.is_empty() {
+            return div()
+                .text_xs()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child("No plugins configured")
+                .into_any_element();
+        }
+        let mut picker = div().flex().flex_row().gap_2();
+        for plugin in &self.config.plugins {
+            let name = plugin.name.clone();
+            let active = self.active_plugin.as_deref() == Some(name.as_str());
+            let pill_name = name.clone();
+            picker = picker.child(
+                div()
+                    .id(SharedString::from(format!("plugin-{}", plugin.name)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
                     .px_2()
                     .py_1()
                     .rounded_md()
@@ -171,23 +663,43 @@ impl AuraView {
                     .when(!active, |d| {
                         d.bg(rgb(COLOR_SURFACE_HI)).text_color(rgb(COLOR_TEXT_DIM))
                     })
+                    .child(svg_icon("icons/blocks.svg", COLOR_TEXT_DIM, 12.0))
                     .child(SharedString::from(name))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.set_profile(pill_name.clone(), cx);
+                        view.set_plugin(pill_name.clone(), cx);
                     })),
             );
         }
-        row = row.child(picker);
-        row = row.child(
-            div()
-                .id("title-refresh")
-                .text_color(rgb(COLOR_ACCENT))
-                .child("Aura ⟳")
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.refresh();
-                    cx.notify();
-                })),
-        );
+        picker.into_any_element()
+    }
+
+    fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let modes = [
+            ("Agents", Mode::Agent, "mode-agent"),
+            ("Plugins", Mode::Plugin, "mode-plugin"),
+        ];
+        let mut row = div().flex().flex_row().gap_1();
+        for (label, mode, id) in modes {
+            let active = self.mode == mode;
+            row = row.child(
+                div()
+                    .id(SharedString::from(id))
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .rounded_md()
+                    .when(active, |d| {
+                        d.bg(rgb(COLOR_ACCENT)).text_color(rgb(0xffffff))
+                    })
+                    .when(!active, |d| {
+                        d.bg(rgb(COLOR_SURFACE)).text_color(rgb(COLOR_TEXT_DIM))
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.set_mode(mode, cx);
+                    })),
+            );
+        }
         row.into_any_element()
     }
 
@@ -232,11 +744,7 @@ impl AuraView {
     }
 
     fn render_tab_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tabs = [
-            ("Overview", Tab::Overview, "tab-overview"),
-            ("Models", Tab::Models, "tab-models"),
-        ];
-
+        let accent = self.current_accent();
         let mut row = div()
             .flex()
             .flex_row()
@@ -247,31 +755,66 @@ impl AuraView {
             .border_color(rgb(COLOR_BORDER))
             .bg(rgb(COLOR_SURFACE));
 
-        for (label, tab, id) in tabs {
-            let active = self.active_tab == tab;
-            row = row.child(
-                div()
-                    .id(SharedString::from(id))
-                    .text_sm()
-                    .pb_1()
-                    .when(active, |d| {
-                        d.text_color(rgb(COLOR_TEXT))
-                            .border_b_2()
-                            .border_color(rgb(COLOR_ACCENT))
-                    })
-                    .when(!active, |d| d.text_color(rgb(COLOR_TEXT_DIM)))
-                    .child(label)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.set_tab(tab, cx);
-                    })),
-            );
+        match self.mode {
+            Mode::Agent => {
+                let sections = [
+                    AgentSection::Quota,
+                    AgentSection::Summary,
+                    AgentSection::Models,
+                ];
+                for s in sections {
+                    let active = self.active_agent_section == s;
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("agent-section-{}", s.id())))
+                            .text_sm()
+                            .pb_1()
+                            .when(active, |d| {
+                                d.text_color(rgb(COLOR_TEXT))
+                                    .border_b_2()
+                                    .border_color(rgb(accent))
+                            })
+                            .when(!active, |d| d.text_color(rgb(COLOR_TEXT_DIM)))
+                            .child(s.label())
+                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                view.set_agent_section(s, cx);
+                            })),
+                    );
+                }
+            }
+            Mode::Plugin => {
+                if let Some(panel) = self.current_plugin_panel() {
+                    for section in &panel.sections {
+                        let sid = section.id.clone();
+                        let label = section.label.clone();
+                        let active = self.active_plugin_section.as_deref() == Some(sid.as_str());
+                        let click_sid = sid.clone();
+                        row = row.child(
+                            div()
+                                .id(SharedString::from(format!("plugin-section-{}", sid)))
+                                .text_sm()
+                                .pb_1()
+                                .when(active, |d| {
+                                    d.text_color(rgb(COLOR_TEXT))
+                                        .border_b_2()
+                                        .border_color(rgb(accent))
+                                })
+                                .when(!active, |d| d.text_color(rgb(COLOR_TEXT_DIM)))
+                                .child(SharedString::from(label))
+                                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                    view.set_plugin_section(click_sid.clone(), cx);
+                                })),
+                        );
+                    }
+                }
+            }
         }
         row.into_any_element()
     }
 
     fn render_body(&self, _cx: &mut Context<Self>) -> AnyElement {
-        if let Some(err) = &self.error {
-            return div()
+        let inner: AnyElement = if let Some(err) = &self.error {
+            div()
                 .flex()
                 .flex_col()
                 .flex_1()
@@ -279,50 +822,249 @@ impl AuraView {
                 .justify_center()
                 .p_6()
                 .child(div().text_color(rgb(0xff6b6b)).child(err.clone()))
-                .into_any_element();
-        }
+                .into_any_element()
+        } else {
+            let accent = self.current_accent();
+            match self.mode {
+                Mode::Agent => match self.active_agent_section {
+                    AgentSection::Quota => render_quota(self.quota.as_ref(), accent),
+                    AgentSection::Summary => match self.snapshot.as_ref() {
+                        Some(snap) => render_summary(snap),
+                        None => render_loading(),
+                    },
+                    AgentSection::Models => match self.snapshot.as_ref() {
+                        Some(snap) => render_models(snap, accent),
+                        None => render_loading(),
+                    },
+                },
+                Mode::Plugin => self.render_plugin_body(),
+            }
+        };
 
-        let Some(snap) = self.snapshot.as_ref() else {
+        div()
+            .id("body-scroll")
+            .max_h(px(MAX_BODY_HEIGHT))
+            .overflow_y_scroll()
+            .child(inner)
+            .into_any_element()
+    }
+
+    fn render_plugin_body(&self) -> AnyElement {
+        let Some(panel) = self.current_plugin_panel() else {
             return div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .child(div().text_color(rgb(COLOR_TEXT_DIM)).child("Loading…"))
+                .p_6()
+                .child(
+                    div()
+                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .child("No plugin selected"),
+                )
                 .into_any_element();
         };
 
-        match self.active_tab {
-            Tab::Overview => render_overview(snap),
-            Tab::Models => render_models(snap),
+        if let Some(err) = &panel.error {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .child(
+                    div()
+                        .text_color(rgb(0xff6b6b))
+                        .child(SharedString::from(err.clone())),
+                )
+                .into_any_element();
         }
-    }
 
-    fn render_plugins(&self, _cx: &mut Context<Self>) -> AnyElement {
-        if self.plugin_panels.is_empty() {
-            return div().into_any_element();
+        let section_id = self.active_plugin_section.as_deref().unwrap_or("");
+        let section = panel.section(section_id).or_else(|| panel.sections.first());
+        match section {
+            Some(s) => render_plugin_section(s),
+            None => render_loading(),
         }
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .px_4()
-            .py_3()
-            .border_t_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(COLOR_SURFACE));
-
-        for panel in &self.plugin_panels {
-            col = col.child(render_plugin_panel(panel));
-        }
-        col.into_any_element()
     }
 }
 
-// ── Overview ──────────────────────────────────────────────────────────────────
+// ── Quota (subscription windows — mirrors `claude /usage`) ───────────────────
 
-fn render_overview(snap: &UsageSnapshot) -> AnyElement {
+fn render_loading() -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .child(div().text_color(rgb(COLOR_TEXT_DIM)).child("Loading…"))
+        .into_any_element()
+}
+
+fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32) -> AnyElement {
+    let Some(quota) = quota else {
+        return render_loading();
+    };
+
+    let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+    // Show the subscription tier (e.g. "pro", "max") when the API was reached.
+    if let Some(sub) = &quota.subscription_type {
+        col = col.child(
+            div()
+                .text_xs()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child(SharedString::from(format!("Subscription: {sub}"))),
+        );
+    }
+
+    if quota.windows.is_empty() {
+        let msg = quota
+            .note
+            .clone()
+            .unwrap_or_else(|| "No quota data available.".to_string());
+        col = col.child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(COLOR_BORDER))
+                .bg(rgb(COLOR_SURFACE))
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_xs()
+                .child(SharedString::from(msg)),
+        );
+    } else {
+        for w in &quota.windows {
+            col = col.child(render_quota_window(w, accent));
+        }
+    }
+
+    // Source / note banner at the bottom
+    if quota.source == QuotaSource::Fallback {
+        let note = quota.note.clone().unwrap_or_else(|| {
+            "Showing local token counts (subscription limits unknown).".to_string()
+        });
+        col = col.child(
+            div()
+                .text_xs()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child(SharedString::from(note)),
+        );
+    }
+
+    col.into_any_element()
+}
+
+fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
+    // Percent used: either real (from API) or unknown (fallback).
+    let pct = w.used_percentage.unwrap_or(0.0).clamp(0.0, 100.0);
+    let pct_label = match w.used_percentage {
+        Some(p) => format!("{:.0}% used", p),
+        None => match w.used_tokens {
+            Some(t) => format!("{} tokens", thousands(t)),
+            None => "—".to_string(),
+        },
+    };
+
+    let resets_label = w
+        .resets_at
+        .map(format_reset)
+        .unwrap_or_else(|| "—".to_string());
+
+    let bar_fraction = (pct / 100.0) as f32;
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(COLOR_SURFACE))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(COLOR_BORDER))
+        .child(
+            div()
+                .text_color(rgb(COLOR_TEXT))
+                .child(SharedString::from(w.label.clone())),
+        )
+        .child(
+            // Bar
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .h(px(8.0))
+                        .flex_1()
+                        .bg(rgb(COLOR_SURFACE_HI))
+                        .rounded_md()
+                        .child(
+                            div()
+                                .h(px(8.0))
+                                .w(gpui::relative(bar_fraction))
+                                .bg(rgb(accent))
+                                .rounded_md(),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(COLOR_TEXT))
+                        .child(SharedString::from(pct_label)),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child(SharedString::from(format!("Resets {}", resets_label))),
+        )
+}
+
+/// Format a UTC instant as a friendly local-time string like
+/// `6:50pm (America/Sao_Paulo)` or `May 22, 4pm` if it's > 24h out.
+fn format_reset(ts: DateTime<Utc>) -> String {
+    let local = ts.with_timezone(&Local);
+    let now = Local::now();
+    let within_24h = (local - now).num_hours().abs() < 24;
+    let tz_label = chrono::Local::now().offset().to_string();
+    if within_24h {
+        // 6:50pm
+        let hour = local.format("%I").to_string();
+        let hour = hour.trim_start_matches('0');
+        let hour = if hour.is_empty() { "12" } else { hour };
+        let minute = local.format("%M").to_string();
+        let suffix = local.format("%P").to_string();
+        if minute == "00" {
+            format!("{hour}{suffix} ({tz_label})")
+        } else {
+            format!("{hour}:{minute}{suffix} ({tz_label})")
+        }
+    } else {
+        // May 22, 4pm
+        let date = local.format("%b %-d").to_string();
+        let hour = local.format("%-I").to_string();
+        let minute = local.format("%M").to_string();
+        let suffix = local.format("%P").to_string();
+        if minute == "00" {
+            format!("{date}, {hour}{suffix}")
+        } else {
+            format!("{date}, {hour}:{minute}{suffix}")
+        }
+    }
+}
+
+// ── Summary (the old "Overview" — stat-card grid) ────────────────────────────
+
+fn render_summary(snap: &UsageSnapshot) -> AnyElement {
     let rows = [
         (
             "Favorite model",
@@ -360,7 +1102,7 @@ fn render_overview(snap: &UsageSnapshot) -> AnyElement {
         ("Longest streak", format!("{} day(s)", snap.streaks.longest)),
     ];
 
-    let mut col = div().flex().flex_col().flex_1().px_4().py_3().gap_2();
+    let mut col = div().flex().flex_col().px_4().py_3().gap_2();
 
     // Render in 2-col rows
     for chunk in rows.chunks(2) {
@@ -400,11 +1142,11 @@ fn stat_card(label: &str, value: &str) -> impl IntoElement {
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
-fn render_models(snap: &UsageSnapshot) -> AnyElement {
-    let mut col = div().flex().flex_col().flex_1().px_4().py_3().gap_4();
+fn render_models(snap: &UsageSnapshot, accent: u32) -> AnyElement {
+    let mut col = div().flex().flex_col().px_4().py_3().gap_4();
 
     // Tokens per Day chart
-    col = col.child(render_daily_chart(snap));
+    col = col.child(render_daily_chart(snap, accent));
 
     // Per-model breakdown
     let total: u64 = snap
@@ -421,13 +1163,13 @@ fn render_models(snap: &UsageSnapshot) -> AnyElement {
         } else {
             0.0
         };
-        models_col = models_col.child(render_model_row(&m.model, tokens, pct));
+        models_col = models_col.child(render_model_row(&m.model, tokens, pct, accent));
     }
     col = col.child(models_col);
     col.into_any_element()
 }
 
-fn render_model_row(model: &str, tokens: u64, pct: f64) -> impl IntoElement {
+fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl IntoElement {
     let bar_width_pct = pct.clamp(2.0, 100.0);
     div()
         .flex()
@@ -470,13 +1212,13 @@ fn render_model_row(model: &str, tokens: u64, pct: f64) -> impl IntoElement {
                     div()
                         .h(px(4.0))
                         .w(gpui::relative(bar_width_pct as f32 / 100.0))
-                        .bg(rgb(COLOR_ACCENT))
+                        .bg(rgb(accent))
                         .rounded_md(),
                 ),
         )
 }
 
-fn render_daily_chart(snap: &UsageSnapshot) -> impl IntoElement {
+fn render_daily_chart(snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
     let days: Vec<(String, u64)> = snap
         .daily_tokens
         .iter()
@@ -492,13 +1234,7 @@ fn render_daily_chart(snap: &UsageSnapshot) -> impl IntoElement {
         } else {
             2.0
         };
-        bars = bars.child(
-            div()
-                .flex_1()
-                .h(px(height))
-                .bg(rgb(COLOR_ACCENT))
-                .rounded_sm(),
-        );
+        bars = bars.child(div().flex_1().h(px(height)).bg(rgb(accent)).rounded_sm());
     }
 
     div()
@@ -520,55 +1256,297 @@ fn render_daily_chart(snap: &UsageSnapshot) -> impl IntoElement {
         .child(bars)
 }
 
-// ── Plugin panel ──────────────────────────────────────────────────────────────
+// ── Plugin section rendering ─────────────────────────────────────────────────
 
-fn render_plugin_panel(panel: &PluginPanel) -> impl IntoElement {
-    let mut col = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .bg(rgb(COLOR_BG))
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(COLOR_ACCENT))
-                .child(SharedString::from(panel.title.clone())),
-        );
+fn render_plugin_section(section: &PluginSection) -> AnyElement {
+    match &section.content {
+        PluginContent::Lines { lines } => {
+            let mut col = div().flex().flex_col().px_4().py_3().gap_2();
+            for line in lines {
+                col = col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_between()
+                        .px_3()
+                        .py_2()
+                        .bg(rgb(COLOR_SURFACE))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(COLOR_BORDER))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(COLOR_TEXT_DIM))
+                                .child(SharedString::from(line.label.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .when(line.highlight, |d| d.text_color(rgb(COLOR_ACCENT)))
+                                .when(!line.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
+                                .child(SharedString::from(line.value.clone())),
+                        ),
+                );
+            }
+            col.into_any_element()
+        }
+        PluginContent::Table { headers, rows } => {
+            let mut col = div().flex().flex_col().px_4().py_3().gap_1();
 
-    if let Some(err) = &panel.error {
-        col = col.child(
-            div()
-                .text_xs()
-                .text_color(rgb(0xff6b6b))
-                .child(SharedString::from(err.clone())),
-        );
-    } else {
-        for line in &panel.lines {
-            col = col.child(
+            // Header row
+            let mut header_row = div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(rgb(COLOR_BORDER));
+            for h in headers {
+                header_row = header_row.child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .child(SharedString::from(h.clone())),
+                );
+            }
+            col = col.child(header_row);
+
+            // Data rows
+            for row in rows {
+                let mut r = div().flex().flex_row().gap_2().px_3().py_1p5();
+                for cell in &row.cells {
+                    r = r.child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .when(row.highlight, |d| d.text_color(rgb(COLOR_ACCENT)))
+                            .when(!row.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
+                            .child(SharedString::from(cell.clone())),
+                    );
+                }
+                col = col.child(r);
+            }
+            col.into_any_element()
+        }
+        PluginContent::Text { text } => div()
+            .px_4()
+            .py_3()
+            .text_xs()
+            .text_color(rgb(COLOR_TEXT))
+            .child(SharedString::from(text.clone()))
+            .into_any_element(),
+    }
+}
+
+// ── More modal ───────────────────────────────────────────────────────────────
+
+impl AuraView {
+    fn render_more_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+        let items = [
+            (
+                "modal-themes",
+                "icons/sliders.svg",
+                "Themes",
+                ModalAction::Themes,
+            ),
+            (
+                "modal-updates",
+                "icons/download.svg",
+                "Check updates",
+                ModalAction::Updates,
+            ),
+            (
+                "modal-sponsor",
+                "icons/sparkle.svg",
+                "Sponsor",
+                ModalAction::Sponsor,
+            ),
+            (
+                "modal-issues",
+                "icons/circle_help.svg",
+                "Report issue",
+                ModalAction::Reports,
+            ),
+        ];
+
+        // Backdrop covering the body — click to dismiss.
+        let backdrop = div()
+            .id("modal-backdrop")
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x000000a0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.close_more_modal(cx)));
+
+        // Modal card itself. Clicks inside should not close the backdrop.
+        let mut card = div()
+            .id("modal-card")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .min_w(px(260.0))
+            .bg(rgb(COLOR_SURFACE))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER))
+            // Swallow click so it doesn't bubble to the backdrop.
+            .on_click(cx.listener(|_, _: &ClickEvent, _, _| {}));
+
+        for (id, icon_path, label, action) in items {
+            card = card.child(
                 div()
+                    .id(SharedString::from(id))
                     .flex()
                     .flex_row()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(COLOR_TEXT_DIM))
-                            .child(SharedString::from(line.label.clone())),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .when(line.highlight, |d| d.text_color(rgb(COLOR_ACCENT)))
-                            .when(!line.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
-                            .child(SharedString::from(line.value.clone())),
-                    ),
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(rgb(COLOR_TEXT))
+                    .hover(|d| d.bg(rgb(COLOR_SURFACE_HI)))
+                    .child(svg_icon(icon_path, COLOR_TEXT_DIM, 14.0))
+                    .child(label)
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.handle_modal_action(action, cx);
+                    })),
             );
         }
+
+        backdrop.child(card).into_any_element()
     }
-    col
+
+    fn handle_modal_action(&mut self, action: ModalAction, cx: &mut Context<Self>) {
+        match action {
+            ModalAction::Themes => {
+                // User-customizable themes are spec'd in .design/customization.md
+                // but not implemented yet. Showing a placeholder.
+                self.error = Some(
+                    "Themes are coming soon. See .design/customization.md for the spec."
+                        .to_string(),
+                );
+            }
+            ModalAction::Updates => open_url(GITHUB_RELEASES_URL),
+            ModalAction::Sponsor => open_url(SPONSOR_URL),
+            ModalAction::Reports => open_url(GITHUB_ISSUES_URL),
+        }
+        self.close_more_modal(cx);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ModalAction {
+    Themes,
+    Updates,
+    Sponsor,
+    Reports,
+}
+
+const GITHUB_RELEASES_URL: &str = "https://github.com/Rfluid/aura/releases";
+const GITHUB_ISSUES_URL: &str = "https://github.com/Rfluid/aura/issues";
+const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
+
+fn open_url(url: &str) {
+    use std::process::{Command, Stdio};
+    let _ = Command::new("xdg-open")
+        .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+// ── Helpers: icons, buttons, color math ──────────────────────────────────────
+
+fn svg_icon(path: &'static str, color: u32, size: f32) -> impl IntoElement {
+    svg()
+        .path(path)
+        .size(px(size))
+        .flex_none()
+        .text_color(rgb(color))
+}
+
+/// A click-target wrapping an SVG icon. Caller chains `.on_click(...)`.
+fn icon_button(id: &'static str, path: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(20.0))
+        .h(px(20.0))
+        .text_color(rgb(COLOR_TEXT_DIM))
+        .hover(|d| d.text_color(rgb(COLOR_TEXT)))
+        .child(svg_icon(path, COLOR_TEXT_DIM, 14.0))
+}
+
+/// Icon for the given agent profile, tinted with the agent's brand color.
+fn agent_icon(agent: &AgentConfig) -> impl IntoElement {
+    let (path, color) = match agent.kind {
+        AgentKind::ClaudeCode => ("icons/claude.svg", agent_accent(AgentKind::ClaudeCode)),
+        AgentKind::Codex => ("icons/openai.svg", agent_accent(AgentKind::Codex)),
+    };
+    svg()
+        .path(path)
+        .size(px(14.0))
+        .flex_none()
+        .text_color(rgb(color))
+}
+
+/// Accent color for an agent kind. Spec: see `.design/agents.md`.
+/// If the brand color has relative luminance > 0.85 (would wash out on the
+/// dark surface), substitute a neutral light grey.
+pub fn agent_accent(kind: AgentKind) -> u32 {
+    let brand = match kind {
+        AgentKind::ClaudeCode => COLOR_CLAUDE,
+        AgentKind::Codex => COLOR_OPENAI,
+    };
+    if relative_luminance(brand) > 0.85 {
+        COLOR_AGENT_FALLBACK
+    } else {
+        brand
+    }
+}
+
+/// WCAG relative luminance, 0.0–1.0.
+fn relative_luminance(rgb_hex: u32) -> f64 {
+    let r = ((rgb_hex >> 16) & 0xff) as f64 / 255.0;
+    let g = ((rgb_hex >> 8) & 0xff) as f64 / 255.0;
+    let b = (rgb_hex & 0xff) as f64 / 255.0;
+    let lin = |c: f64| {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// Blend `a` toward `b` by `t` (0.0 = pure a, 1.0 = pure b).
+fn blend(a: u32, b: u32, t: f64) -> u32 {
+    let ch = |shift: u32| {
+        let av = ((a >> shift) & 0xff) as f64;
+        let bv = ((b >> shift) & 0xff) as f64;
+        ((av * (1.0 - t) + bv * t).round() as u32) & 0xff
+    };
+    (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+/// Light-grey fallback for agents whose brand color is too light.
+const COLOR_AGENT_FALLBACK: u32 = 0xb8b8c0;
+
+fn rgba(value: u32) -> gpui::Rgba {
+    let r = ((value >> 24) & 0xff) as f32 / 255.0;
+    let g = ((value >> 16) & 0xff) as f32 / 255.0;
+    let b = ((value >> 8) & 0xff) as f32 / 255.0;
+    let a = (value & 0xff) as f32 / 255.0;
+    gpui::Rgba { r, g, b, a }
 }
