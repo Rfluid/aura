@@ -34,14 +34,14 @@
 
 ---
 
-## Phase 3 — JSONL data engine (Claude Code adapter)
+## Phase 3 — JSONL data engine (Claude Code adapter) ✓
 
 **Crate: `aura-core`** — mirrors the `ML8` / `AT5` / `Wp6` logic from `claude /usage`
 
-- [ ] Define `UsageSnapshot` struct: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `sessions`, `active_days`, `longest_session_secs`, `current_streak`, `longest_streak`, `peak_hour`, `favorite_model`, `per_model: Vec<ModelUsage>`, `daily_tokens: Vec<DailyModelTokens>` — all fields needed to render Overview + Models panels
-- [ ] Define `Period` enum: `AllTime`, `Last7Days`, `Last30Days`
-- [ ] Implement `list_session_files(config_path)` — `readdir` on `projects/` subdirectories, collect all `*.jsonl` paths including `subagents/` subdirs
-- [ ] Implement `scan_jsonl_files(files, from_date, to_date)` → raw aggregated data:
+- [x] Define `UsageSnapshot` struct: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `sessions`, `active_days`, `longest_session_secs`, `current_streak`, `longest_streak`, `peak_hour`, `favorite_model`, `per_model: Vec<ModelUsage>`, `daily_tokens: Vec<DailyModelTokens>` — all fields needed to render Overview + Models panels
+- [x] Define `Period` enum: `AllTime`, `Last7Days`, `Last30Days`
+- [x] Implement `list_session_files(config_path)` — `readdir` on `projects/` subdirectories, collect all `*.jsonl` paths including `subagents/` subdirs
+- [x] Implement `scan_jsonl_files(files, from_date, to_date)` → raw aggregated data:
   - Skip file by `mtime < from_date` (cheap OS check before opening)
   - Parse each `assistant` entry: `timestamp`, `message.model`, `message.usage.*`
   - Skip synthetic models (model name `<synthetic>`)
@@ -49,18 +49,18 @@
   - `dailyModelTokens[date][model]` += `input + output` only (matches `/usage`)
   - Track session stats: start/end timestamps per file → duration, message count
   - Track `hourCounts` from session start hours
-- [ ] Implement streak computation from daily activity dates (matches `WM4` logic)
-- [ ] Implement `ClaudeCodeReader::snapshot(config, period)`:
+- [x] Implement streak computation from daily activity dates (matches `WM4` logic)
+- [x] Implement `ClaudeCodeReader::snapshot(config, period)`:
   - `Last7Days` / `Last30Days`: call `scan_jsonl_files` with date range; return `UsageSnapshot` from results
-  - `AllTime`: load `stats-cache.json` as baseline, find JSONL files newer than `lastComputedDate`, merge delta, save updated cache, append today's JSONL on top
-- [ ] Define `AgentReader` trait with `fn snapshot(&self, period: Period) -> Result<UsageSnapshot>`
-- [ ] Implement `AgentReader` for `ClaudeCodeReader`
-- [ ] Unit tests:
+  - `AllTime`: load `stats-cache.json` as baseline, find JSONL files newer than `lastComputedDate`, merge delta, append today's JSONL on top
+- [x] Define `AgentReader` trait with `fn snapshot(&self, period: Period) -> Result<UsageSnapshot>`
+- [x] Implement `AgentReader` for `ClaudeCodeReader`
+- [x] Unit tests:
   - Fixture JSONL files covering multi-model, multi-day, cache tokens, synthetic model filtering
   - Assert `snapshot(Last7Days)` totals match hand-computed values
   - Assert `AllTime` merges cache + delta correctly
   - Assert streak computation for gaps, current streak reaching today
-- [ ] Integration smoke-test: run against real `~/.claude/projects/` and compare output to `claude /usage` visually
+- [x] Integration smoke-test: run against real `~/.claude/projects/` — outputs 119,845 tokens / 5 sessions / 2 active days / favorite model claude-opus-4-7
 
 ---
 
