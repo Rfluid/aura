@@ -20,7 +20,6 @@ const COLOR_BORDER: u32 = 0x2d2d36;
 const COLOR_TEXT: u32 = 0xe6e6ee;
 const COLOR_TEXT_DIM: u32 = 0x8a8a9a;
 const COLOR_ACCENT: u32 = 0x8b5cf6;
-const COLOR_ACCENT_DIM: u32 = 0x4c1d95;
 
 // Per-agent brand tints used for the icon next to each profile name.
 const COLOR_CLAUDE: u32 = 0xd97757;
