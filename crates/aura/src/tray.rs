@@ -160,9 +160,7 @@ mod linux {
         /// we want. `x` / `y` are the icon's position in screen coords
         /// — we forward them so the modal can anchor near the icon.
         fn activate(&mut self, x: i32, y: i32) {
-            let _ = self.tx.send(TrayEvent::Show {
-                hint: Some((x, y)),
-            });
+            let _ = self.tx.send(TrayEvent::Show { hint: Some((x, y)) });
         }
 
         /// Right-click → minimal context menu. We keep a single "Show
@@ -265,8 +263,9 @@ mod non_linux {
         // Primary-click on the icon itself. `position` is the cursor
         // location at click time — close enough to the icon to anchor
         // the modal near it.
-        if let Ok(TrayIconEvent::Click { button, position, .. }) =
-            TrayIconEvent::receiver().try_recv()
+        if let Ok(TrayIconEvent::Click {
+            button, position, ..
+        }) = TrayIconEvent::receiver().try_recv()
         {
             if button == MouseButton::Left {
                 return Some(TrayEvent::Show {

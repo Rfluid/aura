@@ -115,6 +115,23 @@ Promote it so it sits permanently next to wifi/volume:
 - **macOS** — the menu-bar icon is always visible; nothing to configure.
 - **Windows** — click the `^` overflow arrow in the tray, drag the Aura icon to the always-visible area.
 
+### Modal placement on Wayland
+
+On X11, Windows, and macOS, the modal opens in the bottom-right corner
+(where the tray icon usually lives). On Wayland (KWin, Mutter, sway)
+the compositor decides where windows go — the Wayland protocol forbids
+clients from positioning regular toplevel surfaces — so KWin will
+typically center the modal instead. The modal's height is still capped
+so it never overlaps a bottom taskbar.
+
+If you'd like exact bottom-right placement on KDE Plasma / Wayland,
+add a KWin window rule:
+
+1. **System Settings → Window Management → Window Rules → Add New**.
+2. **Window class** (substring match): `aura`.
+3. Add property **Position** → set the value to e.g. `[screen_width - 540, screen_height - panel_height - 660]` (Force = Apply Initially).
+4. Apply. The next time Aura's modal opens it will land where you set it.
+
 ### System dependencies (Linux)
 
 ```bash

@@ -4,6 +4,7 @@ mod format;
 #[cfg(target_os = "macos")]
 mod macos;
 mod tray;
+mod work_area;
 
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use aura_core::{
     state::AppState,
 };
 use gpui::{
-    div, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
+    div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
     WindowHandle, WindowKind, WindowOptions,
 };
 
@@ -182,6 +183,77 @@ async fn toggle(
         .flatten()
 }
 
+/// Modal dimensions and the gap we leave between its edges and the
+/// screen / panel. Width/height are intentionally fixed — the
+/// `app.rs::on_children_prepainted` resize callback shrinks the window
+/// vertically to fit content (capped at the available work area), so the
+/// initial 640 is just a sensible starting size that lets the first
+/// paint render without thrashing.
+const MODAL_W: f32 = 520.;
+const MODAL_H: f32 = 640.;
+const SCREEN_GAP: f32 = 8.;
+/// Defensive blind reserve for the bottom edge when
+/// [`crate::work_area::available_bottom`] returns `None` (non-KDE,
+/// non-Linux, or parse failure). Matches Strategy A's value so corner
+/// anchoring degrades to "Strategy A + bottom-right placement" instead
+/// of dumping the modal into a taskbar.
+const BLIND_BOTTOM_RESERVE: f32 = 120.;
+
+/// Computes the modal bounds anchored to the bottom-right of the
+/// available work area — the corner where the system tray icon lives
+/// on the common KDE Plasma / Windows / macOS layouts.
+///
+/// ## Wayland caveat
+///
+/// On Wayland (KWin / Mutter / sway) the compositor — not the client
+/// — decides where xdg_toplevel surfaces appear. GPUI 0.2 always
+/// creates toplevels (never xdg-popup; see
+/// `gpui/src/platform/linux/wayland/window.rs:288`), so KWin will
+/// generally ignore our bounds origin and center the window. That's a
+/// protocol-level limit, not a GPUI bug.
+///
+/// Users who want exact placement on Plasma can add a KWin window
+/// rule (System Settings → Window Management → Window Rules → New →
+/// match WM class `aura` → Apply initially `Position`).
+///
+/// On X11 / Windows / macOS the request is honoured natively and the
+/// modal opens where the tray icon lives.
+///
+/// We deliberately don't consult the tray click position — an earlier
+/// attempt at that produced a malformed (very narrow) window on
+/// KWin/Wayland for reasons we never root-caused.
+fn corner_anchored_bounds(cx: &mut gpui::App) -> Bounds<gpui::Pixels> {
+    let modal_size = size(px(MODAL_W), px(MODAL_H));
+
+    let Some(display) = cx.primary_display() else {
+        // No display info — fall back to centered. We can't anchor
+        // anywhere meaningful without knowing where the screen is.
+        return Bounds::centered(None, modal_size, cx);
+    };
+    let display_bounds = display.bounds();
+
+    let screen_left = f32::from(display_bounds.origin.x);
+    let screen_top = f32::from(display_bounds.origin.y);
+    let screen_right = f32::from(display_bounds.origin.x + display_bounds.size.width);
+    let screen_bottom_full = f32::from(display_bounds.origin.y + display_bounds.size.height);
+
+    // Bottom of the available area: prefer the exact panel-aware value
+    // from `work_area::available_bottom`, otherwise reserve a blind
+    // 120 px margin so we still clear the panel on platforms where we
+    // can't measure it.
+    let work_bottom = crate::work_area::available_bottom(display_bounds)
+        .unwrap_or(screen_bottom_full - BLIND_BOTTOM_RESERVE);
+
+    // Place the modal flush against the right edge (where the tray
+    // sits on a horizontal panel) with a small gap; clamp so we never
+    // run off the left side on tiny displays.
+    let x = (screen_right - MODAL_W - SCREEN_GAP).max(screen_left);
+    // Same idea vertically: bottom-anchor with a gap, clamp at top.
+    let y = (work_bottom - MODAL_H - SCREEN_GAP).max(screen_top);
+
+    Bounds::new(point(px(x), px(y)), modal_size)
+}
+
 fn toggle_window(
     cx: &mut gpui::App,
     existing: Option<WindowHandle<AuraView>>,
@@ -196,7 +268,7 @@ fn toggle_window(
         return None;
     }
 
-    let bounds = Bounds::centered(None, size(px(520.), px(640.)), cx);
+    let bounds = corner_anchored_bounds(cx);
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
