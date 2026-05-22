@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use aura_core::{
     config::{parse_hex_color, AgentConfig, AgentKind, AppConfig, PluginConfig},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
-    quota::{QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
+    quota::{CodexQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
 };
@@ -318,9 +318,12 @@ fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> R
         }
     };
 
-    // Quota windows: API → local-fallback → unavailable, never `Err`.
-    let claude_path = agent.resolved_config_path();
-    let quota = Some(QuotaApi::new(claude_path).snapshot());
+    // Quota windows: per-agent source → unavailable, never `Err`.
+    let agent_path = agent.resolved_config_path();
+    let quota = Some(match agent.kind {
+        AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
+        AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
+    });
 
     // Plugins: each runs as a subprocess with `--period` passed through.
     let plugin_panels = config
@@ -983,6 +986,7 @@ fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
     div()
         .flex()
         .flex_row()
+        .w_full()
         .items_start()
         .gap_2()
         .px_3()
@@ -1000,6 +1004,8 @@ fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
+                .min_w_0()
                 .gap_1()
                 .child(
                     div()

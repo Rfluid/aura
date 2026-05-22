@@ -6,9 +6,11 @@
 //! fails, callers can fall back to local counts derived from JSONL data.
 
 mod api;
+mod codex;
 mod oauth;
 
 pub use api::{QuotaApi, QuotaSource};
+pub use codex::CodexQuota;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
