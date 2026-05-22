@@ -13,11 +13,23 @@ gpui                = "0.2"
 resvg               = { version = "0.47", default-features = false }
 tiny-skia           = "0.12"
 
-# `tray-icon`'s `gtk` feature is gated to Linux/BSD; on macOS / Windows the
-# crate uses AppKit / Win32 backends and the feature is a no-op. Split the
-# spec so we don't pull GTK off the registry on non-Linux hosts.
+# Tray backend split by OS:
+#
+# * Linux/BSD use `ksni`, a direct StatusNotifierItem implementation.
+#   Plasma / GNOME / other desktops call `Activate()` over D-Bus on a
+#   primary-click, which gives us the wifi/volume single-click UX that
+#   libayatana-appindicator (via tray-icon's `gtk` feature) refuses to
+#   surface. ksni also runs its own D-Bus event loop, so we drop the
+#   dedicated GTK thread the tray-icon backend required.
+#
+# * macOS / Windows keep using `tray-icon`, whose AppKit / Win32 backends
+#   handle clicks natively.
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
-tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
+# ksni runs its D-Bus event loop on its own thread and we drain events
+# with `try_recv`. `blocking` enables the synchronous `spawn()` entry
+# point; `async-io` is the smol-style backend it uses under the hood
+# (lighter than the default `tokio` feature).
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 
 [target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
