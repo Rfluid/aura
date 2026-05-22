@@ -113,25 +113,27 @@ impl PluginRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
     use std::io::Write;
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     /// Build a small shell-script "plugin" in a temp dir.
+    #[cfg(unix)]
     fn write_script(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
         let path = dir.join("fake-plugin.sh");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "#!/bin/sh").unwrap();
         f.write_all(body.as_bytes()).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).unwrap();
-        }
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
         path
     }
 
+    #[cfg(unix)]
     fn cfg(cmd: &std::path::Path) -> PluginConfig {
         PluginConfig {
             name: "Test".to_string(),
@@ -141,6 +143,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn runs_legacy_plugin_and_wraps_into_default_section() {
         let dir = tempdir().unwrap();
@@ -168,6 +171,7 @@ EOF
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn runs_section_plugin_directly() {
         let dir = tempdir().unwrap();
@@ -201,6 +205,7 @@ EOF
         assert_eq!(panel.title, "Missing");
     }
 
+    #[cfg(unix)]
     #[test]
     fn returns_error_panel_on_timeout() {
         let dir = tempdir().unwrap();
@@ -211,6 +216,7 @@ EOF
         assert!(panel.error.as_deref().unwrap().contains("timed out"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn returns_error_panel_on_bad_json() {
         let dir = tempdir().unwrap();
@@ -225,6 +231,7 @@ EOF
             .contains("invalid plugin JSON"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn returns_error_panel_on_nonzero_exit() {
         let dir = tempdir().unwrap();
