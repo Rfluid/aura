@@ -35,18 +35,29 @@ impl AgentConfig {
         match &self.config_path {
             Some(p) => expand_tilde(p),
             None => match self.kind {
-                AgentKind::ClaudeCode => dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("/"))
-                    .join(".claude"),
-                AgentKind::Codex => dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("/"))
-                    .join(".codex"),
-                AgentKind::Gemini => dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("/"))
-                    .join(".gemini"),
+                AgentKind::ClaudeCode => home_dir().join(".claude"),
+                AgentKind::Codex => home_dir().join(".codex"),
+                AgentKind::Gemini => home_dir().join(".gemini"),
             },
         }
     }
+}
+
+/// Resolve the user's home directory.
+///
+/// Prefers `HOME` (and `USERPROFILE` on Windows) over `dirs::home_dir()` so
+/// tests can redirect agent detection at a tempdir. In production this
+/// matches `dirs::home_dir()` on every platform we ship: `HOME` is always set
+/// on Unix, and `USERPROFILE` mirrors `FOLDERID_Profile` on Windows.
+fn home_dir() -> PathBuf {
+    if let Some(h) = std::env::var_os("HOME") {
+        return PathBuf::from(h);
+    }
+    #[cfg(windows)]
+    if let Some(h) = std::env::var_os("USERPROFILE") {
+        return PathBuf::from(h);
+    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
@@ -294,11 +305,9 @@ pub fn parse_hex_color(s: &str) -> Option<u32> {
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/"))
-            .join(rest)
+        home_dir().join(rest)
     } else if path == "~" {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+        home_dir()
     } else {
         PathBuf::from(path)
     }
