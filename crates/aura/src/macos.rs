@@ -5,8 +5,8 @@
 //! out of the Dock. We re-set the policy from the main thread after the
 //! GPUI app has activated.
 
-use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_foundation::MainThreadMarker;
 
 /// Switch the running NSApplication to "accessory" — menu-bar only, no
 /// Dock icon, no app switcher entry. Must be called from the main thread

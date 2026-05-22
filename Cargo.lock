@@ -464,6 +464,7 @@ dependencies = [
  "gpui",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
  "resvg 0.47.0",
  "tiny-skia 0.12.0",
  "tray-icon",

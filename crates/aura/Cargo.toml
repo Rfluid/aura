@@ -26,5 +26,6 @@ tray-icon = { version = "0.24", default-features = false }
 # bar without occupying a Dock slot. GPUI hard-codes `Regular` at startup, so
 # we override it ourselves after launch via `objc2-app-kit`.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2          = "0.5"
-objc2-app-kit  = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2            = "0.5"
+objc2-foundation = "0.2"
+objc2-app-kit    = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
