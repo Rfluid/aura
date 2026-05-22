@@ -151,6 +151,16 @@ install -m 755 "$STAGING_DIR/aura"            "$BIN_DIR/aura"
 install -m 755 "$STAGING_DIR/aura-plugin-rtk" "$BIN_DIR/aura-plugin-rtk"
 echo "▸ Installed binaries to $BIN_DIR"
 
+# ── Detect agents and seed/merge config ──────────────────────────────────────
+# Runs before autostart so the service picks up the populated config on its
+# first launch. Failure here is non-fatal: AppConfig::load() will write a
+# default config on first app launch as a fallback.
+
+echo "▸ Configuring agents…"
+if ! "$BIN_DIR/aura" setup-config; then
+    echo "warning: 'aura setup-config' failed; defaults will be written on first launch" >&2
+fi
+
 # ── OS-specific autostart ─────────────────────────────────────────────────────
 
 case "$OS" in

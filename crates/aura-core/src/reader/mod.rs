@@ -2,6 +2,8 @@ pub mod claude_code;
 pub mod codex;
 pub(crate) mod codex_scan;
 mod dates;
+pub mod gemini;
+pub(crate) mod gemini_scan;
 mod incremental;
 pub(crate) mod scan;
 mod stats_cache;
@@ -9,6 +11,7 @@ mod watcher;
 
 pub use claude_code::ClaudeCodeReader;
 pub use codex::CodexReader;
+pub use gemini::GeminiReader;
 pub use incremental::read_jsonl_since;
 pub use watcher::ProjectsWatcher;
 
@@ -20,6 +23,7 @@ pub fn make_reader(agent: &AgentConfig) -> Box<dyn AgentReader> {
     match agent.kind {
         AgentKind::ClaudeCode => Box::new(ClaudeCodeReader::new(path)),
         AgentKind::Codex => Box::new(CodexReader::new(path)),
+        AgentKind::Gemini => Box::new(GeminiReader::new(path)),
     }
 }
 

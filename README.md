@@ -38,7 +38,7 @@ Modern development workflows run on AI agents. But usage is invisible until the 
 
 ## Features
 
-- **Multi-agent support** — Claude Code and Codex out of the box; custom command agents on the roadmap
+- **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap
 - **Agent profiles** — configure multiple instances of the same agent (e.g., personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin; ships with the RTK Gains plugin
 - **RTK Gains plugin** — surfaces token savings from the [RTK](https://github.com/rtk) optimizer directly alongside your usage stats
@@ -80,6 +80,10 @@ config_path = "~/.claude-enterprise"
 [[agents]]
 name = "Codex"
 kind = "codex"
+
+[[agents]]
+name = "Gemini"
+kind = "gemini"
 ```
 
 ## Roadmap

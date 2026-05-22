@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,9 @@ impl AgentConfig {
                 AgentKind::Codex => dirs::home_dir()
                     .unwrap_or_else(|| PathBuf::from("/"))
                     .join(".codex"),
+                AgentKind::Gemini => dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/"))
+                    .join(".gemini"),
             },
         }
     }
@@ -130,26 +134,7 @@ impl AppConfig {
     /// Sensible out-of-the-box config: one Claude Code profile + RTK plugin.
     pub fn default_config() -> Self {
         Self {
-            agents: vec![
-                AgentConfig {
-                    name: "Claude Code (Personal)".to_string(),
-                    kind: AgentKind::ClaudeCode,
-                    config_path: None,
-                    color: None,
-                },
-                AgentConfig {
-                    name: "Claude Code (Enterprise)".to_string(),
-                    kind: AgentKind::ClaudeCode,
-                    config_path: Some("~/.claude-enterprise".to_string()),
-                    color: None,
-                },
-                AgentConfig {
-                    name: "Codex".to_string(),
-                    kind: AgentKind::Codex,
-                    config_path: None,
-                    color: None,
-                },
-            ],
+            agents: known_agent_profiles(),
             plugins: vec![PluginConfig {
                 name: "RTK Gains".to_string(),
                 command: "aura-plugin-rtk".to_string(),
@@ -159,6 +144,134 @@ impl AppConfig {
             display: DisplayConfig::default(),
         }
     }
+
+    /// Append `additions` to `self.agents`, skipping any whose
+    /// `(kind, resolved_config_path)` is already present. Returns the number
+    /// of agents actually appended.
+    pub fn merge_agents(&mut self, additions: Vec<AgentConfig>) -> usize {
+        let mut added = 0;
+        for candidate in additions {
+            let candidate_path = candidate.resolved_config_path();
+            let already = self
+                .agents
+                .iter()
+                .any(|a| a.kind == candidate.kind && a.resolved_config_path() == candidate_path);
+            if !already {
+                self.agents.push(candidate);
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Detect installed agents and either create a fresh config containing
+    /// only the detected ones (plus the default plugins/display) or merge any
+    /// newly-detected agents into an existing config without disturbing the
+    /// user's other edits. Returns a report describing what changed.
+    pub fn run_setup(path: &Path) -> Result<SetupReport> {
+        let known = known_agent_profiles();
+        let detected_keys: Vec<(AgentKind, PathBuf)> = known
+            .iter()
+            .filter(|a| a.resolved_config_path().is_dir())
+            .map(|a| (a.kind, a.resolved_config_path()))
+            .collect();
+
+        let (mut config, created) = if path.exists() {
+            let content = fs::read_to_string(path)
+                .with_context(|| format!("read config file {}", path.display()))?;
+            let cfg: AppConfig = toml::from_str(&content)
+                .with_context(|| format!("parse config file {}", path.display()))?;
+            (cfg, false)
+        } else {
+            // Fresh config: only the detected agents get added below.
+            let mut cfg = Self::default_config();
+            cfg.agents.clear();
+            (cfg, true)
+        };
+
+        let mut report_entries = Vec::with_capacity(known.len());
+        for profile in known {
+            let key = (profile.kind, profile.resolved_config_path());
+            if !detected_keys.contains(&key) {
+                report_entries.push((profile, AgentStatus::NotInstalled));
+                continue;
+            }
+            let already = config
+                .agents
+                .iter()
+                .any(|a| a.kind == key.0 && a.resolved_config_path() == key.1);
+            if already {
+                report_entries.push((profile, AgentStatus::AlreadyConfigured));
+            } else {
+                config.agents.push(profile.clone());
+                report_entries.push((profile, AgentStatus::Added));
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create config dir {}", parent.display()))?;
+        }
+        let toml = toml::to_string_pretty(&config).context("serialize config")?;
+        fs::write(path, toml).with_context(|| format!("write config to {}", path.display()))?;
+
+        Ok(SetupReport {
+            created,
+            agents: report_entries,
+        })
+    }
+}
+
+// ── Setup ────────────────────────────────────────────────────────────────────
+
+/// Agent profiles Aura knows how to detect. Each entry is the canonical
+/// `AgentConfig` Aura will add to a user's config when the matching agent is
+/// found on disk.
+pub fn known_agent_profiles() -> Vec<AgentConfig> {
+    vec![
+        AgentConfig {
+            name: "Claude Code".to_string(),
+            kind: AgentKind::ClaudeCode,
+            config_path: None,
+            color: None,
+        },
+        AgentConfig {
+            name: "Claude Code (Enterprise)".to_string(),
+            kind: AgentKind::ClaudeCode,
+            config_path: Some("~/.claude-enterprise".to_string()),
+            color: None,
+        },
+        AgentConfig {
+            name: "Codex".to_string(),
+            kind: AgentKind::Codex,
+            config_path: None,
+            color: None,
+        },
+        AgentConfig {
+            name: "Gemini".to_string(),
+            kind: AgentKind::Gemini,
+            config_path: None,
+            color: None,
+        },
+    ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Detected on disk and newly written into the config.
+    Added,
+    /// Detected on disk; an equivalent entry was already in the config.
+    AlreadyConfigured,
+    /// Not detected on disk; nothing changed.
+    NotInstalled,
+}
+
+#[derive(Debug)]
+pub struct SetupReport {
+    /// True when the config file did not exist and was just created.
+    pub created: bool,
+    /// One entry per known agent profile, in `known_agent_profiles()` order.
+    pub agents: Vec<(AgentConfig, AgentStatus)>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -222,10 +335,202 @@ mod tests {
 
         // File should now exist.
         assert!(path.exists());
-        // Should have the three default profiles.
-        assert_eq!(cfg.agents.len(), 3);
-        assert_eq!(cfg.agents[0].name, "Claude Code (Personal)");
+        // Should have the four default profiles.
+        assert_eq!(cfg.agents.len(), 4);
+        assert_eq!(cfg.agents[0].kind, AgentKind::ClaudeCode);
         assert_eq!(cfg.agents[2].kind, AgentKind::Codex);
+        assert_eq!(cfg.agents[3].kind, AgentKind::Gemini);
+    }
+
+    #[test]
+    fn merge_agents_skips_existing_by_kind_and_path() {
+        let mut cfg = AppConfig {
+            agents: vec![AgentConfig {
+                name: "User-renamed Claude".to_string(),
+                kind: AgentKind::ClaudeCode,
+                config_path: None, // resolves to ~/.claude
+                color: Some("#abcdef".to_string()),
+            }],
+            plugins: vec![],
+            display: DisplayConfig::default(),
+        };
+
+        let added = cfg.merge_agents(vec![
+            AgentConfig {
+                name: "Claude Code".to_string(),
+                kind: AgentKind::ClaudeCode,
+                config_path: None,
+                color: None,
+            },
+            AgentConfig {
+                name: "Codex".to_string(),
+                kind: AgentKind::Codex,
+                config_path: None,
+                color: None,
+            },
+        ]);
+
+        // Claude Code was skipped (same kind + resolved path), Codex was added.
+        assert_eq!(added, 1);
+        assert_eq!(cfg.agents.len(), 2);
+        // User's customization is preserved.
+        assert_eq!(cfg.agents[0].name, "User-renamed Claude");
+        assert_eq!(cfg.agents[0].color.as_deref(), Some("#abcdef"));
+        assert_eq!(cfg.agents[1].kind, AgentKind::Codex);
+    }
+
+    #[test]
+    fn merge_agents_treats_distinct_paths_as_distinct() {
+        let mut cfg = AppConfig {
+            agents: vec![AgentConfig {
+                name: "Claude Code".to_string(),
+                kind: AgentKind::ClaudeCode,
+                config_path: None,
+                color: None,
+            }],
+            plugins: vec![],
+            display: DisplayConfig::default(),
+        };
+
+        let added = cfg.merge_agents(vec![AgentConfig {
+            name: "Claude Code (Enterprise)".to_string(),
+            kind: AgentKind::ClaudeCode,
+            config_path: Some("~/.claude-enterprise".to_string()),
+            color: None,
+        }]);
+
+        assert_eq!(added, 1);
+        assert_eq!(cfg.agents.len(), 2);
+    }
+
+    #[test]
+    fn run_setup_creates_file_with_only_detected_agents() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Point HOME at the tempdir so detection is deterministic.
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        // No ~/.claude-enterprise, no ~/.gemini.
+
+        let _guard = HomeGuard::set(&home);
+
+        let report = AppConfig::run_setup(&config_path).unwrap();
+        assert!(report.created);
+
+        let detected: Vec<_> = report
+            .agents
+            .iter()
+            .filter(|(_, s)| *s == AgentStatus::Added)
+            .map(|(a, _)| a.kind)
+            .collect();
+        assert_eq!(detected, vec![AgentKind::ClaudeCode, AgentKind::Codex]);
+
+        let cfg = AppConfig::load(&config_path).unwrap();
+        assert_eq!(cfg.agents.len(), 2);
+        assert_eq!(cfg.plugins.len(), 1); // RTK still seeded.
+    }
+
+    #[test]
+    fn run_setup_merges_into_existing_config_preserving_edits() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let home = dir.path().join("home");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::create_dir_all(home.join(".gemini")).unwrap();
+
+        // Pre-seed an existing config that only has Claude Code (renamed).
+        fs::write(
+            &config_path,
+            r##"
+[[agents]]
+name = "Work Claude"
+kind = "claude-code"
+color = "#123456"
+
+[[plugins]]
+name = "RTK Gains"
+command = "aura-plugin-rtk"
+"##,
+        )
+        .unwrap();
+
+        let _guard = HomeGuard::set(&home);
+
+        let report = AppConfig::run_setup(&config_path).unwrap();
+        assert!(!report.created);
+
+        let cfg = AppConfig::load(&config_path).unwrap();
+        // Original entry preserved.
+        assert_eq!(cfg.agents[0].name, "Work Claude");
+        assert_eq!(cfg.agents[0].color.as_deref(), Some("#123456"));
+        // Codex + Gemini appended.
+        let kinds: Vec<_> = cfg.agents.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::Gemini]
+        );
+        // Plugins untouched.
+        assert_eq!(cfg.plugins.len(), 1);
+        assert_eq!(cfg.plugins[0].name, "RTK Gains");
+    }
+
+    /// Set `HOME` (and `USERPROFILE` on Windows) for the duration of a test
+    /// and restore the previous value on drop. Tests that touch this must run
+    /// serially — Rust's default test runner already serializes per-test
+    /// execution within a single binary by default for `cargo test --`, but
+    /// these tests use `--test-threads=1` semantics implicitly via the
+    /// process-wide env var; we serialize with a mutex to be safe.
+    struct HomeGuard {
+        prev_home: Option<std::ffi::OsString>,
+        #[cfg(windows)]
+        prev_userprofile: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HomeGuard {
+        fn set(home: &Path) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_home = std::env::var_os("HOME");
+            // SAFETY: tests are serialized via LOCK; no other thread reads HOME concurrently.
+            unsafe { std::env::set_var("HOME", home) };
+            #[cfg(windows)]
+            let prev_userprofile = std::env::var_os("USERPROFILE");
+            #[cfg(windows)]
+            unsafe {
+                std::env::set_var("USERPROFILE", home)
+            };
+            Self {
+                prev_home,
+                #[cfg(windows)]
+                prev_userprofile,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: still holding LOCK via _lock.
+            unsafe {
+                match &self.prev_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+            #[cfg(windows)]
+            unsafe {
+                match &self.prev_userprofile {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
     }
 
     #[test]

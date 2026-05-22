@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use aura_core::{
     config::{parse_hex_color, AgentConfig, AgentKind, AppConfig, PluginConfig},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
-    quota::{CodexQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
+    quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
 };
@@ -25,6 +25,7 @@ const COLOR_WARNING: u32 = 0xe0a96d;
 // Per-agent brand tints used for the icon next to each profile name.
 const COLOR_CLAUDE: u32 = 0xd97757;
 const COLOR_OPENAI: u32 = 0xffffff;
+const COLOR_GEMINI: u32 = 0x4285f4;
 
 /// Maximum height of the body region in pixels. The window itself is 640px
 /// tall and the header / selector / period / tab rows together use ~200px,
@@ -323,6 +324,7 @@ fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> R
     let quota = Some(match agent.kind {
         AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
         AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
+        AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
     });
 
     // Plugins: each runs as a subprocess with `--period` passed through.
@@ -1024,8 +1026,6 @@ fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
 }
 
 fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
-    // Percent used: either real (from API) or unknown (fallback).
-    let pct = w.used_percentage.unwrap_or(0.0).clamp(0.0, 100.0);
     let pct_label = match w.used_percentage {
         Some(p) => format!("{:.0}% used", p),
         None => match w.used_tokens {
@@ -1034,14 +1034,9 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
         },
     };
 
-    let resets_label = w
-        .resets_at
-        .map(format_reset)
-        .unwrap_or_else(|| "—".to_string());
+    let resets_label = w.resets_at.map(format_reset);
 
-    let bar_fraction = (pct / 100.0) as f32;
-
-    div()
+    let mut row = div()
         .flex()
         .flex_col()
         .gap_2()
@@ -1055,9 +1050,14 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
             div()
                 .text_color(rgb(COLOR_TEXT))
                 .child(SharedString::from(w.label.clone())),
-        )
-        .child(
-            // Bar
+        );
+
+    // The progress bar is meaningful only when we have a real percentage. For
+    // fallback windows (local token counts), show the count without an empty
+    // bar that reads as broken UI.
+    row = if let Some(pct) = w.used_percentage {
+        let bar_fraction = (pct.clamp(0.0, 100.0) / 100.0) as f32;
+        row.child(
             div()
                 .flex()
                 .flex_row()
@@ -1084,12 +1084,24 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
                         .child(SharedString::from(pct_label)),
                 ),
         )
-        .child(
+    } else {
+        row.child(
+            div()
+                .text_color(rgb(COLOR_TEXT))
+                .child(SharedString::from(pct_label)),
+        )
+    };
+
+    if let Some(label) = resets_label {
+        row = row.child(
             div()
                 .text_xs()
                 .text_color(rgb(COLOR_TEXT_DIM))
-                .child(SharedString::from(format!("Resets {}", resets_label))),
-        )
+                .child(SharedString::from(format!("Resets {}", label))),
+        );
+    }
+
+    row
 }
 
 /// Format a UTC instant as a friendly local-time string, respecting the OS
@@ -1690,6 +1702,7 @@ fn agent_icon(agent: &AgentConfig) -> impl IntoElement {
     let path = match agent.kind {
         AgentKind::ClaudeCode => "icons/claude.svg",
         AgentKind::Codex => "icons/openai.svg",
+        AgentKind::Gemini => "icons/gemini.svg",
     };
     svg()
         .path(path)
@@ -1703,6 +1716,7 @@ pub fn agent_kind_default_color(kind: AgentKind) -> u32 {
     match kind {
         AgentKind::ClaudeCode => COLOR_CLAUDE,
         AgentKind::Codex => COLOR_OPENAI,
+        AgentKind::Gemini => COLOR_GEMINI,
     }
 }
 

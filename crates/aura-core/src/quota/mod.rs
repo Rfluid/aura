@@ -7,10 +7,12 @@
 
 mod api;
 mod codex;
+mod gemini;
 mod oauth;
 
 pub use api::{QuotaApi, QuotaSource};
 pub use codex::CodexQuota;
+pub use gemini::GeminiQuota;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

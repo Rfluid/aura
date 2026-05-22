@@ -20,6 +20,7 @@ icon_assets! {
     (AURA,             "aura.svg"),
     (CLAUDE,           "claude.svg"),
     (OPENAI,           "openai.svg"),
+    (GEMINI,           "gemini.svg"),
     (DEFAULT,          "default.svg"),
     (CLOSE,            "close.svg"),
     (ROTATE_CW,        "rotate_cw.svg"),

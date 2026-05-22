@@ -158,6 +158,17 @@ Copy-Item -Force (Join-Path $StageDir 'aura.exe')            (Join-Path $Install
 Copy-Item -Force (Join-Path $StageDir 'aura-plugin-rtk.exe') (Join-Path $InstallDir 'aura-plugin-rtk.exe')
 Write-Host "▸ Installed binaries to $InstallDir"
 
+# ── Detect agents and seed/merge config ──────────────────────────────────────
+# Runs before autostart so the app picks up the populated config on its first
+# launch. Failure is non-fatal — AppConfig::load() writes a default config on
+# first launch as a fallback.
+
+Write-Host "▸ Configuring agents…"
+& (Join-Path $InstallDir 'aura.exe') setup-config
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "'aura setup-config' failed; defaults will be written on first launch"
+}
+
 # ── Autostart shortcut ────────────────────────────────────────────────────────
 
 $wsh = New-Object -ComObject WScript.Shell
