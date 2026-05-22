@@ -123,39 +123,32 @@ latest_release_tag() {
     git tag --list "$TAG_PATTERN" --sort=-version:refname | head -n1
 }
 
-manifest_glob_args() {
-    local d
-    for d in "${CRATE_DIRS[@]}"; do
-        printf '%s/*/Cargo.toml\n' "$d"
-    done
-}
-
 crate_manifest_for_name() {
     local crate_name="$1"
     local manifest
-    local -a globs=()
-    while IFS= read -r g; do
-        globs+=("$g")
-    done < <(manifest_glob_args)
-
-    manifest="$(rg -l "^name = \"$crate_name\"$" "${globs[@]}" 2>/dev/null | head -n1 || true)"
-    [[ -n "$manifest" ]] || die "could not find Cargo.toml for crate: $crate_name"
-    printf '%s\n' "$manifest"
+    while IFS= read -r manifest; do
+        [[ -n "$manifest" ]] || continue
+        if [[ "$(crate_name_from_manifest "$manifest")" == "$crate_name" ]]; then
+            printf '%s\n' "$manifest"
+            return 0
+        fi
+    done < <(list_workspace_crate_manifests)
+    die "could not find Cargo.toml for crate: $crate_name"
 }
 
 crate_name_from_manifest() {
-    sed -n 's/^name = "\(.*\)"$/\1/p' "$1" | head -n1
+    sed -nE 's/^name[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*$/\1/p' "$1" | head -n1
 }
 
 crate_version_from_manifest() {
-    sed -n 's/^version = "\(.*\)"$/\1/p' "$1" | head -n1
+    sed -nE 's/^version[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*$/\1/p' "$1" | head -n1
 }
 
 set_manifest_version() {
     local manifest="$1"
     local new_version="$2"
 
-    perl -0pi -e 's/^version = "[^"]*"/version = "'"$new_version"'"/m' "$manifest"
+    perl -0pi -e 's/^(version\s*=\s*")[^"]*(")/$1'"$new_version"'$2/m' "$manifest"
 }
 
 # Syncs the version inside the [workspace.dependencies] inline-table for a
