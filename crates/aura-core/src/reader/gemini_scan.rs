@@ -12,8 +12,8 @@
 ///     within each session file.
 ///   - The `tokens.input` value already includes the cached portion, mirroring
 ///     Codex semantics. We split it the same way:
-///       input_tokens = input - cached
-///       cache_read   = cached
+///     input_tokens = input - cached
+///     cache_read   = cached
 ///   - `tokens.thoughts` represents thinking/reasoning tokens. We add them to
 ///     `output_tokens` so the snapshot reports the full assistant-side cost,
 ///     matching how Codex folds reasoning into its output count.
