@@ -11,38 +11,97 @@
 
 <hr/>
 
-Aura is a lightweight Rust desktop widget that lives in your taskbar and gives you instant visibility into AI agent usage: tokens consumed, estimated costs, and custom optimizer metrics via a plugin system. Switch between agent profiles (Claude Code Personal, Enterprise, Codex, and more) with one click.
+Aura is a lightweight Rust **system-tray indicator** — sits next to wifi
+and volume — that gives you instant visibility into AI agent usage: tokens
+consumed, subscription quota windows, estimated costs, and custom
+optimizer metrics via a plugin system. Click the icon, see your usage,
+click again to dismiss.
+
+## At a glance
+
+|  |  |
+| --- | --- |
+| **What it is** | A persistent tray icon that opens a small modal showing AI agent usage. |
+| **Agents** | Claude Code · Codex · Gemini (multiple profiles per agent). |
+| **Where data comes from** | Local JSONL session logs (`~/.claude`, `~/.codex`, `~/.gemini`) and provider quota APIs (Claude `/usage` endpoint, OAuth-authenticated). |
+| **What's shown** | Subscription quota windows · all-time / 7d / 30d session totals · per-model breakdown · plugin panels. |
+| **Where it runs** | Linux (KDE Plasma, GNOME, sway, …) · macOS · Windows. Autostarts at login. |
+| **Footprint** | ~30 MB on disk · ~85 MB RSS while idle · one D-Bus / WM_NOTIFY tray slot. |
+| **Privacy** | Zero telemetry. Reads only your own local agent state and Claude's per-user usage API. |
+
+## Screenshots
+
+<!--
+Add real screenshots to assets/screenshots/. The captions below double as
+shot guidance — capture exactly what each one describes. Filenames are
+referenced from the <img> src so you can drop PNGs in without touching
+the README.
+-->
+
+<p align="center">
+  <img src="assets/screenshots/tray-icon.png"
+       alt="Aura tray icon sitting in the KDE Plasma system tray, between the wifi and volume icons"
+       width="320"/>
+  <br/><em>The Aura indicator lives next to wifi / volume — left-click to open.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/modal-quota.png"
+       alt="Aura modal open on the Quota tab: Claude max subscription, Current session 6% used, Current week (all models) 69% used, Current week (Sonnet only) 8% used, each with a progress bar and a 'Resets …' timestamp"
+       width="540"/>
+  <br/><em>Quota tab — live subscription windows from Claude's API.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/modal-summary.png"
+       alt="Aura modal on the Summary tab showing total tokens, sessions, longest session, active days, peak hour, current streak, longest streak"
+       width="540"/>
+  <br/><em>Summary tab — at-a-glance usage stats for the selected period.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/modal-models.png"
+       alt="Aura modal on the Models tab showing per-model token breakdowns with model names and percentages"
+       width="540"/>
+  <br/><em>Models tab — which models actually ate your tokens.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/agent-selector.png"
+       alt="Top of the Aura modal showing agent profile pills: Peh (Claude), Personal, Codex, Gemini, with the active profile highlighted"
+       width="540"/>
+  <br/><em>One click to switch agent profiles — last selection is persisted.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/right-click-menu.png"
+       alt="Right-click context menu on the Aura tray icon with two items: Show Aura, Quit Aura"
+       width="240"/>
+  <br/><em>Right-click for explicit Show / Quit.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/modal-plugin-rtk.png"
+       alt="Aura modal on the Plugins tab showing the RTK Gains plugin panel with tokens-saved figures"
+       width="540"/>
+  <br/><em>RTK Gains plugin tab — third-party metrics rendered inline.</em>
+</p>
 
 ## Why Aura?
 
-Modern development workflows run on AI agents. But usage is invisible until the bill arrives. Aura surfaces that data where you already live — your taskbar — without switching context, opening a browser, or running a CLI command.
-
-```
-┌────────────────────────────────────────────────────┐
-│  ◉ Aura                    Claude (Personal)  ▾    │
-├────────────────────────────────────────────────────┤
-│  All time · Last 7 days · Last 30 days             │
-├────────────────────────────────────────────────────┤
-│  [ Overview ]  [ Models ]                          │
-│                                                    │
-│  Favorite model:  Claude Opus 4.7                  │
-│  Total tokens:    2,847,391                        │
-│                                                    │
-│  Sessions:      94     Longest:  2h 15m            │
-│  Active days:   42/90  Peak hr:  15:00–16:00       │
-│  Cur. streak:   3 days Longest:  12 days           │
-├────────────────────────────────────────────────────┤
-│  ⚡ RTK Gains — saved 1.2M tokens today            │
-└────────────────────────────────────────────────────┘
-```
+Modern development workflows run on AI agents. But usage is invisible
+until the bill arrives. Aura surfaces that data where you already live —
+your system tray — without switching context, opening a browser, or
+running a CLI command.
 
 ## Features
 
-- **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap
-- **Agent profiles** — configure multiple instances of the same agent (e.g., personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions
-- **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin; ships with the RTK Gains plugin
-- **RTK Gains plugin** — surfaces token savings from the [RTK](https://github.com/rtk) optimizer directly alongside your usage stats
-- **Minimal footprint** — a small modal anchored near your taskbar widget; appears on click, disappears on blur
+- **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap.
+- **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
+- **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin; ships with the RTK Gains plugin.
+- **RTK Gains plugin** — surfaces token savings from the [RTK](https://github.com/rtk) optimizer directly alongside your usage stats.
+- **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit.
+- **Tray-native** — uses [`ksni`](https://github.com/iovxw/ksni) on Linux for direct StatusNotifierItem (Plasma / GNOME / sway / etc.) and `tray-icon` on macOS / Windows for AppKit / Win32 menu-bar integration.
 
 ## Plugins
 
@@ -98,9 +157,10 @@ moment you log in:
 | **macOS**   | `Aura.app` in `/Applications` + a launchd LaunchAgent (loaded now + at every login) |
 | **Windows** | `aura.exe` in `%LOCALAPPDATA%\Programs\Aura` + a Startup-folder shortcut (autostart) + a Start Menu shortcut |
 
-Click the tray icon to open Aura's modal; click it again to close. There
-is intentionally no "Quit" option — to actually stop the process, use
-`just stop` (Linux/macOS), `just stop-windows`, or `systemctl --user stop aura`.
+**Left-click** the tray icon to open Aura's modal; left-click again to
+close. **Right-click** for an explicit menu with **Show Aura** and
+**Quit Aura**. `just stop` / `systemctl --user stop aura` (Linux) and
+`just stop-windows` (Windows) are equivalent CLI exits.
 
 Grab a prebuilt release archive (next section) or build from source with
 Cargo (Rust 1.80+).
@@ -306,18 +366,88 @@ $lnk.Save()
 | `just start-windows` / `just stop-windows`    | Same, for Windows                                                             |
 | `just uninstall` / `just uninstall-windows`   | Remove binaries + autostart artifacts + launcher (keeps config & state)       |
 
-```powershell
-# Windows — Startup-folder shortcut (loads at sign-in, minimized to tray)
-$dst = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
-$wsh = New-Object -ComObject WScript.Shell
-$lnk = $wsh.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'))
-$lnk.TargetPath       = "$dst\aura.exe"
-$lnk.WorkingDirectory = $dst
-$lnk.WindowStyle      = 7
-$lnk.Save()
-```
+`just uninstall` also clears the KDE window rule and any opt-in
+LaunchAgent / Startup-folder shortcut — you don't have to remember
+which install path you took.
 
-`just uninstall` cleans these up too — you don't have to remember which path you took.
+## Compatibility
+
+The installer should work end-to-end on every reasonably modern desktop
+environment that supports StatusNotifierItem (Linux), AppKit (macOS), or
+Shell_NotifyIcon (Windows). Where the table says "untested" it means
+the code path is the same as a tested case — please open an issue if
+anything goes wrong, with the desktop env / compositor version.
+
+| Platform     | Desktop / Compositor | Tray protocol         | Status                                  |
+| ------------ | -------------------- | --------------------- | --------------------------------------- |
+| Linux        | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni) | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive |
+| Linux        | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni) | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right |
+| Linux        | KDE Plasma 5                  | StatusNotifierItem (ksni) | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ |
+| Linux        | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear |
+| Linux        | sway / Hyprland / wlroots     | StatusNotifierItem    | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.) |
+| Linux        | XFCE / Cinnamon / MATE        | StatusNotifierItem    | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work |
+| **macOS 12+** | —                            | AppKit menu-bar item  | ⚠️ Untested in CI — uses `tray-icon`'s native AppKit backend, single-click activation works natively |
+| **Windows 10/11** | —                       | Shell_NotifyIcon      | ⚠️ Untested in CI — uses `tray-icon`'s native Win32 backend, single-click activation works natively |
+
+Pull requests confirming or fixing any of the ⚠️ rows are welcome — see
+[Under the hood](#under-the-hood) for the relevant code paths.
+
+## Under the hood
+
+A few decisions worth knowing about if you're contributing or debugging:
+
+### Linux tray backend: ksni, not libayatana-appindicator
+
+We use [`ksni`](https://github.com/iovxw/ksni) — a direct
+StatusNotifierItem D-Bus implementation — instead of the more common
+`tray-icon` crate with its `gtk` (libayatana-appindicator) feature.
+AppIndicator collapses every click into "show context menu" and forces a
+GTK main loop on its own thread; ksni surfaces `Activate()` as a callback
+(single click → action) and runs its own lightweight D-Bus loop. The
+single-click open / close UX you see is only possible because of that.
+
+### The keepalive window
+
+GPUI 0.2's Wayland event loop exits the moment `state.windows.is_empty()`
+([source](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/platform/linux/wayland/client.rs)).
+If aura only had the modal, closing it would kill the tray process. So
+we open a tiny `aura-keepalive` window on startup and never close it.
+KDE renders it as a real toplevel (Wayland's `show: false` is ignored),
+so:
+
+- it opens off-screen at `(-9999, -9999)` and is minimised immediately;
+- it registers `on_window_should_close → false` so the WM's "close
+  window" action becomes a no-op (the tray can't be killed by a stray
+  click in the task manager);
+- `install.sh` writes a KWin rule (`~/.config/kwinrulesrc`) that forces
+  Skip Taskbar / Skip Pager / Skip Switcher on its `app_id`.
+
+On GNOME / sway / etc. the keepalive may still appear in the
+task-bar / overview. Patches to add equivalent rules per WM are
+welcome.
+
+### Modal placement on Wayland
+
+Wayland's `xdg_toplevel` protocol [forbids client-side
+positioning](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/xdg-shell/xdg-shell.xml)
+— the compositor decides where windows go. GPUI 0.2 always uses
+`xdg_toplevel` (never `xdg_popup`), so KWin / Mutter / sway ignore our
+requested origin and typically center the modal. On X11, Windows, and
+macOS, our requested bottom-right corner is honored natively.
+
+To pin the modal to a specific position on KDE / Wayland, add a window
+rule under **System Settings → Window Management → Window Rules** with
+**Window class** substring match `aura` and a forced **Position**.
+
+### Why we cap the modal height (and how)
+
+Some pages produce more content than fits in the initial 640 px modal.
+GPUI's auto-resize lets the window grow downward to fit — and would
+otherwise overlap a bottom taskbar. On KDE Plasma we parse
+`~/.config/plasmashellrc` to get the exact panel thickness and cap the
+resize at `display_bottom − thickness`. On everything else we use a
+120 px blind reserve, which clears all common taskbar / Dock heights at
+a small cost in usable space.
 
 ## Roadmap
 
@@ -328,9 +458,10 @@ Shipped
 - [x] Gemini usage integration (`~/.gemini` session scan)
 - [x] Multi-profile config + persisted selection across sessions
 - [x] Plugin runner (subprocess + JSON IPC) and built-in RTK Gains plugin
-- [x] Linux support (systemd user service, GTK tray)
+- [x] Linux support (systemd user service · ksni StatusNotifierItem · KDE / GNOME / sway compatible)
 - [x] macOS support (Apple Silicon + Intel; menu-bar `Aura.app` + launchd autostart)
-- [x] Windows support (x86_64 + aarch64; tray app + Startup-folder autostart)
+- [x] Windows support (x86_64 + aarch64; Shell_NotifyIcon tray + Startup-folder autostart)
+- [x] Per-DE polish: auto-installed KWin rule on KDE to hide the keepalive surface
 
 Next up
 
