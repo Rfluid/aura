@@ -45,16 +45,17 @@ fix:
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-# Install Aura — dispatches to the platform-appropriate flow.
-# Linux:   binaries → ~/.local/bin + systemd user unit
-# macOS:   binaries → ~/.local/bin + Aura.app + launchd LaunchAgent
-# Windows: use `just install-windows` from PowerShell (bash flow does
-#          not apply; this recipe will hand off if invoked under MSYS).
+# Install Aura — tray-indicator-style (autostart by default). Dispatches
+# by host:
+# Linux:   binaries → ~/.local/bin + systemd user unit (enable --now) +
+#          XDG .desktop entry (app-menu discoverability)
+# macOS:   binaries → ~/.local/bin + Aura.app in /Applications + launchd
+#          LaunchAgent (loaded now + at every login)
+# Windows: use `just install-windows` from PowerShell — installs aura.exe
+#          + a Startup-folder shortcut (autostart) + a Start Menu shortcut.
 install:
     ./install.sh
 
-# Windows-only: run from PowerShell. Builds + installs to
-# %LOCALAPPDATA%\Programs\Aura and drops a Startup-folder shortcut.
 install-windows:
     powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 
@@ -70,11 +71,22 @@ uninstall:
     set -euo pipefail
     case "$(uname -s)" in
         Linux)
+            # Disable autostart, stop the running tray, then clear the
+            # binaries + launcher + systemd unit.
             systemctl --user disable --now aura 2>/dev/null || true
+            pkill -x aura 2>/dev/null || true
             rm -f ~/.local/bin/aura ~/.local/bin/aura-plugin-rtk
+            rm -f ~/.local/share/applications/aura.desktop
+            rm -f ~/.local/share/icons/hicolor/scalable/apps/aura.svg
             rm -f ~/.config/systemd/user/aura.service
+            command -v update-desktop-database >/dev/null 2>&1 && \
+                update-desktop-database ~/.local/share/applications >/dev/null 2>&1 || true
+            command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+                gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor >/dev/null 2>&1 || true
             ;;
         Darwin)
+            # Unload the LaunchAgent (stops the menu-bar tray) then remove
+            # the agent plist + Aura.app + bare binaries.
             launchctl bootout "gui/$(id -u)/com.aura.agent-usage" 2>/dev/null || true
             rm -f ~/Library/LaunchAgents/com.aura.agent-usage.plist
             rm -rf /Applications/Aura.app ~/Applications/Aura.app
@@ -89,25 +101,39 @@ uninstall:
             rm -f ~/.local/bin/aura ~/.local/bin/aura-plugin-rtk
             ;;
     esac
-    echo "✔ Removed binaries and service unit (config + state preserved)"
+    echo "✔ Removed binaries and launcher (config + state preserved)"
 
-# Windows-only uninstall: removes binaries + Startup shortcut.
+# Windows-only uninstall: removes binaries + Start Menu shortcut. Also
+# cleans up the legacy Startup-folder shortcut from older installs.
 uninstall-windows:
     powershell -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; \
         $dir = Join-Path $env:LOCALAPPDATA 'Programs\\Aura'; \
-        $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'; \
+        $startMenu = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\\Aura.lnk'; \
+        $startup   = Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'; \
         Get-Process aura -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
-        if (Test-Path $lnk) { Remove-Item $lnk }; \
+        foreach ($p in @($startMenu, $startup)) { if (Test-Path $p) { Remove-Item $p } }; \
         if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }; \
-        Write-Host '✔ Removed binaries and Startup shortcut (config + state preserved)'"
+        Write-Host '✔ Removed binaries and Start Menu shortcut (config + state preserved)'"
 
-# ── Service control (convenience wrappers) ────────────────────────────────────
+# ── Process control (convenience wrappers) ────────────────────────────────────
+#
+# Aura is a launcher-style tray app — these recipes operate on the running
+# process directly. If you opted into systemd / launchd autostart, use the
+# native tooling instead (systemctl --user … / launchctl …).
 
 start:
     #!/usr/bin/env bash
     case "$(uname -s)" in
-        Linux)  systemctl --user start aura ;;
-        Darwin) launchctl kickstart "gui/$(id -u)/com.aura.agent-usage" ;;
+        Linux)
+            # Detach from this shell so the tray icon survives the recipe exit.
+            nohup ~/.local/bin/aura >/dev/null 2>&1 &
+            disown $! 2>/dev/null || true
+            echo "▸ Aura started (PID $!)"
+            ;;
+        Darwin)
+            open -a Aura
+            echo "▸ Aura launched"
+            ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Use 'just start-windows' from PowerShell." >&2; exit 1 ;;
     esac
@@ -115,8 +141,8 @@ start:
 stop:
     #!/usr/bin/env bash
     case "$(uname -s)" in
-        Linux)  systemctl --user stop aura ;;
-        Darwin) launchctl kill TERM "gui/$(id -u)/com.aura.agent-usage" ;;
+        Linux)  pkill -x aura && echo "▸ Aura stopped" || echo "(aura not running)" ;;
+        Darwin) pkill -x aura && echo "▸ Aura stopped" || echo "(aura not running)" ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Use 'just stop-windows' from PowerShell." >&2; exit 1 ;;
     esac
@@ -124,19 +150,26 @@ stop:
 status:
     #!/usr/bin/env bash
     case "$(uname -s)" in
-        Linux)  systemctl --user status aura ;;
-        Darwin) launchctl print "gui/$(id -u)/com.aura.agent-usage" ;;
+        Linux|Darwin)
+            if pgrep -x aura >/dev/null; then
+                pgrep -x -l aura
+            else
+                echo "(aura not running)"
+            fi
+            ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Use 'just status-windows' from PowerShell." >&2; exit 1 ;;
     esac
 
+# Aura logs to stderr — when launched from the .desktop / Aura.app there is
+# no terminal capturing it. Run `aura` directly from a terminal to see logs.
 logs:
     #!/usr/bin/env bash
+    echo "Aura is a launcher-style tray app; there's no service log to tail."
+    echo "Run it from a terminal to see stderr:"
     case "$(uname -s)" in
-        Linux)  journalctl --user -u aura -f ;;
-        Darwin) tail -F /tmp/aura.out.log /tmp/aura.err.log ;;
-        MINGW*|MSYS*|CYGWIN*)
-            echo "Windows: Aura runs as a foreground tray process — there is no service log to tail. Run aura.exe in a terminal to see output." >&2; exit 1 ;;
+        Linux)  echo "    ~/.local/bin/aura" ;;
+        Darwin) echo "    /Applications/Aura.app/Contents/MacOS/aura" ;;
     esac
 
 # ── Windows service control (PowerShell) ──────────────────────────────────────

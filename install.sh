@@ -5,13 +5,25 @@
 #   * release  — run via `curl | bash`: downloads the latest GitHub release
 #                archive for the host, verifies its checksum, then installs.
 #
-# Linux gets a systemd user unit; macOS gets a .app bundle + launchd LaunchAgent.
+# Aura is a tray-indicator app: the icon next to wifi/volume is the
+# entire UI, so the process needs to be running for there to be anything
+# to click. The installer therefore wires up autostart by default:
+#
+#   Linux:  ~/.local/bin/aura + systemd user unit (enable --now) +
+#           XDG .desktop entry (for app-menu discoverability / first run)
+#   macOS:  /Applications/Aura.app + launchd LaunchAgent (loaded now,
+#           and at every login)
+#   Windows (see scripts/install.ps1): aura.exe + Startup-folder shortcut
+#           (runs at sign-in) + Start Menu shortcut
+#
 # Override detection with AURA_INSTALL_MODE=source|release.
 # Pin a specific release with AURA_VERSION=v1.2.3.
 
 set -euo pipefail
 
 BIN_DIR="${HOME}/.local/bin"
+DESKTOP_DIR="${HOME}/.local/share/applications"
+ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 UNIT_DIR="${HOME}/.config/systemd/user"
 LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
 APP_DIR="/Applications"            # falls back to ~/Applications if not writable
@@ -82,10 +94,10 @@ verify_checksum() {
     fi
 }
 
-# ── Stage binaries + autostart files ──────────────────────────────────────────
+# ── Stage binaries + launcher assets ─────────────────────────────────────────
 #
 # After this block STAGING_DIR holds the binaries (and Aura.app on macOS), and
-# PACKAGING_DIR holds the systemd unit / launchd plist source.
+# PACKAGING_DIR holds the .desktop / icon source files.
 
 if [ "$INSTALL_MODE" = "source" ]; then
     command -v cargo >/dev/null 2>&1 || {
@@ -161,13 +173,56 @@ if ! "$BIN_DIR/aura" setup-config; then
     echo "warning: 'aura setup-config' failed; defaults will be written on first launch" >&2
 fi
 
-# ── OS-specific autostart ─────────────────────────────────────────────────────
+# ── OS-specific autostart + launcher ──────────────────────────────────────────
+#
+# Aura is a tray indicator: its UI is the icon next to wifi/volume. The
+# installer therefore enables autostart by default so the icon is present
+# the moment the user logs in. App-menu / Launchpad entries are also
+# installed for discoverability and first-run.
 
 case "$OS" in
     Linux)
+        # ─ App-menu / hicolor icon (discoverability + first-run launcher) ─
+        mkdir -p "$ICON_DIR"
+        ICON_SRC="$PACKAGING_DIR/aura.svg"
+        if [ -f "$ICON_SRC" ]; then
+            install -m 644 "$ICON_SRC" "$ICON_DIR/aura.svg"
+        elif [ -n "$ROOT" ] && [ -f "$ROOT/assets/icons/aura.svg" ]; then
+            sed 's/currentColor/#8b5cf6/g' "$ROOT/assets/icons/aura.svg" \
+                > "$ICON_DIR/aura.svg"
+            chmod 644 "$ICON_DIR/aura.svg"
+        else
+            echo "warning: aura.svg not found in packaging or assets — icon will be missing" >&2
+        fi
+
+        mkdir -p "$DESKTOP_DIR"
+        DESKTOP_SRC="$PACKAGING_DIR/aura.desktop"
+        if [ -f "$DESKTOP_SRC" ]; then
+            sed "s|AURA_EXEC|${BIN_DIR}/aura|" "$DESKTOP_SRC" \
+                > "$DESKTOP_DIR/aura.desktop"
+            chmod 644 "$DESKTOP_DIR/aura.desktop"
+            echo "▸ Installed launcher to $DESKTOP_DIR/aura.desktop"
+
+            # Refresh desktop / icon caches if the helpers are present.
+            command -v update-desktop-database >/dev/null 2>&1 && \
+                update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+            command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+                gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" \
+                >/dev/null 2>&1 || true
+            for kbs in kbuildsycoca6 kbuildsycoca5 kbuildsycoca; do
+                if command -v "$kbs" >/dev/null 2>&1; then
+                    "$kbs" >/dev/null 2>&1 || true
+                    break
+                fi
+            done
+        else
+            echo "warning: aura.desktop not found in ${PACKAGING_DIR} — skipping launcher" >&2
+        fi
+
+        # ─ systemd user unit (autostart at every login + start now) ─
         SERVICE_SRC="$PACKAGING_DIR/aura.service"
         if [ ! -f "$SERVICE_SRC" ]; then
-            echo "warning: aura.service not found in ${PACKAGING_DIR} — skipping" >&2
+            echo "warning: aura.service not found in ${PACKAGING_DIR} — skipping autostart" >&2
         elif ! command -v systemctl >/dev/null 2>&1; then
             echo "warning: systemctl not found — skipping systemd integration" >&2
         else
@@ -176,21 +231,20 @@ case "$OS" in
             systemctl --user daemon-reload
             echo "▸ Installed systemd unit to $UNIT_DIR"
 
-            # curl|bash users expect a one-shot install — enable immediately.
-            # From-source users may want to tweak config first, so we only
-            # print the command.
-            if [ "$INSTALL_MODE" = "release" ]; then
-                systemctl --user enable --now aura
-                echo "▸ Service enabled and started"
+            # `enable --now` schedules autostart at login AND starts the
+            # service in the current session — the tray icon should appear
+            # immediately. From-source users get the same convenience so
+            # `just install` is a one-shot operation.
+            if systemctl --user enable --now aura >/dev/null 2>&1; then
+                echo "▸ Service enabled and started — tray icon should appear"
             else
-                echo ""
-                echo "Enable autostart with:"
-                echo "    systemctl --user enable --now aura"
+                echo "warning: 'systemctl --user enable --now aura' failed; start it manually" >&2
             fi
         fi
         ;;
 
     Darwin)
+        # ─ Aura.app (Dock-pinnable + the menu-bar app body) ─
         APP_SRC="$STAGING_DIR/Aura.app"
         if [ -d "$APP_SRC" ]; then
             # Pick an install location we can actually write to.
@@ -210,8 +264,7 @@ case "$OS" in
                 rm -rf "$DEST_APP_DIR/Aura.app"
                 cp -R "$APP_SRC" "$DEST_APP_DIR/Aura.app"
             fi
-            # Release tarballs are unsigned — strip Gatekeeper quarantine so
-            # the first launch doesn't bounce.
+            # Release tarballs are unsigned — strip Gatekeeper quarantine.
             xattr -dr com.apple.quarantine "$DEST_APP_DIR/Aura.app" 2>/dev/null || true
             APP_EXEC="${DEST_APP_DIR}/Aura.app/Contents/MacOS/aura"
             echo "▸ Installed Aura.app to ${DEST_APP_DIR}"
@@ -220,14 +273,15 @@ case "$OS" in
             APP_EXEC="$BIN_DIR/aura"
         fi
 
+        # ─ launchd LaunchAgent (autostart at every login + load now) ─
         PLIST_SRC="$PACKAGING_DIR/com.aura.agent-usage.plist"
         if [ ! -f "$PLIST_SRC" ]; then
             echo "warning: com.aura.agent-usage.plist not found in ${PACKAGING_DIR} — skipping" >&2
         else
-            # Rewrite the plist's ProgramArguments to the actual install path
-            # (e.g. ~/Applications/Aura.app when /Applications isn't writable).
             mkdir -p "$LAUNCHD_DIR"
             PLIST_DEST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
+            # Rewrite the plist's ProgramArguments to the actual install
+            # path (handles /Applications vs ~/Applications + bare binary).
             sed "s|/Applications/Aura.app/Contents/MacOS/aura|${APP_EXEC}|" \
                 "$PLIST_SRC" > "$PLIST_DEST"
             chmod 644 "$PLIST_DEST"
@@ -237,7 +291,7 @@ case "$OS" in
                 launchctl bootout "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
                 launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
                 launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}"
-                echo "▸ LaunchAgent loaded — Aura will autostart at login"
+                echo "▸ LaunchAgent loaded — tray icon should appear in the menu bar"
             fi
         fi
         ;;

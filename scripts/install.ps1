@@ -13,8 +13,15 @@
     PATH, release otherwise). Override with $env:AURA_INSTALL_MODE.
     Pin a version with $env:AURA_VERSION = 'v1.2.3'.
 
-    Binaries land in %LOCALAPPDATA%\Programs\Aura. Autostart is wired via
-    a Startup-folder shortcut so Aura launches at sign-in.
+    Aura is a tray-indicator app: the icon next to the clock is the
+    entire UI, so the process needs to be running at sign-in for there
+    to be anything to click. Binaries land in
+    %LOCALAPPDATA%\Programs\Aura. The installer creates both:
+
+      * a Startup-folder shortcut — runs aura.exe minimised at sign-in
+        (autostart);
+      * a Start Menu shortcut — for discoverability and a manual launch
+        if the user has Quit aura.
 
 .NOTES
     Keep in sync with install.sh.
@@ -24,10 +31,14 @@ $ErrorActionPreference = 'Stop'
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-$ReleaseBaseUrl = 'https://github.com/Rfluid/aura/releases'
-$InstallDir     = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
-$StartupDir     = [Environment]::GetFolderPath('Startup')
-$ShortcutPath   = Join-Path $StartupDir 'Aura.lnk'
+$ReleaseBaseUrl   = 'https://github.com/Rfluid/aura/releases'
+$InstallDir       = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
+# Startup folder — runs aura.exe at sign-in (autostart).
+$StartupDir       = [Environment]::GetFolderPath('Startup')
+$StartupShortcut  = Join-Path $StartupDir 'Aura.lnk'
+# Per-user Start Menu — for discoverability and pin-to-taskbar.
+$StartMenuDir     = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs'
+$StartMenuShortcut = Join-Path $StartMenuDir 'Aura.lnk'
 
 # ── Detect mode + root ────────────────────────────────────────────────────────
 #
@@ -169,22 +180,31 @@ if ($LASTEXITCODE -ne 0) {
     Write-Warning "'aura setup-config' failed; defaults will be written on first launch"
 }
 
-# ── Autostart shortcut ────────────────────────────────────────────────────────
+# ── Shortcuts: Startup (autostart) + Start Menu (discoverability) ────────────
 
-$wsh = New-Object -ComObject WScript.Shell
-$lnk = $wsh.CreateShortcut($ShortcutPath)
-$lnk.TargetPath       = Join-Path $InstallDir 'aura.exe'
-$lnk.WorkingDirectory = $InstallDir
-$lnk.WindowStyle      = 7  # Minimized — tray-icon only.
-$lnk.Description      = 'Aura — Agent Usage Reporter'
-$lnk.Save()
-Write-Host "▸ Installed Startup shortcut to $ShortcutPath"
+function New-AuraShortcut {
+    param([string]$Path)
+    $wsh = New-Object -ComObject WScript.Shell
+    $lnk = $wsh.CreateShortcut($Path)
+    $lnk.TargetPath       = Join-Path $InstallDir 'aura.exe'
+    $lnk.WorkingDirectory = $InstallDir
+    $lnk.WindowStyle      = 7  # Minimized — tray-icon only.
+    $lnk.Description      = 'Aura — Agent Usage Reporter'
+    $lnk.Save()
+}
 
-# Release mode: kick off the app immediately to match install.sh behavior
-# (systemd `enable --now` / launchctl `kickstart`).
+New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
+New-AuraShortcut -Path $StartupShortcut
+Write-Host "▸ Installed Startup shortcut to $StartupShortcut"
+New-AuraShortcut -Path $StartMenuShortcut
+Write-Host "▸ Installed Start Menu shortcut to $StartMenuShortcut"
+
+# Release mode: start aura immediately to mirror systemd `enable --now` /
+# launchctl `kickstart`. Source mode users have presumably built and can
+# launch via Start Menu when ready.
 if ($Mode -eq 'release') {
     Start-Process -WindowStyle Hidden (Join-Path $InstallDir 'aura.exe')
-    Write-Host "▸ Aura started"
+    Write-Host "▸ Aura started — tray icon should appear next to the clock"
 }
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────

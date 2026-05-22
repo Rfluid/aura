@@ -7,6 +7,8 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/aura
+# Restart on crash, but respect an explicit "Quit Aura" from the tray
+# menu (which exits cleanly with code 0).
 Restart=on-failure
 RestartSec=5s
 # Aura paints to the user's display; inherit the user session environment.

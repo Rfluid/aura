@@ -167,13 +167,21 @@ jobs:
                   cp "target/${TARGET_TRIPLE}/release/aura-plugin-rtk" "dist/${ASSET_DIR}/aura-plugin-rtk"
                   chmod 755 "dist/${ASSET_DIR}/aura" "dist/${ASSET_DIR}/aura-plugin-rtk"
 
-                  # systemd unit only ships in Linux archives.
-                  if [ "$IS_LINUX" = "true" ] && [ -f packaging/aura.service ]; then
-                      cp packaging/aura.service "dist/${ASSET_DIR}/aura.service"
-                      chmod 644 "dist/${ASSET_DIR}/aura.service"
+                  # Linux: ship the .desktop launcher + brand SVG so the
+                  # release-mode install.sh can wire up a clickable launcher
+                  # without any extra downloads. The systemd unit ships too
+                  # for users who explicitly opt into autostart.
+                  if [ "$IS_LINUX" = "true" ]; then
+                      for f in aura.desktop aura.svg aura.service; do
+                          if [ -f "packaging/$f" ]; then
+                              cp "packaging/$f" "dist/${ASSET_DIR}/$f"
+                              chmod 644 "dist/${ASSET_DIR}/$f"
+                          fi
+                      done
                   fi
 
-                  # macOS archives carry Aura.app + the launchd plist.
+                  # macOS archives carry Aura.app. The launchd plist ships
+                  # alongside for users who explicitly opt into autostart.
                   if [ "$IS_MACOS" = "true" ]; then
                       ./scripts/build-macos-app.sh \
                           "target/${TARGET_TRIPLE}/release/aura" \

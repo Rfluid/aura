@@ -88,10 +88,32 @@ kind = "gemini"
 
 ## Installation
 
-Aura runs as a systemd user service on Linux, as a menu-bar app (launchd
-LaunchAgent + `Aura.app`) on macOS, and as a tray app with a Startup-folder
-shortcut on Windows. You can either grab a prebuilt release archive or build
-from source with Cargo (Rust 1.80+).
+Aura is a **system-tray indicator** — like wifi or volume in your panel.
+The installer wires up autostart by default so the icon is present the
+moment you log in:
+
+| Platform | What gets installed |
+|---|---|
+| **Linux**   | `~/.local/bin/aura` + a systemd user service (enabled & started) + an XDG `.desktop` entry for the app menu |
+| **macOS**   | `Aura.app` in `/Applications` + a launchd LaunchAgent (loaded now + at every login) |
+| **Windows** | `aura.exe` in `%LOCALAPPDATA%\Programs\Aura` + a Startup-folder shortcut (autostart) + a Start Menu shortcut |
+
+Click the tray icon to open Aura's modal; click it again to close. There
+is intentionally no "Quit" option — to actually stop the process, use
+`just stop` (Linux/macOS), `just stop-windows`, or `systemctl --user stop aura`.
+
+Grab a prebuilt release archive (next section) or build from source with
+Cargo (Rust 1.80+).
+
+### Making the tray icon always visible
+
+On Plasma / GNOME the icon may land in the "hidden" overflow group first.
+Promote it so it sits permanently next to wifi/volume:
+
+- **KDE Plasma** — right-click the system tray → **Configure System Tray → Entries** → find **Aura** → set **Visibility: Always shown**.
+- **GNOME** — install the *AppIndicator and KStatusNotifierItem Support* extension if you don't have it; aura then appears in the panel by default.
+- **macOS** — the menu-bar icon is always visible; nothing to configure.
+- **Windows** — click the `^` overflow arrow in the tray, drag the Aura icon to the always-visible area.
 
 ### System dependencies (Linux)
 
@@ -193,13 +215,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 Or, with [`just`](https://github.com/casey/just):
 
 ```bash
-just install                 # build + install (Linux: systemd, macOS: launchd + .app)
-# Linux only — the launchd agent is loaded automatically on macOS:
-systemctl --user enable --now aura
+just install                 # build + install + autostart (Linux/macOS)
 ```
 
 ```powershell
-just install-windows         # build + install + Startup-folder shortcut
+just install-windows         # build + install + autostart (Windows)
 ```
 
 #### Manual (Linux)
@@ -208,7 +228,18 @@ just install-windows         # build + install + Startup-folder shortcut
 cargo build --release --workspace
 install -Dm755 target/release/aura            ~/.local/bin/aura
 install -Dm755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
-install -Dm644 packaging/aura.service         ~/.config/systemd/user/aura.service
+
+# App-menu entry + icon (the tray icon itself is delivered inline by
+# Aura over D-Bus, but the .desktop file lets the app menu find Aura).
+sed "s|AURA_EXEC|$HOME/.local/bin/aura|" packaging/aura.desktop \
+    > ~/.local/share/applications/aura.desktop
+install -Dm644 packaging/aura.svg \
+    ~/.local/share/icons/hicolor/scalable/apps/aura.svg
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+
+# Autostart at every login via a systemd user service.
+install -Dm644 packaging/aura.service ~/.config/systemd/user/aura.service
 systemctl --user daemon-reload
 systemctl --user enable --now aura
 ```
@@ -223,6 +254,7 @@ install -m 755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
 ./scripts/build-macos-app.sh target/release/aura target/release
 cp -R target/release/Aura.app /Applications/Aura.app
 
+# Autostart at every login via a launchd LaunchAgent.
 install -m 644 packaging/com.aura.agent-usage.plist \
     ~/Library/LaunchAgents/com.aura.agent-usage.plist
 launchctl bootstrap "gui/$(id -u)" \
@@ -239,7 +271,7 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 Copy-Item -Force target\release\aura.exe            "$dst\aura.exe"
 Copy-Item -Force target\release\aura-plugin-rtk.exe "$dst\aura-plugin-rtk.exe"
 
-# Autostart at sign-in via Startup-folder shortcut.
+# Startup-folder shortcut (autostart at sign-in, minimised to tray).
 $wsh = New-Object -ComObject WScript.Shell
 $lnk = $wsh.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'))
 $lnk.TargetPath       = "$dst\aura.exe"
@@ -250,12 +282,25 @@ $lnk.Save()
 
 ### Common commands
 
-| Command                                           | What it does                                                                       |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `just run`                                        | Launch Aura (debug build) without installing                                       |
-| `just status` / `just logs`                       | Service status / tail logs (systemd on Linux, launchd on macOS)                    |
-| `just status-windows` / `just stop-windows`       | Show / stop the running `aura.exe` on Windows                                      |
-| `just uninstall` / `just uninstall-windows`       | Remove binaries + unit / LaunchAgent / Startup shortcut (keeps config & state)     |
+| Command                                       | What it does                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------- |
+| `just run`                                    | Launch Aura (debug build) without installing                                  |
+| `just start` / `just stop` / `just status`    | Start, stop, or check the running `aura` process (Linux/macOS)                |
+| `just start-windows` / `just stop-windows`    | Same, for Windows                                                             |
+| `just uninstall` / `just uninstall-windows`   | Remove binaries + autostart artifacts + launcher (keeps config & state)       |
+
+```powershell
+# Windows — Startup-folder shortcut (loads at sign-in, minimized to tray)
+$dst = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
+$wsh = New-Object -ComObject WScript.Shell
+$lnk = $wsh.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'))
+$lnk.TargetPath       = "$dst\aura.exe"
+$lnk.WorkingDirectory = $dst
+$lnk.WindowStyle      = 7
+$lnk.Save()
+```
+
+`just uninstall` cleans these up too — you don't have to remember which path you took.
 
 ## Roadmap
 

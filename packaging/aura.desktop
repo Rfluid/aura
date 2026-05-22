@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Aura
+GenericName=Agent Usage Reporter
+Comment=Open Aura — Agent Usage Reporter & Analyzer
+Exec=AURA_EXEC
+Icon=aura
+Terminal=false
+Categories=Utility;Monitor;
+StartupNotify=false
+StartupWMClass=aura
+Keywords=ai;agent;claude;codex;gemini;usage;tokens;
