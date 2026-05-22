@@ -34,7 +34,20 @@ const ICON_COLOR: &str = "#8b5cf6";
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
     /// Primary-click on the icon, or "Show Aura" picked from the menu.
-    Show,
+    /// `hint` carries the tray icon's screen coordinates when the host
+    /// sent them with the activate request — `None` when the trigger
+    /// was a menu item (which doesn't surface a click position).
+    ///
+    /// Plumbed end-to-end but unused on the consumer side for now: a
+    /// first attempt at anchoring the modal next to the click on
+    /// Wayland produced a malformed (very narrow) window for reasons
+    /// we haven't root-caused yet, so the consumer falls back to a
+    /// centered open. Keeping the field so the fix is a one-line
+    /// re-wire when we figure it out.
+    Show {
+        #[allow(dead_code)]
+        hint: Option<(i32, i32)>,
+    },
 }
 
 /// Opaque handle returned by [`install`]. Must be kept alive for the
@@ -144,9 +157,12 @@ mod linux {
 
         /// Primary-click. Plasma + GNOME + most KSNI hosts route the
         /// user's left-click here, which is exactly the wifi-style UX
-        /// we want.
-        fn activate(&mut self, _x: i32, _y: i32) {
-            let _ = self.tx.send(TrayEvent::Show);
+        /// we want. `x` / `y` are the icon's position in screen coords
+        /// — we forward them so the modal can anchor near the icon.
+        fn activate(&mut self, x: i32, y: i32) {
+            let _ = self.tx.send(TrayEvent::Show {
+                hint: Some((x, y)),
+            });
         }
 
         /// Right-click → minimal context menu. We keep a single "Show
@@ -157,7 +173,9 @@ mod linux {
             vec![StandardItem {
                 label: "Show Aura".into(),
                 activate: Box::new(|tray: &mut AuraTray| {
-                    let _ = tray.tx.send(TrayEvent::Show);
+                    // Menu doesn't surface a click position — let the
+                    // modal fall back to centered placement.
+                    let _ = tray.tx.send(TrayEvent::Show { hint: None });
                 }),
                 ..Default::default()
             }
@@ -241,13 +259,19 @@ mod non_linux {
         // Menu first (right-click → "Show Aura").
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             if event.id().0.as_str() == MENU_ID_SHOW {
-                return Some(TrayEvent::Show);
+                return Some(TrayEvent::Show { hint: None });
             }
         }
-        // Primary-click on the icon itself.
-        if let Ok(TrayIconEvent::Click { button, .. }) = TrayIconEvent::receiver().try_recv() {
+        // Primary-click on the icon itself. `position` is the cursor
+        // location at click time — close enough to the icon to anchor
+        // the modal near it.
+        if let Ok(TrayIconEvent::Click { button, position, .. }) =
+            TrayIconEvent::receiver().try_recv()
+        {
             if button == MouseButton::Left {
-                return Some(TrayEvent::Show);
+                return Some(TrayEvent::Show {
+                    hint: Some((position.x as i32, position.y as i32)),
+                });
             }
         }
         None

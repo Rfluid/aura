@@ -92,7 +92,12 @@ fn main() -> Result<()> {
 
                     while let Some(event) = tray::try_recv_event() {
                         match event {
-                            TrayEvent::Show => {
+                            // We discard `hint` for now: an earlier attempt
+                            // to anchor the modal near the click coords
+                            // produced a malformed window on Wayland/KWin
+                            // (see git history). Restoring centered open
+                            // until we understand the size regression.
+                            TrayEvent::Show { hint: _ } => {
                                 current = toggle(
                                     cx,
                                     current.take(),
