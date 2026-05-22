@@ -40,7 +40,8 @@ config_path = "~/.claude-enterprise"
 [[agents]]
 name = "Codex"
 kind = "codex"
-# Codex config — exact fields TBD pending Codex integration research
+# Path to the Codex config directory. Defaults to ~/.codex if omitted.
+config_path = "~/.codex"
 
 # ── Plugins ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ anchor = "auto"
 | `kind` | Description | Config fields |
 |---|---|---|
 | `claude-code` | Claude Code CLI agent | `config_path` (path to the dir containing `stats-cache.json`; defaults to `~/.claude`) |
-| `codex` | OpenAI Codex CLI | TBD |
+| `codex` | OpenAI Codex CLI | `config_path` (path to the dir containing `sessions/`; defaults to `~/.codex`) |
 
 ## State file
 

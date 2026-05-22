@@ -55,7 +55,7 @@ impl AgentReader for ClaudeCodeReader {
 
 /// Build a `UsageSnapshot` from a scan accumulator, optionally merging in a
 /// `StatsCache` baseline (used for the AllTime period).
-fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> UsageSnapshot {
+pub(crate) fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> UsageSnapshot {
     // ── Start with scan data ──────────────────────────────────────────────────
     let mut model_usage: HashMap<String, ModelAccum> = accum.model_usage;
     let mut daily_msg: HashMap<String, u64> = accum.daily_message_counts;

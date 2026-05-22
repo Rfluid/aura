@@ -143,6 +143,12 @@ impl AppConfig {
                     config_path: Some("~/.claude-enterprise".to_string()),
                     color: None,
                 },
+                AgentConfig {
+                    name: "Codex".to_string(),
+                    kind: AgentKind::Codex,
+                    config_path: None,
+                    color: None,
+                },
             ],
             plugins: vec![PluginConfig {
                 name: "RTK Gains".to_string(),
@@ -216,9 +222,10 @@ mod tests {
 
         // File should now exist.
         assert!(path.exists());
-        // Should have the two default profiles.
-        assert_eq!(cfg.agents.len(), 2);
+        // Should have the three default profiles.
+        assert_eq!(cfg.agents.len(), 3);
         assert_eq!(cfg.agents[0].name, "Claude Code (Personal)");
+        assert_eq!(cfg.agents[2].kind, AgentKind::Codex);
     }
 
     #[test]

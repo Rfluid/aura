@@ -133,13 +133,21 @@
 
 ---
 
-## Phase 8 — Codex adapter (stub → real) ✓ (stub only)
+## Phase 8 — Codex adapter ✓
 
 **Crate: `aura-core`**
 
 - [x] Stub `CodexReader` returning `UsageSnapshot::default()`
-- [x] `reader::make_reader(agent)` factory dispatches on `AgentKind` (ClaudeCode → real, Codex → stub)
-- [ ] **Future** — research Codex data source (local files vs. OpenAI usage endpoint) and replace stub
+- [x] `reader::make_reader(agent)` factory dispatches on `AgentKind` (ClaudeCode → real, Codex → real)
+- [x] `codex_scan` module — walks `{config_path}/sessions/{YYYY}/{MM}/{DD}/rollout-*.jsonl`
+  - Parses `session_meta` (session id + start ts), `turn_context` (active model), and `event_msg/token_count` (per-turn `last_token_usage`)
+  - Attributes each `last_token_usage` delta to the most-recent `turn_context.model`
+  - Splits Codex's `input_tokens` (which includes cached) into `input_tokens = input − cached` and `cache_read_tokens = cached`; `cache_write_tokens = 0` (Codex has no separate creation bucket)
+  - mtime-based fast skip for files outside the requested date window
+- [x] `CodexReader::snapshot` reuses `claude_code::build_snapshot` (with no cache baseline) for `Last7Days` / `Last30Days` / `AllTime`
+- [x] Default `AppConfig` ships a `Codex` profile so it works out of the box
+- [x] Unit tests: file discovery, single-session token attribution, mid-session model switch, pre-context token_count skipped, date-range filter, multi-session aggregation, empty dir
+- [ ] **Future** — incremental scanning + watcher integration for live updates (today the UI scans on demand)
 
 ---
 

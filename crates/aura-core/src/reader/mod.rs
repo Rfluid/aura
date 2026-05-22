@@ -1,5 +1,6 @@
 pub mod claude_code;
 pub mod codex;
+pub(crate) mod codex_scan;
 mod dates;
 mod incremental;
 pub(crate) mod scan;
