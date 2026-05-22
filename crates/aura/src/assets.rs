@@ -1,9 +1,12 @@
-use std::borrow::Cow;
+/// Raw bytes of the Aura logo SVG. Used by the tray-icon rasteriser on
+/// every platform — that path is GPUI-free, so it stays compiled even on
+/// macOS where the modal UI is gated out.
+pub const AURA_LOGO_SVG: &[u8] = include_bytes!("../../../assets/icons/aura.svg");
 
-use anyhow::Result;
-use gpui::{AssetSource, SharedString};
-
-// Each SVG is embedded at compile time so launching from any cwd works.
+// The remaining icons are only consumed by the GPUI `AssetSource` adapter
+// below, so gate the whole table off macOS to keep that build free of
+// unused-const warnings.
+#[cfg(not(target_os = "macos"))]
 macro_rules! icon_assets {
     ( $( ($name:ident, $file:literal) ),* $(,)? ) => {
         $(
@@ -16,6 +19,7 @@ macro_rules! icon_assets {
     };
 }
 
+#[cfg(not(target_os = "macos"))]
 icon_assets! {
     (AURA,             "aura.svg"),
     (CLAUDE,           "claude.svg"),
@@ -39,47 +43,60 @@ icon_assets! {
     (RTK,              "rtk.svg"),
 }
 
-pub struct EmbeddedAssets;
+// Everything below this point is the GPUI `AssetSource` adapter that feeds
+// SVGs into the modal view. macOS doesn't render the modal (no GPUI), so
+// the adapter would just be dead code referencing a missing dependency.
+#[cfg(not(target_os = "macos"))]
+mod gpui_source {
+    use std::borrow::Cow;
 
-impl AssetSource for EmbeddedAssets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        // 1. Baked-in asset (e.g. `"icons/blocks.svg"`).
-        if let Some((_, bytes)) = ALL.iter().find(|(name, _)| *name == path) {
-            return Ok(Some(Cow::Borrowed(*bytes)));
-        }
+    use anyhow::Result;
+    use gpui::{AssetSource, SharedString};
 
-        // 2. Filesystem fallback: lets plugins point at a custom SVG via
-        //    `icon = "/abs/path.svg"` or `icon = "~/icons/foo.svg"` in
-        //    config.toml. The asset system caches the loaded bytes so a
-        //    repeated lookup doesn't keep hitting disk.
-        if path.starts_with('/') || path.starts_with('~') {
-            let resolved = expand_tilde_path(path);
-            match std::fs::read(&resolved) {
-                Ok(bytes) => return Ok(Some(Cow::Owned(bytes))),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(e.into()),
+    use super::ALL;
+
+    pub struct EmbeddedAssets;
+
+    impl AssetSource for EmbeddedAssets {
+        fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+            // 1. Baked-in asset (e.g. `"icons/blocks.svg"`).
+            if let Some((_, bytes)) = ALL.iter().find(|(name, _)| *name == path) {
+                return Ok(Some(Cow::Borrowed(*bytes)));
             }
+
+            // 2. Filesystem fallback: lets plugins point at a custom SVG via
+            //    `icon = "/abs/path.svg"` or `icon = "~/icons/foo.svg"` in
+            //    config.toml. The asset system caches the loaded bytes so a
+            //    repeated lookup doesn't keep hitting disk.
+            if path.starts_with('/') || path.starts_with('~') {
+                let resolved = expand_tilde_path(path);
+                match std::fs::read(&resolved) {
+                    Ok(bytes) => return Ok(Some(Cow::Owned(bytes))),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+
+            Ok(None)
         }
 
-        Ok(None)
+        fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
+            Ok(ALL.iter().map(|(name, _)| (*name).into()).collect())
+        }
     }
 
-    fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(ALL.iter().map(|(name, _)| (*name).into()).collect())
+    fn expand_tilde_path(path: &str) -> std::path::PathBuf {
+        if let Some(rest) = path.strip_prefix("~/") {
+            return dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/"))
+                .join(rest);
+        }
+        if path == "~" {
+            return dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+        }
+        std::path::PathBuf::from(path)
     }
 }
 
-fn expand_tilde_path(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        return dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/"))
-            .join(rest);
-    }
-    if path == "~" {
-        return dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-    }
-    std::path::PathBuf::from(path)
-}
-
-/// Raw bytes of the Aura logo SVG. Used by the tray-icon rasteriser.
-pub const AURA_LOGO_SVG: &[u8] = AURA;
+#[cfg(not(target_os = "macos"))]
+pub use gpui_source::EmbeddedAssets;

@@ -1,11 +1,15 @@
+#[cfg(not(target_os = "macos"))]
 mod app;
 mod assets;
+#[cfg(not(target_os = "macos"))]
 mod format;
 #[cfg(target_os = "macos")]
 mod macos;
 mod tray;
+#[cfg(not(target_os = "macos"))]
 mod work_area;
 
+#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,18 +17,22 @@ use aura_core::{
     config::{AgentStatus, AppConfig},
     state::AppState,
 };
+#[cfg(not(target_os = "macos"))]
 use gpui::{
     div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
     WindowHandle, WindowKind, WindowOptions,
 };
 
+#[cfg(not(target_os = "macos"))]
 use crate::tray::TrayEvent;
 
+#[cfg(not(target_os = "macos"))]
 use crate::{app::AuraView, assets::EmbeddedAssets};
 
 /// How often the GPUI main thread checks for pending tray menu events.
 /// 150 ms is well under the human "instant" threshold (~200 ms) for the
 /// click → modal latency while costing essentially nothing CPU-wise.
+#[cfg(not(target_os = "macos"))]
 const MENU_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 fn main() -> Result<()> {
@@ -62,6 +70,22 @@ fn main() -> Result<()> {
         }
     };
 
+    // ── macOS: skip GPUI and run AppKit directly ─────────────────────────────
+    //
+    // GPUI 0.2.2 panics inside `Application::run` on macOS 26 (Tahoe) — see
+    // issue #4 and the comment block in `crates/aura/Cargo.toml`. Until
+    // crates.io has a fixed gpui, the macOS build ships as tray-only and
+    // we drive the event loop from `macos::run_event_loop` instead. The
+    // config/state are still loaded above so the first-run side effect
+    // (creating `~/Library/Application Support/aura/config.toml`) matches
+    // the Linux experience.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (config, config_path, state);
+        macos::run_event_loop();
+        return Ok(());
+    }
+
     // ── Launch GPUI app ───────────────────────────────────────────────────────
     //
     // No user-visible window is opened at startup. We open a tiny hidden
@@ -70,6 +94,7 @@ fn main() -> Result<()> {
     // process when `state.windows.is_empty()`. The keepalive guarantees
     // that count is always ≥ 1, so the tray icon survives across any
     // number of open/close cycles.
+    #[cfg(not(target_os = "macos"))]
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
@@ -122,10 +147,6 @@ fn main() -> Result<()> {
                 }
             })
             .detach();
-
-            // macOS: don't claim a Dock slot — we're a menu-bar accessory.
-            #[cfg(target_os = "macos")]
-            macos::set_accessory_activation_policy();
         });
 
     Ok(())
@@ -134,8 +155,10 @@ fn main() -> Result<()> {
 /// Empty root view for the hidden keepalive window. The view is never
 /// rendered to a screen — its only job is to satisfy `open_window`'s
 /// `V: Render` bound so the window can exist in `state.windows`.
+#[cfg(not(target_os = "macos"))]
 struct KeepAliveView;
 
+#[cfg(not(target_os = "macos"))]
 impl Render for KeepAliveView {
     fn render(
         &mut self,
@@ -171,6 +194,7 @@ impl Render for KeepAliveView {
 ///   no-op, so the tray can't be killed by a stray click. Our own
 ///   `toggle()` uses `window.remove_window()` which bypasses this
 ///   guard (it's an internal close, not a platform request).
+#[cfg(not(target_os = "macos"))]
 fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveView>> {
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -211,6 +235,7 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
 /// fresh window and return its handle. Called from both the tray "Show"
 /// menu item and a primary-click on the tray icon — each click flips
 /// modal visibility.
+#[cfg(not(target_os = "macos"))]
 async fn toggle(
     cx: &gpui::AsyncApp,
     existing: Option<WindowHandle<AuraView>>,
@@ -229,14 +254,18 @@ async fn toggle(
 /// vertically to fit content (capped at the available work area), so the
 /// initial 640 is just a sensible starting size that lets the first
 /// paint render without thrashing.
+#[cfg(not(target_os = "macos"))]
 const MODAL_W: f32 = 520.;
+#[cfg(not(target_os = "macos"))]
 const MODAL_H: f32 = 640.;
+#[cfg(not(target_os = "macos"))]
 const SCREEN_GAP: f32 = 8.;
 /// Defensive blind reserve for the bottom edge when
 /// [`crate::work_area::available_bottom`] returns `None` (non-KDE,
 /// non-Linux, or parse failure). Matches Strategy A's value so corner
 /// anchoring degrades to "Strategy A + bottom-right placement" instead
 /// of dumping the modal into a taskbar.
+#[cfg(not(target_os = "macos"))]
 const BLIND_BOTTOM_RESERVE: f32 = 120.;
 
 /// Computes the modal bounds anchored to the bottom-right of the
@@ -262,6 +291,7 @@ const BLIND_BOTTOM_RESERVE: f32 = 120.;
 /// We deliberately don't consult the tray click position — an earlier
 /// attempt at that produced a malformed (very narrow) window on
 /// KWin/Wayland for reasons we never root-caused.
+#[cfg(not(target_os = "macos"))]
 fn corner_anchored_bounds(cx: &mut gpui::App) -> Bounds<gpui::Pixels> {
     let modal_size = size(px(MODAL_W), px(MODAL_H));
 
@@ -294,6 +324,7 @@ fn corner_anchored_bounds(cx: &mut gpui::App) -> Bounds<gpui::Pixels> {
     Bounds::new(point(px(x), px(y)), modal_size)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn toggle_window(
     cx: &mut gpui::App,
     existing: Option<WindowHandle<AuraView>>,
