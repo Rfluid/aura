@@ -148,7 +148,8 @@ set_manifest_version() {
     local manifest="$1"
     local new_version="$2"
 
-    perl -0pi -e 's/^(version\s*=\s*")[^"]*(")/$1'"$new_version"'$2/m' "$manifest"
+    # /e modifier dodges the \10 octal-escape bug — see set_workspace_dep_version below.
+    perl -0pi -e 'my $v="'"$new_version"'"; s/^(version\s*=\s*")[^"]*(")/my($p,$s)=($1,$2);"$p$v$s"/me' "$manifest"
 }
 
 # Syncs the version inside the [workspace.dependencies] inline-table for a
