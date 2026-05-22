@@ -12,7 +12,7 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates — versions kept in sync by scripts/prepare-release.sh
-aura-core        = { path = "crates/aura-core",   version = "0.1.2" }
+aura-core        = { path = "crates/aura-core",   version = "0.1.3" }
 aura-plugin-rtk  = { path = "plugins/rtk-gains",  version = "0.1.0" }
 
 # External
