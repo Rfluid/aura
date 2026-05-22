@@ -83,6 +83,18 @@ uninstall:
                 update-desktop-database ~/.local/share/applications >/dev/null 2>&1 || true
             command -v gtk-update-icon-cache >/dev/null 2>&1 && \
                 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor >/dev/null 2>&1 || true
+            # KDE-only: remove the keepalive skip-taskbar rule installed by
+            # install.sh, then ask KWin to reload its rules.
+            if command -v kwriteconfig6 >/dev/null 2>&1 && command -v kreadconfig6 >/dev/null 2>&1; then
+                rule_id="aura-keepalive-skip-taskbar"
+                current=$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)
+                new=$(echo "$current" | tr ',' '\n' | grep -vFx "$rule_id" | paste -sd ',' -)
+                kwriteconfig6 --file kwinrulesrc --group General --key rules "$new"
+                kwriteconfig6 --file kwinrulesrc --group General --key count \
+                    "$(echo "$new" | tr ',' '\n' | grep -c . || echo 0)"
+                kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key Description --delete 2>/dev/null || true
+                command -v qdbus6 >/dev/null 2>&1 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
+            fi
             ;;
         Darwin)
             # Unload the LaunchAgent (stops the menu-bar tray) then remove

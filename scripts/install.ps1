@@ -225,3 +225,11 @@ if (-not ($userPath -split ';' | Where-Object { $_ -eq $InstallDir })) {
 
 Write-Host ""
 Write-Host "✔ Aura installed."
+
+# ── Next-step hints ───────────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "Next steps:"
+Write-Host "  → Tray icon: should appear at the right end of the taskbar (near the clock)."
+Write-Host "  → If it landed in the '^' overflow group, drag it into the always-visible area."
+Write-Host "  → Right-click the tray icon for Show / Quit. Left-click toggles the modal."
+Write-Host "  → If Windows SmartScreen blocked the unsigned binary on first run, click 'More info' → 'Run anyway'."

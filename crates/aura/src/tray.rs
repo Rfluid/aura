@@ -28,9 +28,9 @@ const ICON_SIZE: u32 = 64;
 const ICON_COLOR: &str = "#8b5cf6";
 
 /// User-driven actions that originate from the tray icon and end up
-/// toggling the modal on the GPUI side. We keep the enum tiny — a single
-/// "Show" semantic — because that matches the wifi/volume tray UX (one
-/// indicator, one interaction).
+/// driving the GPUI side. We keep the enum small — "show the modal" or
+/// "exit aura" — because that's the entirety of the wifi/volume tray
+/// surface area we're imitating.
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
     /// Primary-click on the icon, or "Show Aura" picked from the menu.
@@ -48,6 +48,10 @@ pub enum TrayEvent {
         #[allow(dead_code)]
         hint: Option<(i32, i32)>,
     },
+    /// "Quit Aura" picked from the right-click context menu — the user
+    /// wants the process to actually exit (tray icon goes away,
+    /// systemd's `Restart=on-failure` respects the clean exit).
+    Quit,
 }
 
 /// Opaque handle returned by [`install`]. Must be kept alive for the
@@ -116,7 +120,6 @@ fn render_logo_rgba() -> Result<(u32, u32, Vec<u8>)> {
 mod linux {
     use super::*;
     use ksni::blocking::TrayMethods;
-    use ksni::menu::StandardItem;
     use ksni::{Icon, MenuItem};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::Mutex;
@@ -163,21 +166,33 @@ mod linux {
             let _ = self.tx.send(TrayEvent::Show { hint: Some((x, y)) });
         }
 
-        /// Right-click → minimal context menu. We keep a single "Show
-        /// Aura" item so hosts that route right-click only to the menu
-        /// still surface the same action; there's deliberately no Quit
-        /// so a stray click can't make the icon disappear.
+        /// Right-click → minimal context menu with the two explicit
+        /// actions a tray indicator owes the user: "Show Aura" (same
+        /// effect as left-clicking the icon) and "Quit Aura" (exit the
+        /// process, tray icon goes away).
         fn menu(&self) -> Vec<MenuItem<Self>> {
-            vec![StandardItem {
-                label: "Show Aura".into(),
-                activate: Box::new(|tray: &mut AuraTray| {
-                    // Menu doesn't surface a click position — let the
-                    // modal fall back to centered placement.
-                    let _ = tray.tx.send(TrayEvent::Show { hint: None });
-                }),
-                ..Default::default()
-            }
-            .into()]
+            use ksni::menu::StandardItem;
+            vec![
+                StandardItem {
+                    label: "Show Aura".into(),
+                    activate: Box::new(|tray: &mut AuraTray| {
+                        // Menu doesn't surface a click position — let
+                        // the modal fall back to centered placement.
+                        let _ = tray.tx.send(TrayEvent::Show { hint: None });
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+                ksni::MenuItem::Separator,
+                StandardItem {
+                    label: "Quit Aura".into(),
+                    activate: Box::new(|tray: &mut AuraTray| {
+                        let _ = tray.tx.send(TrayEvent::Quit);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            ]
         }
     }
 
@@ -226,11 +241,12 @@ pub fn install() -> Result<TrayHandle> {
 mod non_linux {
     use super::*;
     use tray_icon::{
-        menu::{Menu, MenuEvent, MenuId, MenuItem},
+        menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
         Icon, MouseButton, TrayIconBuilder, TrayIconEvent,
     };
 
     pub(super) const MENU_ID_SHOW: &str = "aura.show";
+    pub(super) const MENU_ID_QUIT: &str = "aura.quit";
 
     pub(super) fn install() -> Result<TrayHandle> {
         let (width, height, rgba) = render_logo_rgba()?;
@@ -238,7 +254,11 @@ mod non_linux {
 
         let menu = Menu::new();
         let show = MenuItem::with_id(MenuId::new(MENU_ID_SHOW), "Show Aura", true, None);
+        let quit = MenuItem::with_id(MenuId::new(MENU_ID_QUIT), "Quit Aura", true, None);
         menu.append(&show).context("menu append Show")?;
+        menu.append(&PredefinedMenuItem::separator())
+            .context("menu separator")?;
+        menu.append(&quit).context("menu append Quit")?;
 
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
@@ -254,10 +274,12 @@ mod non_linux {
     }
 
     pub(super) fn try_recv() -> Option<TrayEvent> {
-        // Menu first (right-click → "Show Aura").
+        // Menu first (right-click → "Show Aura" or "Quit Aura").
         if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id().0.as_str() == MENU_ID_SHOW {
-                return Some(TrayEvent::Show { hint: None });
+            match event.id().0.as_str() {
+                MENU_ID_SHOW => return Some(TrayEvent::Show { hint: None }),
+                MENU_ID_QUIT => return Some(TrayEvent::Quit),
+                _ => {}
             }
         }
         // Primary-click on the icon itself. `position` is the cursor

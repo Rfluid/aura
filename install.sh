@@ -180,6 +180,61 @@ fi
 # the moment the user logs in. App-menu / Launchpad entries are also
 # installed for discoverability and first-run.
 
+# ─ KDE Plasma: KWin rule to hide the keepalive surface from the task manager ─
+#
+# Aura keeps an off-screen, locked-shut 1×1 "keepalive" window open at
+# all times so GPUI's Wayland event loop (which stops the moment
+# `state.windows.is_empty()`) doesn't terminate when the user closes
+# the modal. Wayland has no client-settable "skip taskbar" hint that
+# GPUI exposes, so KDE happily renders that keepalive as a regular
+# entry in the task manager. Fix it at the WM layer with a KWin rule
+# matching `app_id == aura-keepalive` and forcing skip-taskbar /
+# skip-pager / skip-switcher.
+install_kwin_skip_taskbar_rule() {
+    [ "${XDG_CURRENT_DESKTOP:-}" = "KDE" ] || return 0
+    command -v kwriteconfig6 >/dev/null 2>&1 || return 0
+    command -v kreadconfig6 >/dev/null 2>&1 || return 0
+
+    local rule_id="aura-keepalive-skip-taskbar"
+    local current_rules
+    current_rules=$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)
+
+    if ! echo "${current_rules}" | tr ',' '\n' | grep -qFx "$rule_id"; then
+        local new_rules
+        if [ -z "$current_rules" ]; then
+            new_rules="$rule_id"
+        else
+            new_rules="${current_rules},${rule_id}"
+        fi
+        local new_count
+        new_count=$(echo "$new_rules" | tr ',' '\n' | grep -c .)
+        kwriteconfig6 --file kwinrulesrc --group General --key rules  "$new_rules"
+        kwriteconfig6 --file kwinrulesrc --group General --key count  "$new_count"
+    fi
+
+    # Rule properties — overwrite-safe. wmclassmatch=1 is exact match;
+    # wmclasscomplete=false makes it match against the class portion of
+    # WM_CLASS only (Wayland app_id maps cleanly to that on KWin).
+    # skiptaskbarrule=2 is the "Force" enforcement mode (vs Don't Affect,
+    # Apply, Remember).
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key Description       "Hide Aura keepalive surface from taskbar / pager / switcher"
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclass           "aura-keepalive"
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclasscomplete --type bool false
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclassmatch      1
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skiptaskbar     --type bool true
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skiptaskbarrule   2
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skippager       --type bool true
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skippagerrule     2
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skipswitcher    --type bool true
+    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skipswitcherrule  2
+
+    # Reload KWin so the rule applies without a logout.
+    command -v qdbus6 >/dev/null 2>&1 && \
+        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
+
+    echo "▸ Installed KWin rule: aura keepalive hidden from taskbar"
+}
+
 case "$OS" in
     Linux)
         # ─ App-menu / hicolor icon (discoverability + first-run launcher) ─
@@ -241,6 +296,9 @@ case "$OS" in
                 echo "warning: 'systemctl --user enable --now aura' failed; start it manually" >&2
             fi
         fi
+
+        # ─ KDE-only polish: hide aura's keepalive surface from the taskbar ─
+        install_kwin_skip_taskbar_rule
         ;;
 
     Darwin)
@@ -315,3 +373,46 @@ esac
 
 echo ""
 echo "✔ Aura installed."
+
+# ── Per-DE / per-OS next-step hints ──────────────────────────────────────────
+#
+# Aura is a tray indicator: success depends on the user's desktop env
+# actually surfacing StatusNotifierItem icons. The defaults are right on
+# KDE Plasma; GNOME and minimal Wayland WMs need a one-time per-user
+# step. We print a tip instead of failing — the install itself is done.
+
+print_hint() { printf '\n  → %s\n' "$*"; }
+
+case "$OS" in
+    Linux)
+        echo ""
+        echo "Next steps:"
+        case "${XDG_CURRENT_DESKTOP:-}" in
+            *KDE*)
+                print_hint "Tray icon: should already be next to wifi/volume. If it landed in the '^' overflow group, right-click the tray → Configure System Tray → Entries → Aura → set Visibility to 'Always shown'."
+                print_hint "Modal placement: KWin centers it on Wayland (protocol limit). To pin a position, add a Window Rule for class 'aura' under System Settings → Window Management → Window Rules."
+                ;;
+            *GNOME*)
+                print_hint "GNOME hides StatusNotifierItem icons by default. Install the AppIndicator extension once: https://extensions.gnome.org/extension/615/appindicator-support/  then log out & back in."
+                ;;
+            *sway*|*Hyprland*|*wlroots*)
+                print_hint "Make sure your status bar speaks StatusNotifierItem (Waybar with the 'tray' module, sway-systray, etc.). Without it the icon will not be visible."
+                ;;
+            *)
+                print_hint "Tray icon: should appear in any desktop env that supports StatusNotifierItem. If it doesn't, check that your panel / bar speaks the SNI protocol."
+                ;;
+        esac
+        print_hint "Right-click the tray icon for Show / Quit. Left-click toggles the modal."
+        ;;
+
+    Darwin)
+        echo ""
+        echo "Next steps:"
+        print_hint "Tray icon: should appear at the right end of your menu bar."
+        print_hint "If macOS quarantined Aura.app, the launchd plist won't load — strip the quarantine: xattr -dr com.apple.quarantine /Applications/Aura.app"
+        print_hint "To pin Aura.app to the Dock: right-click its Dock icon → Options → Keep in Dock."
+        ;;
+
+    *)
+        ;;
+esac

@@ -108,6 +108,15 @@ fn main() -> Result<()> {
                                 )
                                 .await;
                             }
+                            TrayEvent::Quit => {
+                                // Explicit user exit from the right-click
+                                // menu. cx.quit() tears down the GPUI
+                                // event loop; aura exits cleanly so
+                                // systemd's Restart=on-failure won't
+                                // respawn us.
+                                let _ = cx.update(|cx| cx.quit());
+                                return;
+                            }
                         }
                     }
                 }
@@ -137,15 +146,35 @@ impl Render for KeepAliveView {
     }
 }
 
-/// Open the always-present hidden window. See the call site for why this
-/// is necessary on Linux Wayland. Failures are non-fatal but logged: if
-/// the keepalive can't open, aura will still work — just with the old
+/// Open the always-present keepalive window. See the call site for why
+/// this is necessary on Linux Wayland. Failures are non-fatal but logged:
+/// if the keepalive can't open, aura will still work — just with the old
 /// "process exits on last window close" behaviour.
+///
+/// ## Hiding it on Wayland
+///
+/// GPUI 0.2's Wayland backend silently ignores `show: false` (it creates
+/// an xdg_toplevel and commits the surface unconditionally), so KWin
+/// renders a 1×1 surface as a small window with server-side chrome
+/// (title bar + close button). To minimise damage we:
+///
+/// * open the surface at `(-9999, -9999)` so even if the compositor
+///   doesn't clamp it back on-screen, the user can't accidentally
+///   focus or click it;
+/// * `minimize_window()` it immediately so KDE puts it straight into
+///   the taskbar overflow instead of painting it on the desktop;
+/// * give it a distinct `app_id` ("aura-keepalive") so KDE's task
+///   manager doesn't group it under the main "Aura" entry;
+/// * intercept every platform-level close request with
+///   `on_window_should_close` returning `false` — clicking the
+///   compositor's "close window" action on the keepalive becomes a
+///   no-op, so the tray can't be killed by a stray click. Our own
+///   `toggle()` uses `window.remove_window()` which bypasses this
+///   guard (it's an internal close, not a platform request).
 fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveView>> {
     let opts = WindowOptions {
-        // 1×1 in case some compositor refuses zero-size surfaces.
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-            gpui::point(px(0.), px(0.)),
+            gpui::point(px(-9999.), px(-9999.)),
             size(px(1.), px(1.)),
         ))),
         titlebar: None,
@@ -155,11 +184,22 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
+        app_id: Some("aura-keepalive".into()),
         ..Default::default()
     };
 
     match cx.open_window(opts, |_window, cx| cx.new(|_| KeepAliveView)) {
-        Ok(handle) => Some(handle),
+        Ok(handle) => {
+            // Best-effort hide + lock. The `update` returns Err only if
+            // the window vanished between open and now (shouldn't happen);
+            // either way we return the handle so the caller's reference
+            // keeps the keepalive alive.
+            let _ = handle.update(cx, |_view, window, cx| {
+                window.on_window_should_close(cx, |_, _| false);
+                window.minimize_window();
+            });
+            Some(handle)
+        }
         Err(e) => {
             eprintln!("warning: failed to open keepalive window: {e}");
             None
