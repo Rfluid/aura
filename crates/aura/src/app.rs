@@ -539,11 +539,15 @@ impl Render for AuraView {
                 // moving the origin up — we can only stop growing
                 // downward.
                 //
-                // 64px covers the typical Plasma / GNOME / Dock heights;
-                // on top-taskbar setups it's just 64px of breathing room
-                // from the very bottom of the screen, which matches the
-                // pre-existing behaviour.
-                let bottom_reserve = px(64.);
+                // 120px is a blind margin that comfortably covers KDE
+                // Plasma's "Huge" panel preset (~120px) and macOS Dock
+                // at default size, without trying to read the actual
+                // work area (Wayland doesn't expose it portably — see
+                // the README "Roadmap" for the proper xdg-output fix).
+                // Cost: on top-taskbar setups we leave 120px of
+                // breathing room above the screen bottom that we could
+                // otherwise fill.
+                let bottom_reserve = px(120.);
                 if let Some(display) = app.primary_display() {
                     let dbounds = display.bounds();
                     let screen_bottom = dbounds.origin.y + dbounds.size.height;
