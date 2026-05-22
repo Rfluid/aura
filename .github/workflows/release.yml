@@ -26,10 +26,9 @@ jobs:
                       runner: ubuntu-latest
                       target: x86_64-unknown-linux-gnu
                       experimental: false
-                    - label: linux-x86_64-musl
-                      runner: ubuntu-latest
-                      target: x86_64-unknown-linux-musl
-                      experimental: true
+                    # musl is intentionally omitted: tray-icon's `gtk` feature
+                    # transitively pulls glib/GTK, which are glibc-only — there
+                    # is no realistic static-link path against musl.
                     - label: linux-aarch64-gnu
                       runner: ubuntu-latest
                       target: aarch64-unknown-linux-gnu
@@ -73,21 +72,54 @@ jobs:
                       libxcb-shape0-dev libxcb-xfixes0-dev \
                       libfontconfig-dev
 
-            - name: Install musl linker
-              if: matrix.target == 'x86_64-unknown-linux-musl'
-              run: sudo apt-get install -y musl-tools
-
             - name: Install aarch64 cross-compile toolchain
               if: matrix.target == 'aarch64-unknown-linux-gnu'
               run: |
+                  set -euxo pipefail
+
+                  # Restrict primary mirrors to amd64 so apt-get update does
+                  # not 404 fetching arm64 metadata from an amd64-only mirror.
+                  if [ -f /etc/apt/sources.list ]; then
+                      sudo sed -i 's|^deb http|deb [arch=amd64,i386] http|g' /etc/apt/sources.list
+                  fi
+                  if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+                      sudo sed -i '/^Types:.*deb/a Architectures: amd64 i386' /etc/apt/sources.list.d/ubuntu.sources
+                  fi
+
+                  # arm64 packages live on ports.ubuntu.com, not the primary mirror.
+                  codename=$(lsb_release -cs)
+                  sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null <<EOF
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename} main universe restricted multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename}-updates main universe restricted multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename}-security main universe restricted multiverse
+                  EOF
+
+                  sudo dpkg --add-architecture arm64
+                  sudo apt-get update
                   sudo apt-get install -y \
                       gcc-aarch64-linux-gnu \
-                      g++-aarch64-linux-gnu
+                      g++-aarch64-linux-gnu \
+                      pkg-config-aarch64-linux-gnu \
+                      libgtk-3-dev:arm64 \
+                      libxkbcommon-x11-dev:arm64 \
+                      libxcb1-dev:arm64 \
+                      libxcb-render0-dev:arm64 \
+                      libxcb-shape0-dev:arm64 \
+                      libxcb-xfixes0-dev:arm64 \
+                      libfontconfig-dev:arm64
+
                   mkdir -p .cargo
                   cat >> .cargo/config.toml <<'EOF'
                   [target.aarch64-unknown-linux-gnu]
                   linker = "aarch64-linux-gnu-gcc"
                   EOF
+
+                  # Route *-sys crates to the arm64 pkg-config wrapper.
+                  {
+                      echo "PKG_CONFIG_aarch64-unknown-linux-gnu=aarch64-linux-gnu-pkg-config"
+                      echo "PKG_CONFIG_aarch64_unknown_linux_gnu=aarch64-linux-gnu-pkg-config"
+                      echo "PKG_CONFIG_ALLOW_CROSS=1"
+                  } >> "$GITHUB_ENV"
 
             - name: Cache cargo artifacts
               uses: Swatinem/rust-cache@v2
