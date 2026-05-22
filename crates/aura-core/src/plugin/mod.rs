@@ -7,25 +7,35 @@ use serde::{Deserialize, Serialize};
 // ── Section content variants ──────────────────────────────────────────────────
 
 /// A single key/value line rendered in a plugin section.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginLine {
     pub label: String,
     pub value: String,
     #[serde(default)]
     pub highlight: bool,
+    /// Optional 0.0–1.0 fill ratio. When present the renderer draws a
+    /// progress bar under the value (used e.g. for the rtk-gains
+    /// "Efficiency meter").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
 }
 
 /// One row in a `Table`-typed section.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginRow {
     pub cells: Vec<String>,
     #[serde(default)]
     pub highlight: bool,
+    /// Optional 0.0–1.0 fill ratio. When present the renderer draws a
+    /// trailing "Impact" bar at the end of the row (used e.g. for the
+    /// rtk-gains "By Command" impact column).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
 }
 
 /// What kind of content a section holds. Tagged on the wire as
 /// `{"type": "lines", ...}` / `{"type": "table", ...}`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PluginContent {
     /// Key/value lines (the original layout).
@@ -48,7 +58,7 @@ impl Default for PluginContent {
 // ── Section + payload ────────────────────────────────────────────────────────
 
 /// One tab/section inside a plugin panel.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginSection {
     /// Stable identifier (used for tab selection state).
     pub id: String,
@@ -72,7 +82,7 @@ fn default_true() -> bool {
 /// Backwards-compatible: if a plugin still emits the old flat
 /// `{title, lines, error}` shape, the runner wraps it into a single
 /// "default" section.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginPanel {
     pub title: String,
     #[serde(default)]

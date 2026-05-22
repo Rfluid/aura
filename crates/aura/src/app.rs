@@ -7,10 +7,10 @@ use aura_core::{
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{div, prelude::*, px, rgb, svg, AnyElement, ClickEvent, Context, SharedString, Window};
 
-use crate::format::{duration, hour_of_day, thousands};
+use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
 
 // ── Theme tokens (Zed-ish dark) ───────────────────────────────────────────────
 const COLOR_BG: u32 = 0x0e0e10;
@@ -20,6 +20,7 @@ const COLOR_BORDER: u32 = 0x2d2d36;
 const COLOR_TEXT: u32 = 0xe6e6ee;
 const COLOR_TEXT_DIM: u32 = 0x8a8a9a;
 const COLOR_ACCENT: u32 = 0x8b5cf6;
+const COLOR_WARNING: u32 = 0xe0a96d;
 
 // Per-agent brand tints used for the icon next to each profile name.
 const COLOR_CLAUDE: u32 = 0xd97757;
@@ -895,7 +896,7 @@ impl AuraView {
         let section_id = self.active_plugin_section.as_deref().unwrap_or("");
         let section = panel.section(section_id).or_else(|| panel.sections.first());
         match section {
-            Some(s) => render_plugin_section(s),
+            Some(s) => render_plugin_section(s, self.current_accent()),
             None => render_loading(),
         }
     }
@@ -931,43 +932,89 @@ fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32) -> AnyElement {
         );
     }
 
+    if quota.source != QuotaSource::Api {
+        col = col.child(render_fallback_warning(quota));
+    }
+
     if quota.windows.is_empty() {
-        let msg = quota
-            .note
-            .clone()
-            .unwrap_or_else(|| "No quota data available.".to_string());
-        col = col.child(
-            div()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(COLOR_BORDER))
-                .bg(rgb(COLOR_SURFACE))
-                .text_color(rgb(COLOR_TEXT_DIM))
-                .text_xs()
-                .child(SharedString::from(msg)),
-        );
+        if quota.source == QuotaSource::Api {
+            col = col.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(COLOR_BORDER))
+                    .bg(rgb(COLOR_SURFACE))
+                    .text_color(rgb(COLOR_TEXT_DIM))
+                    .text_xs()
+                    .child("No quota data available."),
+            );
+        }
     } else {
         for w in &quota.windows {
             col = col.child(render_quota_window(w, accent));
         }
     }
 
-    // Source / note banner at the bottom
-    if quota.source == QuotaSource::Fallback {
-        let note = quota.note.clone().unwrap_or_else(|| {
-            "Showing local token counts (subscription limits unknown).".to_string()
-        });
-        col = col.child(
-            div()
-                .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
-                .child(SharedString::from(note)),
-        );
-    }
-
     col.into_any_element()
+}
+
+/// Discrete warning chip shown when the quota snapshot didn't come from the
+/// `/api/oauth/usage` endpoint. Distinguishes the fallback kind so the user
+/// knows whether numbers are local estimates or absent entirely.
+fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
+    let (kind, default_note) = match quota.source {
+        QuotaSource::Fallback => (
+            "Local estimate",
+            "Subscription limits unknown — showing local token counts.",
+        ),
+        QuotaSource::Unavailable => (
+            "Quota unavailable",
+            "Quota data is not available right now.",
+        ),
+        QuotaSource::Api => return div().into_any_element(),
+    };
+    let note = quota
+        .note
+        .clone()
+        .unwrap_or_else(|| default_note.to_string());
+
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(COLOR_BORDER))
+        .bg(rgb(COLOR_SURFACE))
+        .child(
+            div()
+                .mt(px(1.0))
+                .child(svg_icon("icons/info.svg", COLOR_WARNING, 12.0)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(COLOR_WARNING))
+                        .child(SharedString::from(kind)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .child(SharedString::from(note)),
+                ),
+        )
+        .into_any_element()
 }
 
 fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
@@ -1039,36 +1086,40 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
         )
 }
 
-/// Format a UTC instant as a friendly local-time string like
-/// `6:50pm (America/Sao_Paulo)` or `May 22, 4pm` if it's > 24h out.
+/// Format a UTC instant as a friendly local-time string, respecting the OS
+/// locale for month abbreviations and the am/pm marker. In 12h locales the
+/// near-term output looks like `6:50pm (America/Sao_Paulo)`; 24h locales get
+/// `18:50 (America/Sao_Paulo)`. Beyond 24h the date is added: `May 22, 4pm`
+/// or `22 mai, 16:00`.
 fn format_reset(ts: DateTime<Utc>) -> String {
     let local = ts.with_timezone(&Local);
     let now = Local::now();
     let within_24h = (local - now).num_hours().abs() < 24;
     let tz_label = chrono::Local::now().offset().to_string();
-    if within_24h {
-        // 6:50pm
-        let hour = local.format("%I").to_string();
-        let hour = hour.trim_start_matches('0');
-        let hour = if hour.is_empty() { "12" } else { hour };
-        let minute = local.format("%M").to_string();
-        let suffix = local.format("%P").to_string();
-        if minute == "00" {
-            format!("{hour}{suffix} ({tz_label})")
+    let locale = system_locale();
+    let uses_12h = locale_uses_12h();
+    let minute = local.minute();
+
+    let time = if uses_12h {
+        let hour = local.format_localized("%-I", locale).to_string();
+        let suffix = local
+            .format_localized("%P", locale)
+            .to_string()
+            .to_lowercase();
+        if minute == 0 {
+            format!("{hour}{suffix}")
         } else {
-            format!("{hour}:{minute}{suffix} ({tz_label})")
+            format!("{hour}:{minute:02}{suffix}")
         }
     } else {
-        // May 22, 4pm
-        let date = local.format("%b %-d").to_string();
-        let hour = local.format("%-I").to_string();
-        let minute = local.format("%M").to_string();
-        let suffix = local.format("%P").to_string();
-        if minute == "00" {
-            format!("{date}, {hour}{suffix}")
-        } else {
-            format!("{date}, {hour}:{minute}{suffix}")
-        }
+        format!("{:02}:{:02}", local.hour(), minute)
+    };
+
+    if within_24h {
+        format!("{time} ({tz_label})")
+    } else {
+        let date = local.format_localized("%b %-d", locale).to_string();
+        format!("{date}, {time}")
     }
 }
 
@@ -1268,22 +1319,27 @@ fn render_daily_chart(snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
 
 // ── Plugin section rendering ─────────────────────────────────────────────────
 
-fn render_plugin_section(section: &PluginSection) -> AnyElement {
+fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
     match &section.content {
         PluginContent::Lines { lines } => {
             let mut col = div().flex().flex_col().px_4().py_3().gap_2();
             for line in lines {
-                col = col.child(
+                let mut card = div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(COLOR_SURFACE))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(COLOR_BORDER));
+
+                card = card.child(
                     div()
                         .flex()
                         .flex_row()
                         .justify_between()
-                        .px_3()
-                        .py_2()
-                        .bg(rgb(COLOR_SURFACE))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(COLOR_BORDER))
                         .child(
                             div()
                                 .text_xs()
@@ -1293,15 +1349,68 @@ fn render_plugin_section(section: &PluginSection) -> AnyElement {
                         .child(
                             div()
                                 .text_xs()
-                                .when(line.highlight, |d| d.text_color(rgb(COLOR_ACCENT)))
+                                .when(line.highlight, |d| d.text_color(rgb(accent)))
                                 .when(!line.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
                                 .child(SharedString::from(line.value.clone())),
                         ),
                 );
+
+                if let Some(p) = line.progress {
+                    card = card.child(progress_bar(p, accent, 6.0));
+                }
+
+                col = col.child(card);
             }
             col.into_any_element()
         }
         PluginContent::Table { headers, rows } => {
+            let has_progress = rows.iter().any(|r| r.progress.is_some());
+
+            // Size each text column to its widest cell (header + rows). This
+            // keeps narrow numeric columns from claiming equal space with the
+            // command column when the window is small. The Impact bar (when
+            // present) still flexes to absorb any leftover room.
+            let n_cols = headers.len();
+            let mut col_chars: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+            for row in rows {
+                for (i, cell) in row.cells.iter().enumerate().take(n_cols) {
+                    col_chars[i] = col_chars[i].max(cell.chars().count());
+                }
+            }
+            // Monospace at text-xs (~11px) lands close to 7px per character.
+            // A small slack keeps single-pixel rounding from clipping the
+            // tail character.
+            const CHAR_PX: f32 = 7.0;
+            const CELL_SLACK_PX: f32 = 4.0;
+            let col_widths: Vec<f32> = col_chars
+                .iter()
+                .map(|c| (*c as f32) * CHAR_PX + CELL_SLACK_PX)
+                .collect();
+            // Right-align columns that look numeric (header `#`, `%` in
+            // header, or every data cell starts with a digit). Matches the
+            // `rtk gain` CLI: rank/count/saved/pct/time right-align, command
+            // stays left.
+            let col_right: Vec<bool> = headers
+                .iter()
+                .enumerate()
+                .map(|(i, h)| {
+                    let h_marks = h == "#" || h.contains('%');
+                    let cells_numeric = !rows.is_empty()
+                        && rows.iter().all(|r| {
+                            r.cells
+                                .get(i)
+                                .map(|c| {
+                                    c.trim_start()
+                                        .chars()
+                                        .next()
+                                        .is_some_and(|ch| ch.is_ascii_digit())
+                                })
+                                .unwrap_or(false)
+                        });
+                    h_marks || cells_numeric
+                })
+                .collect();
+
             let mut col = div().flex().flex_col().px_4().py_3().gap_1();
 
             // Header row
@@ -1313,29 +1422,58 @@ fn render_plugin_section(section: &PluginSection) -> AnyElement {
                 .py_2()
                 .border_b_1()
                 .border_color(rgb(COLOR_BORDER));
-            for h in headers {
+            for (i, h) in headers.iter().enumerate() {
+                let right = col_right.get(i).copied().unwrap_or(false);
+                header_row = header_row.child(
+                    div()
+                        .w(px(col_widths[i]))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .when(right, |d| d.text_right())
+                        .child(SharedString::from(h.clone())),
+                );
+            }
+            if has_progress {
                 header_row = header_row.child(
                     div()
                         .flex_1()
                         .text_xs()
                         .text_color(rgb(COLOR_TEXT_DIM))
-                        .child(SharedString::from(h.clone())),
+                        .child("Impact"),
                 );
             }
             col = col.child(header_row);
 
             // Data rows
             for row in rows {
-                let mut r = div().flex().flex_row().gap_2().px_3().py_1p5();
-                for cell in &row.cells {
+                let mut r = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1p5();
+                for (i, cell) in row.cells.iter().enumerate() {
+                    let w = col_widths.get(i).copied().unwrap_or(80.0);
+                    let right = col_right.get(i).copied().unwrap_or(false);
                     r = r.child(
                         div()
-                            .flex_1()
+                            .w(px(w))
+                            .flex_none()
                             .text_xs()
-                            .when(row.highlight, |d| d.text_color(rgb(COLOR_ACCENT)))
+                            .when(row.highlight, |d| d.text_color(rgb(accent)))
                             .when(!row.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
+                            .when(right, |d| d.text_right())
                             .child(SharedString::from(cell.clone())),
                     );
+                }
+                if has_progress {
+                    r = r.child(div().flex_1().child(progress_bar(
+                        row.progress.unwrap_or(0.0),
+                        accent,
+                        6.0,
+                    )));
                 }
                 col = col.child(r);
             }
@@ -1349,6 +1487,24 @@ fn render_plugin_section(section: &PluginSection) -> AnyElement {
             .child(SharedString::from(text.clone()))
             .into_any_element(),
     }
+}
+
+/// A thin filled bar. `fraction` is clamped to 0.0–1.0. Used by plugin
+/// `progress` fields (e.g. rtk-gains efficiency meter / impact column).
+fn progress_bar(fraction: f64, accent: u32, height: f32) -> impl IntoElement {
+    let f = fraction.clamp(0.0, 1.0) as f32;
+    div()
+        .h(px(height))
+        .w_full()
+        .bg(rgb(COLOR_SURFACE_HI))
+        .rounded_md()
+        .child(
+            div()
+                .h(px(height))
+                .w(gpui::relative(f))
+                .bg(rgb(accent))
+                .rounded_md(),
+        )
 }
 
 // ── More modal ───────────────────────────────────────────────────────────────
@@ -1494,14 +1650,19 @@ fn svg_icon_dynamic(path: SharedString, color: u32, size: f32) -> impl IntoEleme
 }
 
 /// Resolve the icon path for a plugin. Returns the configured `icon` field
-/// when present, otherwise the generic `blocks` glyph. Path resolution (asset
-/// name vs. absolute vs. relative-to-config) happens in the asset loader.
+/// when present, otherwise a sensible default per known plugin command (so
+/// first-party plugins keep their brand glyph even in pre-`icon`-field
+/// configs), falling back to the generic `blocks` icon. Path resolution
+/// (asset name vs. absolute vs. relative-to-config) happens in the asset
+/// loader.
 fn plugin_icon_path(plugin: &PluginConfig) -> SharedString {
-    plugin
-        .icon
-        .clone()
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from("icons/blocks.svg"))
+    if let Some(icon) = plugin.icon.clone() {
+        return SharedString::from(icon);
+    }
+    match plugin.command.as_str() {
+        "aura-plugin-rtk" => SharedString::from("icons/rtk.svg"),
+        _ => SharedString::from("icons/blocks.svg"),
+    }
 }
 
 /// A click-target wrapping an SVG icon. Caller chains `.on_click(...)`.
