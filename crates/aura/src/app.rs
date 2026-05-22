@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
     config::{parse_hex_color, AgentConfig, AgentKind, AppConfig, PluginConfig},
@@ -8,7 +8,10 @@ use aura_core::{
     state::AppState,
 };
 use chrono::{DateTime, Local, Timelike, Utc};
-use gpui::{div, prelude::*, px, rgb, svg, AnyElement, ClickEvent, Context, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, SharedString,
+    Window,
+};
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
 
@@ -27,12 +30,9 @@ const COLOR_CLAUDE: u32 = 0xd97757;
 const COLOR_OPENAI: u32 = 0xffffff;
 const COLOR_GEMINI: u32 = 0x4285f4;
 
-/// Maximum height of the body region in pixels. The window itself is 640px
-/// tall and the header / selector / period / tab rows together use ~200px,
-/// so 440px is roughly the most the body can claim before the window starts
-/// to feel cramped. When the body's natural height exceeds this, the
-/// wrapping container becomes vertically scrollable.
-const MAX_BODY_HEIGHT: f32 = 440.0;
+/// Fixed window width. The window grows vertically to fit content (see
+/// `on_children_prepainted` in `render`), so only the height is dynamic.
+const WINDOW_WIDTH: f32 = 520.0;
 
 /// Braille spinner frames. Matches the `cli-spinners` "dots" preset
 /// (see `.design/loading.md`). 10 frames, advanced every 80ms while
@@ -110,6 +110,10 @@ pub struct AuraView {
     /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
     spinner_frame: usize,
     error: Option<String>,
+    /// Height we last asked the window to be. Read by the
+    /// `on_children_prepainted` callback so we only issue a `Window::resize`
+    /// when the measured content height actually changes.
+    last_window_height: Rc<Cell<Pixels>>,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -162,6 +166,7 @@ impl AuraView {
             is_loading: false,
             spinner_frame: 0,
             error: None,
+            last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
         };
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
@@ -500,10 +505,11 @@ impl AuraView {
 
 impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let last_height = self.last_window_height.clone();
         let mut root = div()
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
             .bg(rgb(COLOR_BG))
             .text_color(rgb(COLOR_TEXT))
             .font_family("monospace")
@@ -514,7 +520,52 @@ impl Render for AuraView {
                 d.child(self.render_period_row(cx))
             })
             .child(self.render_tab_row(cx))
-            .child(self.render_body(cx));
+            .child(self.render_body(cx))
+            // After children have been laid out, sum their vertical extent
+            // and resize the window so it tightly fits the content. The root
+            // has no padding/border, and children are stacked top-to-bottom
+            // in window coordinates, so the bottom of the lowest child is
+            // the natural content height.
+            .on_children_prepainted(move |bounds, window, app| {
+                let Some(bottom) = bounds.iter().map(|b| b.origin.y + b.size.height).max() else {
+                    return;
+                };
+                let mut measured = bottom.ceil();
+
+                // Cap measured at a safe distance above the primary
+                // display's bottom edge so the window never grows into a
+                // bottom taskbar / dock. GPUI 0.2 has no public
+                // set_position API, so we can't anchor the bottom by
+                // moving the origin up — we can only stop growing
+                // downward.
+                //
+                // 64px covers the typical Plasma / GNOME / Dock heights;
+                // on top-taskbar setups it's just 64px of breathing room
+                // from the very bottom of the screen, which matches the
+                // pre-existing behaviour.
+                let bottom_reserve = px(64.);
+                if let Some(display) = app.primary_display() {
+                    let dbounds = display.bounds();
+                    let screen_bottom = dbounds.origin.y + dbounds.size.height;
+                    let window_top = window.bounds().origin.y;
+                    // Floor at 200px so a misconfigured / tiny display
+                    // doesn't collapse the modal to nothing.
+                    let max_h = (screen_bottom - window_top - bottom_reserve).max(px(200.));
+                    if measured > max_h {
+                        measured = max_h;
+                    }
+                }
+
+                let last = last_height.get();
+                if (measured - last).abs() < px(1.0) {
+                    return;
+                }
+                last_height.set(measured);
+                let new_size = size(px(WINDOW_WIDTH), measured);
+                window.on_next_frame(move |window, _cx| {
+                    window.resize(new_size);
+                });
+            });
 
         if self.show_more_modal {
             root = root.child(self.render_more_modal(cx));
@@ -839,30 +890,33 @@ impl AuraView {
                 .p_6()
                 .child(div().text_color(rgb(0xff6b6b)).child(err.clone()))
                 .into_any_element()
+        } else if self.is_loading {
+            // While a refresh is in flight, hide whatever the previous
+            // agent/plugin/period produced and show a clean loading state.
+            // Otherwise switching from Claude → Codex (etc.) flashes the
+            // outgoing profile's numbers under the new tab.
+            render_loading(self.spinner_frame)
         } else {
             let accent = self.current_accent();
             match self.mode {
                 Mode::Agent => match self.active_agent_section {
-                    AgentSection::Quota => render_quota(self.quota.as_ref(), accent),
+                    AgentSection::Quota => {
+                        render_quota(self.quota.as_ref(), accent, self.spinner_frame)
+                    }
                     AgentSection::Summary => match self.snapshot.as_ref() {
                         Some(snap) => render_summary(snap),
-                        None => render_loading(),
+                        None => render_loading(self.spinner_frame),
                     },
                     AgentSection::Models => match self.snapshot.as_ref() {
                         Some(snap) => render_models(snap, accent),
-                        None => render_loading(),
+                        None => render_loading(self.spinner_frame),
                     },
                 },
                 Mode::Plugin => self.render_plugin_body(),
             }
         };
 
-        div()
-            .id("body-scroll")
-            .max_h(px(MAX_BODY_HEIGHT))
-            .overflow_y_scroll()
-            .child(inner)
-            .into_any_element()
+        div().id("body").child(inner).into_any_element()
     }
 
     fn render_plugin_body(&self) -> AnyElement {
@@ -902,27 +956,54 @@ impl AuraView {
         let section = panel.section(section_id).or_else(|| panel.sections.first());
         match section {
             Some(s) => render_plugin_section(s, self.current_accent()),
-            None => render_loading(),
+            None => render_loading(self.spinner_frame),
         }
     }
 }
 
 // ── Quota (subscription windows — mirrors `claude /usage`) ───────────────────
 
-fn render_loading() -> AnyElement {
+/// Centralized loading placeholder. Sized to match the typical rendered
+/// height of two quota windows (label + progress bar + resets row) so the
+/// modal barely resizes when the initial fetch completes — fewer visible
+/// jumps on first paint and on agent/plugin switches.
+fn render_loading(spinner_frame: usize) -> AnyElement {
+    let frame = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
     div()
         .flex()
         .flex_col()
-        .flex_1()
+        .h(px(260.0))
+        .w_full()
         .items_center()
         .justify_center()
-        .child(div().text_color(rgb(COLOR_TEXT_DIM)).child("Loading…"))
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(48.0))
+                .h(px(48.0))
+                .rounded_md()
+                .bg(rgb(COLOR_SURFACE))
+                .border_1()
+                .border_color(rgb(COLOR_BORDER))
+                .text_lg()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child(frame),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(COLOR_TEXT_DIM))
+                .child("Loading…"),
+        )
         .into_any_element()
 }
 
-fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32) -> AnyElement {
+fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32, spinner_frame: usize) -> AnyElement {
     let Some(quota) = quota else {
-        return render_loading();
+        return render_loading(spinner_frame);
     };
 
     let mut col = div().flex().flex_col().px_4().py_3().gap_3();
