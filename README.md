@@ -17,23 +17,26 @@ consumed, subscription quota windows, estimated costs, and custom
 optimizer metrics via a plugin system. Click the icon, see your usage,
 click again to dismiss.
 
-## Summary
+## Contents
 
-Aura is a small system-tray indicator for AI-agent usage. It sits next
-to wifi and volume; click the icon and a modal opens showing your
-subscription quota windows (Claude's `/usage` API in real time),
-all-time / 7-day / 30-day session totals scanned from your local
-`~/.claude`, `~/.codex`, and `~/.gemini` logs, and a per-model
-breakdown of what actually ate your tokens. Switch between agent
-profiles with one click — the last selection is persisted across
-sessions — and surface third-party metrics through the plugin system.
-
-Aura runs on Linux (KDE Plasma, GNOME, sway, and any DE that supports
-StatusNotifierItem), macOS, and Windows. The installer wires up
-autostart per platform so the icon is present the moment you log in.
-Memory footprint is ~85 MB RSS while idle, and there is zero telemetry
-— Aura reads only your own local agent state and Claude's
-per-user usage endpoint.
+- [Screenshots](#screenshots)
+- [Why Aura?](#why-aura)
+- [Features](#features)
+- [Plugins](#plugins)
+- [Configuration](#configuration)
+- [Installation](#installation)
+  - [Making the tray icon always visible](#making-the-tray-icon-always-visible)
+  - [Modal placement on Wayland](#modal-placement-on-wayland)
+  - [System dependencies](#system-dependencies-linux)
+  - [Install from GitHub Releases](#install-from-github-releases)
+  - [Build from source](#build-from-source)
+  - [Common commands](#common-commands)
+- [Compatibility](#compatibility)
+- [Under the hood](#under-the-hood)
+- [Roadmap](#roadmap)
+- [Sponsor](#sponsor)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Screenshots
 
