@@ -1,6 +1,8 @@
 mod app;
 mod assets;
 mod format;
+#[cfg(target_os = "macos")]
+mod macos;
 mod tray;
 
 use anyhow::Result;
@@ -44,6 +46,12 @@ fn main() -> Result<()> {
             .expect("failed to open window");
 
             cx.activate(true);
+
+            // GPUI sets NSApplicationActivationPolicyRegular at startup,
+            // which gives Aura a Dock icon. Override it on macOS so we
+            // behave like a menu-bar accessory app instead.
+            #[cfg(target_os = "macos")]
+            macos::set_accessory_activation_policy();
         });
 
     Ok(())

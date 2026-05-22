@@ -31,7 +31,7 @@ _Goal: working widget for Claude Code usage with RTK Gains plugin_
 - [ ] Animated loading states
 - [ ] Light theme
 - [ ] Plugin panel expand/collapse
-- [ ] macOS system tray support (stretch)
+- [x] macOS system tray support — menu-bar accessory app, launchd autostart, Keychain credentials
 
 ## v0.3 — Plugin ecosystem
 

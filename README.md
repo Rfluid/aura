@@ -56,7 +56,14 @@ Plugins expose a simple trait interface. Authors can package them as shared libr
 
 ## Configuration
 
-Aura is configured via a single TOML file (`~/.config/aura/config.toml`). Define as many profiles as you need:
+Aura is configured via a single TOML file at the OS-standard config location:
+
+| Platform | Config path |
+|---|---|
+| Linux | `~/.config/aura/config.toml` |
+| macOS | `~/Library/Application Support/aura/config.toml` |
+
+Define as many profiles as you need:
 
 ```toml
 [[agents]]
@@ -81,13 +88,14 @@ kind = "codex"
 - [ ] RTK Gains plugin (built-in)
 - [ ] Custom command agents (BYOA — Bring Your Own Agent)
 - [ ] Plugin authoring guide + example plugin
-- [ ] macOS support
+- [x] macOS support (Apple Silicon + Intel; menu-bar app + launchd autostart)
 - [ ] Plugin registry
 
 ## Installation
 
-Aura runs as a systemd user service on Linux. You can either grab a prebuilt
-release archive or build from source with Cargo (Rust 1.80+).
+Aura runs as a systemd user service on Linux and as a menu-bar app (launchd
+LaunchAgent + `Aura.app`) on macOS. You can either grab a prebuilt release
+archive or build from source with Cargo (Rust 1.80+).
 
 ### System dependencies (Linux)
 
@@ -102,6 +110,25 @@ The runtime dependencies (`libgtk-3-0`, `libxkbcommon-x11-0`, `libxcb1`,
 `libxcb-render0`, `libxcb-shape0`, `libxcb-xfixes0`, `libfontconfig1`) are also
 needed at install-from-release time — the `-dev` packages above cover them.
 
+### System dependencies (macOS)
+
+```bash
+xcode-select --install                  # AppKit / linker
+brew install librsvg                    # only needed if you want a real .icns
+```
+
+The release tarball is unsigned, so on first launch macOS will quarantine it.
+Either right-click `Aura.app` → **Open** and confirm, or strip the flag:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Aura.app
+```
+
+Claude Code OAuth tokens are stored in the macOS Keychain on Darwin (service
+`Claude Code-credentials`); Aura reads them from there automatically. If you
+get a "Keychain read failed" warning, run Claude Code at least once to
+populate the entry, then restart Aura.
+
 ### Install from GitHub Releases
 
 Published releases include tarballs containing the `aura` and `aura-plugin-rtk`
@@ -110,13 +137,12 @@ binaries plus the systemd unit (Linux archives only):
 - Linux x86_64 (gnu) — `x86_64-unknown-linux-gnu`
 - Linux x86_64 (musl) — `x86_64-unknown-linux-musl`
 - Linux aarch64 (gnu) — `aarch64-unknown-linux-gnu`
-- macOS Intel — `x86_64-apple-darwin`
+- macOS Intel — `x86_64-apple-darwin` (ships `Aura.app` + `com.aura.agent-usage.plist`)
 - macOS Apple Silicon — `aarch64-apple-darwin`
 
-> Note: macOS and musl Linux artifacts are currently published as experimental
-> targets — until GPUI / `tray-icon` cross-platform support lands they may be
-> missing from a given release. Use the `gnu` Linux archive for a known-good
-> install.
+> Note: the musl Linux artifact is still experimental. macOS archives are
+> built and signed best-effort — unsigned bundles will be quarantined by
+> Gatekeeper; see the macOS deps section above.
 
 Pick the archive that matches your host:
 
@@ -155,11 +181,29 @@ tar -xzf "${ASSET}.tar.gz"
 install -Dm755 "${ASSET}/aura"            "${HOME}/.local/bin/aura"
 install -Dm755 "${ASSET}/aura-plugin-rtk" "${HOME}/.local/bin/aura-plugin-rtk"
 
-if [ "$(uname -s)" = "Linux" ] && [ -f "${ASSET}/aura.service" ]; then
-  install -Dm644 "${ASSET}/aura.service" "${HOME}/.config/systemd/user/aura.service"
-  systemctl --user daemon-reload
-  systemctl --user enable --now aura
-fi
+case "$(uname -s)" in
+  Linux)
+    if [ -f "${ASSET}/aura.service" ]; then
+      install -Dm644 "${ASSET}/aura.service" "${HOME}/.config/systemd/user/aura.service"
+      systemctl --user daemon-reload
+      systemctl --user enable --now aura
+    fi
+    ;;
+  Darwin)
+    if [ -d "${ASSET}/Aura.app" ]; then
+      rm -rf "/Applications/Aura.app"
+      cp -R "${ASSET}/Aura.app" "/Applications/Aura.app"
+      xattr -dr com.apple.quarantine "/Applications/Aura.app" 2>/dev/null || true
+    fi
+    if [ -f "${ASSET}/com.aura.agent-usage.plist" ]; then
+      install -m 644 "${ASSET}/com.aura.agent-usage.plist" \
+        "${HOME}/Library/LaunchAgents/com.aura.agent-usage.plist"
+      launchctl bootout   "gui/$(id -u)/com.aura.agent-usage" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" \
+        "${HOME}/Library/LaunchAgents/com.aura.agent-usage.plist"
+    fi
+    ;;
+esac
 ```
 
 Make sure `~/.local/bin` is on `PATH`.
@@ -169,17 +213,18 @@ Make sure `~/.local/bin` is on `PATH`.
 #### One-shot install
 
 ```bash
-./install.sh        # builds + installs to ~/.local/bin + sets up systemd unit
+./install.sh        # auto-detects Linux/macOS and wires up autostart
 ```
 
 Or, with [`just`](https://github.com/casey/just):
 
 ```bash
-just install                 # build + install everything
+just install                 # build + install (Linux: systemd, macOS: launchd + .app)
+# Linux only — the launchd agent is loaded automatically on macOS:
 systemctl --user enable --now aura
 ```
 
-#### Manual
+#### Manual (Linux)
 
 ```bash
 cargo build --release --workspace
@@ -190,13 +235,29 @@ systemctl --user daemon-reload
 systemctl --user enable --now aura
 ```
 
+#### Manual (macOS)
+
+```bash
+cargo build --release --workspace
+install -m 755 target/release/aura            ~/.local/bin/aura
+install -m 755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
+
+./scripts/build-macos-app.sh target/release/aura target/release
+cp -R target/release/Aura.app /Applications/Aura.app
+
+install -m 644 packaging/com.aura.agent-usage.plist \
+    ~/Library/LaunchAgents/com.aura.agent-usage.plist
+launchctl bootstrap "gui/$(id -u)" \
+    ~/Library/LaunchAgents/com.aura.agent-usage.plist
+```
+
 ### Common commands
 
-| Command                     | What it does                                  |
-| --------------------------- | --------------------------------------------- |
-| `just run`                  | Launch Aura (debug build) without installing  |
-| `just status` / `just logs` | Service status / tail journal                 |
-| `just uninstall`            | Remove binaries + unit (keeps config & state) |
+| Command                     | What it does                                                      |
+| --------------------------- | ----------------------------------------------------------------- |
+| `just run`                  | Launch Aura (debug build) without installing                      |
+| `just status` / `just logs` | Service status / tail logs (systemd on Linux, launchd on macOS)   |
+| `just uninstall`            | Remove binaries + unit / LaunchAgent (keeps config & state)       |
 
 ## Sponsor
 

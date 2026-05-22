@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Aura — macOS LaunchAgent
+
+    Drop this into ~/Library/LaunchAgents/ and load with:
+        launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.aura.agent-usage.plist
+        launchctl kickstart  -k gui/$UID/com.aura.agent-usage
+
+    The install script does this for you.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aura.agent-usage</string>
+
+    <!--
+        Prefer the .app bundle when present; the install script rewrites
+        this entry to either /Applications/Aura.app/Contents/MacOS/aura or
+        the raw $HOME/.local/bin/aura when no .app is installed.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Aura.app/Contents/MacOS/aura</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash, but not on clean exit (matches systemd `Restart=on-failure`). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/aura.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/aura.err.log</string>
+</dict>
+</plist>

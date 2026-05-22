@@ -12,4 +12,19 @@ dirs.workspace      = true
 gpui                = "0.2"
 resvg               = { version = "0.47", default-features = false }
 tiny-skia           = "0.12"
-tray-icon           = { version = "0.24", default-features = false, features = ["gtk"] }
+
+# `tray-icon`'s `gtk` feature is gated to Linux/BSD; on macOS / Windows the
+# crate uses AppKit / Win32 backends and the feature is a no-op. Split the
+# spec so we don't pull GTK off the registry on non-Linux hosts.
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+
+# macOS needs `setActivationPolicy(Accessory)` so the app lives in the menu
+# bar without occupying a Dock slot. GPUI hard-codes `Regular` at startup, so
+# we override it ourselves after launch via `objc2-app-kit`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2          = "0.5"
+objc2-app-kit  = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }

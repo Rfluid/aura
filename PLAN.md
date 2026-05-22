@@ -153,12 +153,27 @@
 
 ---
 
+## Phase 10 — macOS support ✓
+
+- [x] Cross-platform Cargo gating for `tray-icon` (`gtk` feature only on Linux/BSD)
+- [x] `objc2-app-kit` override of `NSApplicationActivationPolicy` → `Accessory` (menu-bar app, no Dock icon) since GPUI hard-codes `Regular`
+- [x] Keychain read/write for Claude Code OAuth credentials (`Claude Code-credentials`, account = `$USER`) via `security-framework`; falls back to `.credentials.json` for legacy installs
+- [x] `packaging/com.aura.agent-usage.plist` LaunchAgent (RunAtLoad, KeepAlive on crash)
+- [x] `packaging/macos/Info.plist` with `LSUIElement=true`
+- [x] `scripts/build-macos-app.sh` assembles `Aura.app` (optional codesign via `CODESIGN_IDENTITY`)
+- [x] `install.sh` and `justfile` dispatch on `uname -s` (Linux: systemd, macOS: launchd + .app)
+- [x] Release CI builds and packages `Aura.app` + plist for both darwin targets; `experimental: true` dropped
+- [x] README documents macOS install, config path, Gatekeeper quarantine, Keychain caveat
+- [ ] **Manual test required** — first-launch verification on Intel + Apple Silicon, codesign / notarization setup once an Apple Developer ID is available
+
+---
+
 ## Deferred / roadmap
 
 - Light theme
 - Historical usage charts in the modal (beyond ASCII)
 - Plugin authoring guide + example repo
 - Plugin registry (`aura plugin install <name>`)
-- macOS support (kqueue watcher, macOS tray via `tray-icon`)
 - Custom command agents (BYOA)
 - Cost alerts / budget warnings
+- macOS: Developer-ID codesign + notarization (needs Apple account)

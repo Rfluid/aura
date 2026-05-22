@@ -13,6 +13,11 @@
 //!   }
 //! }
 //! ```
+//!
+//! On macOS Claude Code stores the same JSON blob as a generic password
+//! in the user's login Keychain (service `"Claude Code-credentials"`,
+//! account = `$USER`), and removes the on-disk file. We try Keychain
+//! first there and fall back to the file for sandboxed / odd setups.
 
 use std::{
     fs,
@@ -65,6 +70,86 @@ pub fn credentials_path(claude_config_dir: &Path) -> PathBuf {
     claude_config_dir.join(".credentials.json")
 }
 
+/// macOS Keychain service name Claude Code uses for the OAuth blob.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// The Keychain entry's account name. Claude Code uses `$USER`; we
+/// resolve it dynamically so multi-user Macs work.
+#[cfg(target_os = "macos")]
+fn keychain_account() -> Result<String> {
+    std::env::var("USER").context("USER env var unset; cannot resolve Keychain account")
+}
+
+/// `errSecItemNotFound` from `<Security/SecBase.h>`.
+#[cfg(target_os = "macos")]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+/// Try to fetch the OAuth blob from the macOS login Keychain. Returns
+/// `Ok(None)` when no entry exists so callers can fall back to the
+/// on-disk file.
+#[cfg(target_os = "macos")]
+fn read_from_keychain() -> Result<Option<ClaudeOauth>> {
+    use security_framework::passwords::get_generic_password;
+
+    let account = keychain_account()?;
+    match get_generic_password(KEYCHAIN_SERVICE, &account) {
+        Ok(bytes) => {
+            let content =
+                std::str::from_utf8(&bytes).context("Keychain credential blob is not UTF-8")?;
+            let file: CredentialsFile =
+                serde_json::from_str(content).context("parsing credentials from Keychain")?;
+            Ok(Some(file.claude_ai_oauth))
+        }
+        Err(e) => {
+            let code = e.code();
+            if code == ERR_SEC_ITEM_NOT_FOUND {
+                Ok(None)
+            } else {
+                Err(anyhow!("Keychain read failed (OSStatus {code})"))
+            }
+        }
+    }
+}
+
+/// Write the OAuth blob back to the macOS Keychain, preserving any extra
+/// keys present in the existing entry (e.g. `mcpOAuth`).
+#[cfg(target_os = "macos")]
+fn save_to_keychain(fresh: &ClaudeOauth) -> Result<()> {
+    use security_framework::passwords::{get_generic_password, set_generic_password};
+
+    let account = keychain_account()?;
+
+    // Round-trip the existing blob so we don't strip extra top-level
+    // keys Claude Code may have added.
+    let serialized = match get_generic_password(KEYCHAIN_SERVICE, &account) {
+        Ok(bytes) => {
+            let content =
+                std::str::from_utf8(&bytes).context("existing Keychain blob is not UTF-8")?;
+            let mut file: CredentialsFile =
+                serde_json::from_str(content).context("parsing existing Keychain credentials")?;
+            file.claude_ai_oauth = fresh.clone();
+            serde_json::to_string_pretty(&file)?
+        }
+        Err(e) => {
+            let code = e.code();
+            if code == ERR_SEC_ITEM_NOT_FOUND {
+                // No prior entry — write a minimal one.
+                let file = CredentialsFile {
+                    claude_ai_oauth: fresh.clone(),
+                    other: serde_json::Map::new(),
+                };
+                serde_json::to_string_pretty(&file)?
+            } else {
+                return Err(anyhow!("Keychain read failed (OSStatus {code})"));
+            }
+        }
+    };
+
+    set_generic_password(KEYCHAIN_SERVICE, &account, serialized.as_bytes())
+        .map_err(|e| anyhow!("Keychain write failed (OSStatus {})", e.code()))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -72,8 +157,21 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Read the credentials file and return the OAuth block.
+/// Read the credentials file and return the OAuth block. On macOS the
+/// Keychain is preferred; falls back to the on-disk file only when the
+/// Keychain has no entry (e.g. legacy installs).
 pub fn read(claude_config_dir: &Path) -> Result<ClaudeOauth> {
+    #[cfg(target_os = "macos")]
+    {
+        match read_from_keychain() {
+            Ok(Some(creds)) => return Ok(creds),
+            Ok(None) => {} // fall through to file
+            Err(e) => {
+                eprintln!("warning: Keychain read failed, falling back to file: {e}");
+            }
+        }
+    }
+
     let path = credentials_path(claude_config_dir);
     let content = fs::read_to_string(&path)
         .with_context(|| format!("reading credentials at {}", path.display()))?;
@@ -134,7 +232,23 @@ pub fn refresh(creds: &ClaudeOauth) -> Result<ClaudeOauth> {
 
 /// Atomically write the refreshed OAuth block back into the credentials file,
 /// preserving any extra top-level keys we didn't model (e.g. `mcpOAuth`).
+/// On macOS the Keychain is the source of truth; if a Keychain entry exists
+/// we update that and skip the file.
 pub fn save(claude_config_dir: &Path, fresh: &ClaudeOauth) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // Only mirror to Keychain if Claude Code is actually using it
+        // there; otherwise fall through to the file path so we don't
+        // surprise legacy installs.
+        match read_from_keychain() {
+            Ok(Some(_)) => return save_to_keychain(fresh),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("warning: Keychain probe failed, writing to file: {e}");
+            }
+        }
+    }
+
     let path = credentials_path(claude_config_dir);
     let existing = fs::read_to_string(&path)
         .with_context(|| format!("reading credentials at {}", path.display()))?;

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Aura</string>
+    <key>CFBundleDisplayName</key>
+    <string>Aura</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.aura.agent-usage</string>
+    <key>CFBundleExecutable</key>
+    <string>aura</string>
+    <key>CFBundleIconFile</key>
+    <string>Aura</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <!--
+        Menu-bar accessory app: no Dock icon, no app-switcher entry.
+        Aura also overrides the activation policy in code because GPUI
+        forces `Regular` on startup, but keeping this flag set lets
+        the launchd agent skip the brief Dock flash on launch.
+    -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
+    <!-- Aura reads ~/.claude/projects/ to count tokens. No camera/mic/file-system prompts. -->
+</dict>
+</plist>

@@ -37,11 +37,11 @@ jobs:
                     - label: macos-x86_64
                       runner: macos-15-intel
                       target: x86_64-apple-darwin
-                      experimental: true
+                      experimental: false
                     - label: macos-aarch64
                       runner: macos-15
                       target: aarch64-apple-darwin
-                      experimental: true
+                      experimental: false
 
         steps:
             - name: Checkout repository
@@ -89,12 +89,20 @@ jobs:
             - name: Build release binaries
               run: cargo build --workspace --release --locked --target "${{ matrix.target }}"
 
+            # rsvg-convert lets the .app build script produce a real
+            # .icns; without it we ship the SVG fallback.
+            - name: Install macOS bundling tools
+              if: startsWith(matrix.runner, 'macos')
+              run: brew install librsvg
+
             - name: Package release artifacts
               shell: bash
               env:
                   TAG: ${{ github.ref_name }}
                   TARGET_TRIPLE: ${{ matrix.target }}
                   IS_LINUX: ${{ startsWith(matrix.runner, 'ubuntu') }}
+                  IS_MACOS: ${{ startsWith(matrix.runner, 'macos') }}
+                  CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
               run: |
                   set -euo pipefail
                   ASSET_DIR="aura-${TAG}-${TARGET_TRIPLE}"
@@ -108,6 +116,16 @@ jobs:
                   if [ "$IS_LINUX" = "true" ] && [ -f packaging/aura.service ]; then
                       cp packaging/aura.service "dist/${ASSET_DIR}/aura.service"
                       chmod 644 "dist/${ASSET_DIR}/aura.service"
+                  fi
+
+                  # macOS archives carry Aura.app + the launchd plist.
+                  if [ "$IS_MACOS" = "true" ]; then
+                      ./scripts/build-macos-app.sh \
+                          "target/${TARGET_TRIPLE}/release/aura" \
+                          "dist/${ASSET_DIR}"
+                      cp packaging/com.aura.agent-usage.plist \
+                          "dist/${ASSET_DIR}/com.aura.agent-usage.plist"
+                      chmod 644 "dist/${ASSET_DIR}/com.aura.agent-usage.plist"
                   fi
 
                   # README and LICENSE for context inside the archive.

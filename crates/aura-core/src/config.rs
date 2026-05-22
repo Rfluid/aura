@@ -60,6 +60,7 @@ pub struct PluginConfig {
     /// 1. Embedded asset name (`"icons/foo.svg"` matching a baked-in file)
     /// 2. Absolute path on disk
     /// 3. Home-relative path beginning with `~/`
+    ///
     /// When absent, a generic `blocks` glyph is used.
     #[serde(default)]
     pub icon: Option<String>,
