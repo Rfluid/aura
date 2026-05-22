@@ -18,6 +18,10 @@
 //! in the user's login Keychain (service `"Claude Code-credentials"`,
 //! account = `$USER`), and removes the on-disk file. We try Keychain
 //! first there and fall back to the file for sandboxed / odd setups.
+//!
+//! On Windows Claude Code uses the Windows Credential Manager (target name
+//! `"Claude Code-credentials"`, user = `%USERNAME%`) the same way — same
+//! preference order applies.
 
 use std::{
     fs,
@@ -84,6 +88,67 @@ fn keychain_account() -> Result<String> {
 /// `errSecItemNotFound` from `<Security/SecBase.h>`.
 #[cfg(target_os = "macos")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+/// Windows Credential Manager target name Claude Code uses for the OAuth blob.
+#[cfg(target_os = "windows")]
+const WINCRED_TARGET: &str = "Claude Code-credentials";
+
+/// The credential's user name. Claude Code uses `%USERNAME%`; we resolve it
+/// dynamically so roaming profiles / multi-user setups work.
+#[cfg(target_os = "windows")]
+fn wincred_user() -> Result<String> {
+    std::env::var("USERNAME")
+        .context("USERNAME env var unset; cannot resolve Credential Manager user")
+}
+
+/// Try to fetch the OAuth blob from the Windows Credential Manager. Returns
+/// `Ok(None)` when no entry exists so callers can fall back to the on-disk
+/// file (legacy installs, sandboxed contexts).
+#[cfg(target_os = "windows")]
+fn read_from_wincred() -> Result<Option<ClaudeOauth>> {
+    let user = wincred_user()?;
+    let entry = keyring::Entry::new(WINCRED_TARGET, &user)
+        .context("constructing Credential Manager entry")?;
+    match entry.get_password() {
+        Ok(content) => {
+            let file: CredentialsFile = serde_json::from_str(&content)
+                .context("parsing credentials from Credential Manager")?;
+            Ok(Some(file.claude_ai_oauth))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow!("Credential Manager read failed: {e}")),
+    }
+}
+
+/// Write the OAuth blob back to the Windows Credential Manager, preserving
+/// any extra keys present in the existing entry.
+#[cfg(target_os = "windows")]
+fn save_to_wincred(fresh: &ClaudeOauth) -> Result<()> {
+    let user = wincred_user()?;
+    let entry = keyring::Entry::new(WINCRED_TARGET, &user)
+        .context("constructing Credential Manager entry")?;
+
+    let serialized = match entry.get_password() {
+        Ok(content) => {
+            let mut file: CredentialsFile = serde_json::from_str(&content)
+                .context("parsing existing Credential Manager credentials")?;
+            file.claude_ai_oauth = fresh.clone();
+            serde_json::to_string_pretty(&file)?
+        }
+        Err(keyring::Error::NoEntry) => {
+            let file = CredentialsFile {
+                claude_ai_oauth: fresh.clone(),
+                other: serde_json::Map::new(),
+            };
+            serde_json::to_string_pretty(&file)?
+        }
+        Err(e) => return Err(anyhow!("Credential Manager read failed: {e}")),
+    };
+
+    entry
+        .set_password(&serialized)
+        .map_err(|e| anyhow!("Credential Manager write failed: {e}"))
+}
 
 /// Try to fetch the OAuth blob from the macOS login Keychain. Returns
 /// `Ok(None)` when no entry exists so callers can fall back to the
@@ -172,6 +237,17 @@ pub fn read(claude_config_dir: &Path) -> Result<ClaudeOauth> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        match read_from_wincred() {
+            Ok(Some(creds)) => return Ok(creds),
+            Ok(None) => {} // fall through to file
+            Err(e) => {
+                eprintln!("warning: Credential Manager read failed, falling back to file: {e}");
+            }
+        }
+    }
+
     let path = credentials_path(claude_config_dir);
     let content = fs::read_to_string(&path)
         .with_context(|| format!("reading credentials at {}", path.display()))?;
@@ -245,6 +321,17 @@ pub fn save(claude_config_dir: &Path, fresh: &ClaudeOauth) -> Result<()> {
             Ok(None) => {}
             Err(e) => {
                 eprintln!("warning: Keychain probe failed, writing to file: {e}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match read_from_wincred() {
+            Ok(Some(_)) => return save_to_wincred(fresh),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("warning: Credential Manager probe failed, writing to file: {e}");
             }
         }
     }

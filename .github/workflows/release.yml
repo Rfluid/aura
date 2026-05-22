@@ -42,6 +42,14 @@ jobs:
                       runner: macos-15
                       target: aarch64-apple-darwin
                       experimental: false
+                    - label: windows-x86_64
+                      runner: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      experimental: false
+                    - label: windows-aarch64
+                      runner: windows-latest
+                      target: aarch64-pc-windows-msvc
+                      experimental: true
 
         steps:
             - name: Checkout repository
@@ -95,7 +103,8 @@ jobs:
               if: startsWith(matrix.runner, 'macos')
               run: brew install librsvg
 
-            - name: Package release artifacts
+            - name: Package release artifacts (Unix)
+              if: ${{ !startsWith(matrix.runner, 'windows') }}
               shell: bash
               env:
                   TAG: ${{ github.ref_name }}
@@ -143,12 +152,43 @@ jobs:
                       fi
                   )
 
+            - name: Package release artifacts (Windows)
+              if: startsWith(matrix.runner, 'windows')
+              shell: pwsh
+              env:
+                  TAG: ${{ github.ref_name }}
+                  TARGET_TRIPLE: ${{ matrix.target }}
+              run: |
+                  $ErrorActionPreference = 'Stop'
+                  $assetDir = "aura-$env:TAG-$env:TARGET_TRIPLE"
+                  $stageRoot = "dist/$assetDir"
+                  New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
+
+                  Copy-Item "target/$env:TARGET_TRIPLE/release/aura.exe"            "$stageRoot/aura.exe"
+                  Copy-Item "target/$env:TARGET_TRIPLE/release/aura-plugin-rtk.exe" "$stageRoot/aura-plugin-rtk.exe"
+
+                  if (Test-Path "scripts/install.ps1") {
+                      Copy-Item "scripts/install.ps1" "$stageRoot/install.ps1"
+                  }
+
+                  foreach ($f in @('README.md', 'LICENSE')) {
+                      if (Test-Path $f) { Copy-Item $f "$stageRoot/$f" }
+                  }
+
+                  $zip = "dist/$assetDir.zip"
+                  if (Test-Path $zip) { Remove-Item $zip }
+                  Compress-Archive -Path "$stageRoot/*" -DestinationPath $zip
+
+                  $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+                  "$hash  $assetDir.zip" | Out-File -Encoding ascii "dist/$assetDir.sha256"
+
             - name: Upload packaged artifacts
               uses: actions/upload-artifact@v7
               with:
                   name: release-${{ matrix.target }}
                   path: |
                       dist/*.tar.gz
+                      dist/*.zip
                       dist/*.sha256
                   if-no-files-found: error
 
@@ -170,4 +210,5 @@ jobs:
                   generate_release_notes: true
                   files: |
                       dist/*.tar.gz
+                      dist/*.zip
                       dist/*.sha256

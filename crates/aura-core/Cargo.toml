@@ -20,5 +20,12 @@ ureq.workspace                  = true
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2"
 
+# On Windows Claude Code stores the same credential blob in the Windows
+# Credential Manager (service `Claude Code-credentials`) and likewise
+# removes the on-disk file. Use the `windows-native` keyring backend so
+# we don't pull dbus/secret-service deps on other platforms.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
 [dev-dependencies]
 tempfile = "3"

@@ -62,6 +62,7 @@ Aura is configured via a single TOML file at the OS-standard config location:
 |---|---|
 | Linux | `~/.config/aura/config.toml` |
 | macOS | `~/Library/Application Support/aura/config.toml` |
+| Windows | `%APPDATA%\aura\config.toml` |
 
 Define as many profiles as you need:
 
@@ -89,13 +90,15 @@ kind = "codex"
 - [ ] Custom command agents (BYOA — Bring Your Own Agent)
 - [ ] Plugin authoring guide + example plugin
 - [x] macOS support (Apple Silicon + Intel; menu-bar app + launchd autostart)
+- [x] Windows support (x86_64 + aarch64; tray app + Startup-folder autostart)
 - [ ] Plugin registry
 
 ## Installation
 
-Aura runs as a systemd user service on Linux and as a menu-bar app (launchd
-LaunchAgent + `Aura.app`) on macOS. You can either grab a prebuilt release
-archive or build from source with Cargo (Rust 1.80+).
+Aura runs as a systemd user service on Linux, as a menu-bar app (launchd
+LaunchAgent + `Aura.app`) on macOS, and as a tray app with a Startup-folder
+shortcut on Windows. You can either grab a prebuilt release archive or build
+from source with Cargo (Rust 1.80+).
 
 ### System dependencies (Linux)
 
@@ -129,84 +132,57 @@ Claude Code OAuth tokens are stored in the macOS Keychain on Darwin (service
 get a "Keychain read failed" warning, run Claude Code at least once to
 populate the entry, then restart Aura.
 
+### System dependencies (Windows)
+
+No system packages required — the MSVC C runtime ships with Windows. To
+build from source you'll need:
+
+```powershell
+# Install Rust (https://rustup.rs) and the MSVC build tools
+# (Visual Studio "Desktop development with C++" workload or VS Build Tools).
+rustup target add x86_64-pc-windows-msvc      # default on Windows hosts
+```
+
+On Windows Claude Code stores OAuth tokens in **Credential Manager** (target
+`Claude Code-credentials`); Aura reads them from there automatically, falling
+back to `%USERPROFILE%\.claude\.credentials.json` for legacy installs. If you
+get a "Credential Manager read failed" warning, run Claude Code at least once
+to populate the entry, then restart Aura.
+
 ### Install from GitHub Releases
 
-Published releases include tarballs containing the `aura` and `aura-plugin-rtk`
-binaries plus the systemd unit (Linux archives only):
+Published releases include tarballs (Linux/macOS) and a zip (Windows)
+containing the `aura` and `aura-plugin-rtk` binaries plus the platform
+autostart artifact:
 
 - Linux x86_64 (gnu) — `x86_64-unknown-linux-gnu`
 - Linux x86_64 (musl) — `x86_64-unknown-linux-musl`
 - Linux aarch64 (gnu) — `aarch64-unknown-linux-gnu`
 - macOS Intel — `x86_64-apple-darwin` (ships `Aura.app` + `com.aura.agent-usage.plist`)
 - macOS Apple Silicon — `aarch64-apple-darwin`
+- Windows x86_64 — `x86_64-pc-windows-msvc` (ships `aura.exe` + `install.ps1`)
+- Windows aarch64 — `aarch64-pc-windows-msvc` (experimental)
 
-> Note: the musl Linux artifact is still experimental. macOS archives are
-> built and signed best-effort — unsigned bundles will be quarantined by
-> Gatekeeper; see the macOS deps section above.
+> Note: the musl Linux artifact and the aarch64 Windows artifact are still
+> experimental. macOS archives are built and signed best-effort — unsigned
+> bundles will be quarantined by Gatekeeper; see the macOS deps section above.
+> Windows binaries are unsigned: SmartScreen may prompt on first run.
 
-Pick the archive that matches your host:
+Run the installer — it auto-detects your host, downloads the matching archive,
+verifies its checksum, and wires up autostart:
 
 ```bash
-VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-  https://github.com/Rfluid/aura/releases/latest \
-  | sed 's:.*/::')"
-
-if [ -z "${VERSION}" ]; then
-  echo "Failed to determine the latest GitHub release version" >&2
-  exit 1
-fi
-
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64)  ASSET="aura-${VERSION}-x86_64-unknown-linux-gnu" ;;
-  Linux-aarch64) ASSET="aura-${VERSION}-aarch64-unknown-linux-gnu" ;;
-  Darwin-x86_64) ASSET="aura-${VERSION}-x86_64-apple-darwin" ;;
-  Darwin-arm64)  ASSET="aura-${VERSION}-aarch64-apple-darwin" ;;
-  *)
-    echo "No published release artifact for $(uname -s)-$(uname -m)" >&2
-    exit 1
-    ;;
-esac
-
-curl -LO "https://github.com/Rfluid/aura/releases/download/${VERSION}/${ASSET}.tar.gz"
-curl -LO "https://github.com/Rfluid/aura/releases/download/${VERSION}/${ASSET}.sha256"
-
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum -c "${ASSET}.sha256"
-else
-  shasum -a 256 -c "${ASSET}.sha256"
-fi
-
-tar -xzf "${ASSET}.tar.gz"
-
-install -Dm755 "${ASSET}/aura"            "${HOME}/.local/bin/aura"
-install -Dm755 "${ASSET}/aura-plugin-rtk" "${HOME}/.local/bin/aura-plugin-rtk"
-
-case "$(uname -s)" in
-  Linux)
-    if [ -f "${ASSET}/aura.service" ]; then
-      install -Dm644 "${ASSET}/aura.service" "${HOME}/.config/systemd/user/aura.service"
-      systemctl --user daemon-reload
-      systemctl --user enable --now aura
-    fi
-    ;;
-  Darwin)
-    if [ -d "${ASSET}/Aura.app" ]; then
-      rm -rf "/Applications/Aura.app"
-      cp -R "${ASSET}/Aura.app" "/Applications/Aura.app"
-      xattr -dr com.apple.quarantine "/Applications/Aura.app" 2>/dev/null || true
-    fi
-    if [ -f "${ASSET}/com.aura.agent-usage.plist" ]; then
-      install -m 644 "${ASSET}/com.aura.agent-usage.plist" \
-        "${HOME}/Library/LaunchAgents/com.aura.agent-usage.plist"
-      launchctl bootout   "gui/$(id -u)/com.aura.agent-usage" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" \
-        "${HOME}/Library/LaunchAgents/com.aura.agent-usage.plist"
-    fi
-    ;;
-esac
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/Rfluid/aura/main/install.sh | bash
 ```
 
-Make sure `~/.local/bin` is on `PATH`.
+```powershell
+# Windows (PowerShell)
+iex (irm https://raw.githubusercontent.com/Rfluid/aura/main/scripts/install.ps1)
+```
+
+Make sure `~/.local/bin` (Linux/macOS) or `%LOCALAPPDATA%\Programs\Aura`
+(Windows) is on `PATH`.
 
 ### Build from source
 
@@ -216,12 +192,21 @@ Make sure `~/.local/bin` is on `PATH`.
 ./install.sh        # auto-detects Linux/macOS and wires up autostart
 ```
 
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
 Or, with [`just`](https://github.com/casey/just):
 
 ```bash
 just install                 # build + install (Linux: systemd, macOS: launchd + .app)
 # Linux only — the launchd agent is loaded automatically on macOS:
 systemctl --user enable --now aura
+```
+
+```powershell
+just install-windows         # build + install + Startup-folder shortcut
 ```
 
 #### Manual (Linux)
@@ -251,13 +236,33 @@ launchctl bootstrap "gui/$(id -u)" \
     ~/Library/LaunchAgents/com.aura.agent-usage.plist
 ```
 
+#### Manual (Windows)
+
+```powershell
+cargo build --release --workspace
+
+$dst = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+Copy-Item -Force target\release\aura.exe            "$dst\aura.exe"
+Copy-Item -Force target\release\aura-plugin-rtk.exe "$dst\aura-plugin-rtk.exe"
+
+# Autostart at sign-in via Startup-folder shortcut.
+$wsh = New-Object -ComObject WScript.Shell
+$lnk = $wsh.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'))
+$lnk.TargetPath       = "$dst\aura.exe"
+$lnk.WorkingDirectory = $dst
+$lnk.WindowStyle      = 7
+$lnk.Save()
+```
+
 ### Common commands
 
-| Command                     | What it does                                                      |
-| --------------------------- | ----------------------------------------------------------------- |
-| `just run`                  | Launch Aura (debug build) without installing                      |
-| `just status` / `just logs` | Service status / tail logs (systemd on Linux, launchd on macOS)   |
-| `just uninstall`            | Remove binaries + unit / LaunchAgent (keeps config & state)       |
+| Command                                           | What it does                                                                       |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `just run`                                        | Launch Aura (debug build) without installing                                       |
+| `just status` / `just logs`                       | Service status / tail logs (systemd on Linux, launchd on macOS)                    |
+| `just status-windows` / `just stop-windows`       | Show / stop the running `aura.exe` on Windows                                      |
+| `just uninstall` / `just uninstall-windows`       | Remove binaries + unit / LaunchAgent / Startup shortcut (keeps config & state)     |
 
 ## Sponsor
 

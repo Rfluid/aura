@@ -1,100 +1,234 @@
 #!/usr/bin/env bash
-# Aura installation script — builds binaries and wires up autostart.
-# Supports Linux (systemd user unit) and macOS (.app bundle + launchd agent).
+# Aura installation script — supports two modes:
+#
+#   * source   — run from a cloned repo: builds with cargo, then installs.
+#   * release  — run via `curl | bash`: downloads the latest GitHub release
+#                archive for the host, verifies its checksum, then installs.
+#
+# Linux gets a systemd user unit; macOS gets a .app bundle + launchd LaunchAgent.
+# Override detection with AURA_INSTALL_MODE=source|release.
+# Pin a specific release with AURA_VERSION=v1.2.3.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 UNIT_DIR="${HOME}/.config/systemd/user"
 LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
 APP_DIR="/Applications"            # falls back to ~/Applications if not writable
 LAUNCHD_LABEL="com.aura.agent-usage"
+RELEASE_BASE_URL="https://github.com/Rfluid/aura/releases"
 
 OS="$(uname -s)"
+ARCH="$(uname -m)"
 
-# ── Prerequisite checks ───────────────────────────────────────────────────────
+# Detect Git Bash / MSYS / Cygwin under Windows and redirect users to the
+# PowerShell installer — bash autostart paths (systemd / launchd) don't
+# apply, and forking a .ps1 from here is more brittle than just asking.
+case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+        cat >&2 <<'EOF'
+error: this script is for Linux/macOS only.
 
-command -v cargo >/dev/null 2>&1 || {
-    echo "error: cargo not found. Install Rust from https://rustup.rs" >&2
-    exit 1
+Run the PowerShell installer instead (from PowerShell, not Git Bash):
+    powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+EOF
+        exit 1
+        ;;
+esac
+
+# Resolve script directory when invoked from a file; tolerate `curl | bash`,
+# where BASH_SOURCE is empty / not a real file path.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    ROOT=""
+fi
+
+INSTALL_MODE="${AURA_INSTALL_MODE:-}"
+AURA_VERSION="${AURA_VERSION:-}"
+
+if [ -z "$INSTALL_MODE" ]; then
+    if [ -n "$ROOT" ] && [ -f "$ROOT/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+        INSTALL_MODE="source"
+    else
+        INSTALL_MODE="release"
+    fi
+fi
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+asset_name_for_host() {
+    local version="$1"
+    case "$OS-$ARCH" in
+        Linux-x86_64)  printf 'aura-%s-x86_64-unknown-linux-gnu\n'  "$version" ;;
+        Linux-aarch64) printf 'aura-%s-aarch64-unknown-linux-gnu\n' "$version" ;;
+        Darwin-x86_64) printf 'aura-%s-x86_64-apple-darwin\n'        "$version" ;;
+        Darwin-arm64)  printf 'aura-%s-aarch64-apple-darwin\n'       "$version" ;;
+        *) return 1 ;;
+    esac
 }
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+resolve_latest_version() {
+    curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        "${RELEASE_BASE_URL}/latest" | sed 's:.*/::'
+}
 
-echo "▸ Building Aura (release)…"
-(cd "$ROOT" && cargo build --release --workspace)
+verify_checksum() {
+    local asset="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c "${asset}.sha256"
+    else
+        shasum -a 256 -c "${asset}.sha256"
+    fi
+}
+
+# ── Stage binaries + autostart files ──────────────────────────────────────────
+#
+# After this block STAGING_DIR holds the binaries (and Aura.app on macOS), and
+# PACKAGING_DIR holds the systemd unit / launchd plist source.
+
+if [ "$INSTALL_MODE" = "source" ]; then
+    command -v cargo >/dev/null 2>&1 || {
+        echo "error: cargo not found. Install Rust from https://rustup.rs" >&2
+        exit 1
+    }
+
+    echo "▸ Building Aura (release)…"
+    (cd "$ROOT" && cargo build --release --workspace)
+
+    STAGING_DIR="$ROOT/target/release"
+    PACKAGING_DIR="$ROOT/packaging"
+
+    if [ "$OS" = "Darwin" ]; then
+        echo "▸ Assembling Aura.app…"
+        "$ROOT/scripts/build-macos-app.sh" "$STAGING_DIR/aura" "$STAGING_DIR"
+    fi
+else
+    command -v curl >/dev/null 2>&1 || {
+        echo "error: curl not found — required to download release artifacts" >&2
+        exit 1
+    }
+    command -v tar >/dev/null 2>&1 || {
+        echo "error: tar not found" >&2
+        exit 1
+    }
+
+    if [ -z "$AURA_VERSION" ]; then
+        echo "▸ Resolving latest release…"
+        AURA_VERSION="$(resolve_latest_version)"
+        [ -n "$AURA_VERSION" ] || {
+            echo "error: failed to determine the latest GitHub release version" >&2
+            exit 1
+        }
+    fi
+
+    ASSET="$(asset_name_for_host "$AURA_VERSION")" || {
+        echo "error: no published release artifact for ${OS}-${ARCH}" >&2
+        exit 1
+    }
+
+    echo "▸ Installing ${AURA_VERSION} (${ASSET})"
+
+    DL_DIR="$(mktemp -d)"
+    trap 'rm -rf "$DL_DIR"' EXIT
+
+    (
+        cd "$DL_DIR"
+        curl -fsSL -O "${RELEASE_BASE_URL}/download/${AURA_VERSION}/${ASSET}.tar.gz"
+        curl -fsSL -O "${RELEASE_BASE_URL}/download/${AURA_VERSION}/${ASSET}.sha256"
+        verify_checksum "$ASSET"
+        tar -xzf "${ASSET}.tar.gz"
+    )
+
+    STAGING_DIR="$DL_DIR/$ASSET"
+    PACKAGING_DIR="$STAGING_DIR"
+fi
 
 # ── Install binaries ──────────────────────────────────────────────────────────
 
 mkdir -p "$BIN_DIR"
-install -m 755 "$ROOT/target/release/aura"            "$BIN_DIR/aura"
-install -m 755 "$ROOT/target/release/aura-plugin-rtk" "$BIN_DIR/aura-plugin-rtk"
+install -m 755 "$STAGING_DIR/aura"            "$BIN_DIR/aura"
+install -m 755 "$STAGING_DIR/aura-plugin-rtk" "$BIN_DIR/aura-plugin-rtk"
 echo "▸ Installed binaries to $BIN_DIR"
 
 # ── OS-specific autostart ─────────────────────────────────────────────────────
 
 case "$OS" in
     Linux)
-        if command -v systemctl >/dev/null 2>&1; then
+        SERVICE_SRC="$PACKAGING_DIR/aura.service"
+        if [ ! -f "$SERVICE_SRC" ]; then
+            echo "warning: aura.service not found in ${PACKAGING_DIR} — skipping" >&2
+        elif ! command -v systemctl >/dev/null 2>&1; then
+            echo "warning: systemctl not found — skipping systemd integration" >&2
+        else
             mkdir -p "$UNIT_DIR"
-            install -m 644 "$ROOT/packaging/aura.service" "$UNIT_DIR/aura.service"
+            install -m 644 "$SERVICE_SRC" "$UNIT_DIR/aura.service"
             systemctl --user daemon-reload
             echo "▸ Installed systemd unit to $UNIT_DIR"
-            echo ""
-            echo "Enable autostart with:"
-            echo "    systemctl --user enable --now aura"
-        else
-            echo "warning: systemctl not found — skipping systemd integration" >&2
+
+            # curl|bash users expect a one-shot install — enable immediately.
+            # From-source users may want to tweak config first, so we only
+            # print the command.
+            if [ "$INSTALL_MODE" = "release" ]; then
+                systemctl --user enable --now aura
+                echo "▸ Service enabled and started"
+            else
+                echo ""
+                echo "Enable autostart with:"
+                echo "    systemctl --user enable --now aura"
+            fi
         fi
         ;;
 
     Darwin)
-        # Build the .app bundle so launchd has a proper target and Finder
-        # gets a real icon. Falls back to running the bare binary when the
-        # build script's prerequisites aren't met (rsvg-convert/iconutil).
-        BUILD_APP_SCRIPT="$ROOT/scripts/build-macos-app.sh"
-        STAGING_DIR="$ROOT/target/release"
-
-        echo "▸ Assembling Aura.app…"
-        "$BUILD_APP_SCRIPT" "$ROOT/target/release/aura" "$STAGING_DIR"
-
-        # Pick an install location we can actually write to.
-        if [ -w "$APP_DIR" ] || sudo -n true 2>/dev/null; then
-            DEST_APP_DIR="$APP_DIR"
-            if [ ! -w "$DEST_APP_DIR" ]; then
-                echo "▸ /Applications requires sudo to write"
-                sudo rm -rf "$DEST_APP_DIR/Aura.app"
-                sudo cp -R "$STAGING_DIR/Aura.app" "$DEST_APP_DIR/Aura.app"
+        APP_SRC="$STAGING_DIR/Aura.app"
+        if [ -d "$APP_SRC" ]; then
+            # Pick an install location we can actually write to.
+            if [ -w "$APP_DIR" ] || sudo -n true 2>/dev/null; then
+                DEST_APP_DIR="$APP_DIR"
+                if [ ! -w "$DEST_APP_DIR" ]; then
+                    echo "▸ /Applications requires sudo to write"
+                    sudo rm -rf "$DEST_APP_DIR/Aura.app"
+                    sudo cp -R "$APP_SRC" "$DEST_APP_DIR/Aura.app"
+                else
+                    rm -rf "$DEST_APP_DIR/Aura.app"
+                    cp -R "$APP_SRC" "$DEST_APP_DIR/Aura.app"
+                fi
             else
+                DEST_APP_DIR="${HOME}/Applications"
+                mkdir -p "$DEST_APP_DIR"
                 rm -rf "$DEST_APP_DIR/Aura.app"
-                cp -R "$STAGING_DIR/Aura.app" "$DEST_APP_DIR/Aura.app"
+                cp -R "$APP_SRC" "$DEST_APP_DIR/Aura.app"
             fi
+            # Release tarballs are unsigned — strip Gatekeeper quarantine so
+            # the first launch doesn't bounce.
+            xattr -dr com.apple.quarantine "$DEST_APP_DIR/Aura.app" 2>/dev/null || true
+            APP_EXEC="${DEST_APP_DIR}/Aura.app/Contents/MacOS/aura"
+            echo "▸ Installed Aura.app to ${DEST_APP_DIR}"
         else
-            DEST_APP_DIR="${HOME}/Applications"
-            mkdir -p "$DEST_APP_DIR"
-            rm -rf "$DEST_APP_DIR/Aura.app"
-            cp -R "$STAGING_DIR/Aura.app" "$DEST_APP_DIR/Aura.app"
+            echo "warning: Aura.app missing from staging dir — falling back to bare binary" >&2
+            APP_EXEC="$BIN_DIR/aura"
         fi
-        APP_EXEC="${DEST_APP_DIR}/Aura.app/Contents/MacOS/aura"
-        echo "▸ Installed Aura.app to ${DEST_APP_DIR}"
 
-        # Drop the launchd plist (rewriting ProgramArguments to the actual
-        # install path so the user can move the .app without re-running us
-        # if they update both at once).
-        mkdir -p "$LAUNCHD_DIR"
-        PLIST_DEST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
-        sed "s|/Applications/Aura.app/Contents/MacOS/aura|${APP_EXEC}|" \
-            "$ROOT/packaging/com.aura.agent-usage.plist" > "$PLIST_DEST"
-        chmod 644 "$PLIST_DEST"
-        echo "▸ Installed LaunchAgent to $PLIST_DEST"
+        PLIST_SRC="$PACKAGING_DIR/com.aura.agent-usage.plist"
+        if [ ! -f "$PLIST_SRC" ]; then
+            echo "warning: com.aura.agent-usage.plist not found in ${PACKAGING_DIR} — skipping" >&2
+        else
+            # Rewrite the plist's ProgramArguments to the actual install path
+            # (e.g. ~/Applications/Aura.app when /Applications isn't writable).
+            mkdir -p "$LAUNCHD_DIR"
+            PLIST_DEST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
+            sed "s|/Applications/Aura.app/Contents/MacOS/aura|${APP_EXEC}|" \
+                "$PLIST_SRC" > "$PLIST_DEST"
+            chmod 644 "$PLIST_DEST"
+            echo "▸ Installed LaunchAgent to $PLIST_DEST"
 
-        # Reload the agent if launchctl is present (CI may skip this).
-        if command -v launchctl >/dev/null 2>&1; then
-            launchctl bootout "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
-            launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
-            launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}"
-            echo "▸ LaunchAgent loaded — Aura will autostart at login"
+            if command -v launchctl >/dev/null 2>&1; then
+                launchctl bootout "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
+                launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
+                launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}"
+                echo "▸ LaunchAgent loaded — Aura will autostart at login"
+            fi
         fi
         ;;
 

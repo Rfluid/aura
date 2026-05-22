@@ -2,8 +2,8 @@
 title: Roadmap
 status: draft
 version: 0.1.0
-last_updated: 2026-05-21
-last_verified: 2026-05-21
+last_updated: 2026-05-22
+last_verified: 2026-05-22
 source_refs: []
 owner: "@rfluid"
 tags: [roadmap, docs]
@@ -32,6 +32,7 @@ _Goal: working widget for Claude Code usage with RTK Gains plugin_
 - [ ] Light theme
 - [ ] Plugin panel expand/collapse
 - [x] macOS system tray support — menu-bar accessory app, launchd autostart, Keychain credentials
+- [x] Windows system tray support — Startup-folder autostart, Credential Manager credentials, MSVC build
 
 ## v0.3 — Plugin ecosystem
 

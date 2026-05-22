@@ -153,6 +153,19 @@
 
 ---
 
+## Phase 11 — Windows support ✓
+
+- [x] Cargo gating: `tray-icon` falls through to its Win32 backend on Windows (no `gtk` feature needed); the existing "not Linux/BSD" target table covers this
+- [x] Windows Credential Manager read/write for Claude Code OAuth (`Claude Code-credentials`, user = `%USERNAME%`) via `keyring` crate (`windows-native` backend); falls back to `.credentials.json` for legacy installs
+- [x] `scripts/install.ps1` — copies binaries to `%LOCALAPPDATA%\Programs\Aura` and drops a Startup-folder `Aura.lnk` for autostart
+- [x] `install.sh` detects MSYS/MinGW/Cygwin and points users at `install.ps1`
+- [x] `justfile` adds `install-windows`, `uninstall-windows`, `start-windows`, `stop-windows`, `status-windows`
+- [x] Release CI matrix builds `x86_64-pc-windows-msvc` (stable) and `aarch64-pc-windows-msvc` (experimental); Windows artifacts are zipped (not tarballed)
+- [x] README documents Windows config path (`%APPDATA%\aura\config.toml`), install flow, and Credential Manager caveat
+- [ ] **Manual test required** — first-launch verification on x86_64 + aarch64 Windows hosts; code-signing setup once a Windows Authenticode cert is available
+
+---
+
 ## Phase 10 — macOS support ✓
 
 - [x] Cross-platform Cargo gating for `tray-icon` (`gtk` feature only on Linux/BSD)
