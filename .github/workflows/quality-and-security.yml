@@ -65,6 +65,8 @@ jobs:
                       runner: ubuntu-latest
                     - label: macos
                       runner: macos-15
+                    - label: windows
+                      runner: windows-latest
 
         steps:
             - name: Checkout repository
