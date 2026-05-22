@@ -86,17 +86,6 @@ name = "Gemini"
 kind = "gemini"
 ```
 
-## Roadmap
-
-- [ ] Claude Code usage integration
-- [ ] Codex usage integration
-- [ ] RTK Gains plugin (built-in)
-- [ ] Custom command agents (BYOA — Bring Your Own Agent)
-- [ ] Plugin authoring guide + example plugin
-- [x] macOS support (Apple Silicon + Intel; menu-bar app + launchd autostart)
-- [x] Windows support (x86_64 + aarch64; tray app + Startup-folder autostart)
-- [ ] Plugin registry
-
 ## Installation
 
 Aura runs as a systemd user service on Linux, as a menu-bar app (launchd
@@ -267,6 +256,34 @@ $lnk.Save()
 | `just status` / `just logs`                       | Service status / tail logs (systemd on Linux, launchd on macOS)                    |
 | `just status-windows` / `just stop-windows`       | Show / stop the running `aura.exe` on Windows                                      |
 | `just uninstall` / `just uninstall-windows`       | Remove binaries + unit / LaunchAgent / Startup shortcut (keeps config & state)     |
+
+## Roadmap
+
+Shipped
+
+- [x] Claude Code usage integration (`~/.claude` JSONL scan, OAuth via Keychain / Credential Manager)
+- [x] Codex usage integration (`~/.codex` session scan)
+- [x] Gemini usage integration (`~/.gemini` session scan)
+- [x] Multi-profile config + persisted selection across sessions
+- [x] Plugin runner (subprocess + JSON IPC) and built-in RTK Gains plugin
+- [x] Linux support (systemd user service, GTK tray)
+- [x] macOS support (Apple Silicon + Intel; menu-bar `Aura.app` + launchd autostart)
+- [x] Windows support (x86_64 + aarch64; tray app + Startup-folder autostart)
+
+Next up
+
+- [ ] Plugin authoring guide + example plugin (template repo)
+- [ ] Plugin discovery (local scan of `~/.config/aura/plugins/`)
+- [ ] Custom command agents (BYOA — Bring Your Own Agent via a shell command)
+- [ ] Cost alerts / budget warnings
+- [ ] Historical usage charts (daily / weekly trend in the modal)
+- [ ] Per-project usage breakdown (where agents expose project-scoped data)
+
+Later
+
+- [ ] Plugin registry (`aura plugin install <name>`)
+- [ ] Signed macOS bundles + notarization
+- [ ] Signed Windows binaries (SmartScreen-clean)
 
 ## Sponsor
 
