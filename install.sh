@@ -191,13 +191,31 @@ fi
 # matching `app_id == aura-keepalive` and forcing skip-taskbar /
 # skip-pager / skip-switcher.
 install_kwin_skip_taskbar_rule() {
-    [ "${XDG_CURRENT_DESKTOP:-}" = "KDE" ] || return 0
-    command -v kwriteconfig6 >/dev/null 2>&1 || return 0
-    command -v kreadconfig6 >/dev/null 2>&1 || return 0
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *KDE*) ;;
+        *) return 0 ;;
+    esac
+
+    # Pick the KConfig toolset matching the installed Plasma version.
+    # Plasma 6 ships kwriteconfig6/kreadconfig6/qdbus6, Plasma 5 ships
+    # kwriteconfig5/kreadconfig5/qdbus (Qt5). The kwinrulesrc schema is
+    # identical between the two, so we just swap the binaries.
+    local kwrite kread kdbus
+    if command -v kwriteconfig6 >/dev/null 2>&1 && command -v kreadconfig6 >/dev/null 2>&1; then
+        kwrite=kwriteconfig6
+        kread=kreadconfig6
+        kdbus=qdbus6
+    elif command -v kwriteconfig5 >/dev/null 2>&1 && command -v kreadconfig5 >/dev/null 2>&1; then
+        kwrite=kwriteconfig5
+        kread=kreadconfig5
+        kdbus=qdbus
+    else
+        return 0
+    fi
 
     local rule_id="aura-keepalive-skip-taskbar"
     local current_rules
-    current_rules=$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)
+    current_rules=$("$kread" --file kwinrulesrc --group General --key rules 2>/dev/null || true)
 
     if ! echo "${current_rules}" | tr ',' '\n' | grep -qFx "$rule_id"; then
         local new_rules
@@ -208,29 +226,29 @@ install_kwin_skip_taskbar_rule() {
         fi
         local new_count
         new_count=$(echo "$new_rules" | tr ',' '\n' | grep -c .)
-        kwriteconfig6 --file kwinrulesrc --group General --key rules  "$new_rules"
-        kwriteconfig6 --file kwinrulesrc --group General --key count  "$new_count"
+        "$kwrite" --file kwinrulesrc --group General --key rules  "$new_rules"
+        "$kwrite" --file kwinrulesrc --group General --key count  "$new_count"
     fi
 
     # Rule properties — overwrite-safe. wmclassmatch=1 is exact match;
     # wmclasscomplete=false makes it match against the class portion of
-    # WM_CLASS only (Wayland app_id maps cleanly to that on KWin).
-    # skiptaskbarrule=2 is the "Force" enforcement mode (vs Don't Affect,
-    # Apply, Remember).
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key Description       "Hide Aura keepalive surface from taskbar / pager / switcher"
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclass           "aura-keepalive"
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclasscomplete --type bool false
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key wmclassmatch      1
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skiptaskbar     --type bool true
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skiptaskbarrule   2
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skippager       --type bool true
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skippagerrule     2
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skipswitcher    --type bool true
-    kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key skipswitcherrule  2
+    # WM_CLASS only (Wayland app_id and X11 WM_CLASS both map cleanly to
+    # that on KWin). skiptaskbarrule=2 is the "Force" enforcement mode
+    # (vs Don't Affect, Apply, Remember).
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key Description       "Hide Aura keepalive surface from taskbar / pager / switcher"
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key wmclass           "aura-keepalive"
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key wmclasscomplete --type bool false
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key wmclassmatch      1
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skiptaskbar     --type bool true
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skiptaskbarrule   2
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skippager       --type bool true
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skippagerrule     2
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skipswitcher    --type bool true
+    "$kwrite" --file kwinrulesrc --group "$rule_id" --key skipswitcherrule  2
 
     # Reload KWin so the rule applies without a logout.
-    command -v qdbus6 >/dev/null 2>&1 && \
-        qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
+    command -v "$kdbus" >/dev/null 2>&1 && \
+        "$kdbus" org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
 
     echo "▸ Installed KWin rule: aura keepalive hidden from taskbar"
 }
