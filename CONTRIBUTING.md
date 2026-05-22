@@ -7,8 +7,6 @@ find your way around the codebase.
 By participating you agree to license your contributions under the project's
 [MIT license](./README.md#license).
 
----
-
 ## Table of contents
 
 - [Getting started](#getting-started)
@@ -20,8 +18,6 @@ By participating you agree to license your contributions under the project's
 - [Reporting bugs & requesting features](#reporting-bugs--requesting-features)
 - [Documentation index](#documentation-index)
 
----
-
 ## Getting started
 
 ### Prerequisites
@@ -31,17 +27,17 @@ By participating you agree to license your contributions under the project's
 - **Linux system libraries** — GPUI + `tray-icon` (gtk feature) need a handful of
   `-dev` packages at build time:
 
-  ```bash
-  # Debian / Ubuntu
-  sudo apt install build-essential pkg-config libgtk-3-dev \
-                   libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev \
-                   libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev
-  ```
+    ```bash
+    # Debian / Ubuntu
+    sudo apt install build-essential pkg-config libgtk-3-dev \
+                     libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev \
+                     libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev
+    ```
 
 - **Optional but recommended**:
-  - [`just`](https://github.com/casey/just) — task runner used by the project's `justfile`
-  - [`cargo-audit`](https://github.com/rustsec/rustsec) — installed automatically by `pre-pr.sh` if missing
-  - [`gitleaks`](https://github.com/gitleaks/gitleaks) — secret scanning, mirrors CI
+    - [`just`](https://github.com/casey/just) — task runner used by the project's `justfile`
+    - [`cargo-audit`](https://github.com/rustsec/rustsec) — installed automatically by `pre-pr.sh` if missing
+    - [`gitleaks`](https://github.com/gitleaks/gitleaks) — secret scanning, mirrors CI
 
 ### Clone & build
 
@@ -52,8 +48,6 @@ cargo build --workspace
 ```
 
 A first build pulls a lot of GPUI dependencies — give it a few minutes.
-
----
 
 ## Repository layout
 
@@ -74,8 +68,6 @@ aura/
 ├── install.sh          # One-shot build + install + systemd wiring
 └── justfile            # `just <task>` — see `just --list`
 ```
-
----
 
 ## Running the project
 
@@ -106,15 +98,13 @@ just install-plugin-rtk            # rebuild + reinstall just the plugin binary
 
 ### Service control (after install)
 
-| Command         | What it does                          |
-| --------------- | ------------------------------------- |
-| `just start`    | `systemctl --user start aura`         |
-| `just stop`     | `systemctl --user stop aura`          |
-| `just status`   | `systemctl --user status aura`        |
-| `just logs`     | `journalctl --user -u aura -f`        |
-| `just uninstall`| remove binaries + unit (keeps config) |
-
----
+| Command          | What it does                          |
+| ---------------- | ------------------------------------- |
+| `just start`     | `systemctl --user start aura`         |
+| `just stop`      | `systemctl --user stop aura`          |
+| `just status`    | `systemctl --user status aura`        |
+| `just logs`      | `journalctl --user -u aura -f`        |
+| `just uninstall` | remove binaries + unit (keeps config) |
 
 ## Development workflow
 
@@ -156,8 +146,6 @@ Plugins are independent binaries that print a single JSON payload to stdout.
 See [`docs/plugin-system.md`](./docs/plugin-system.md) for the full contract,
 the 500ms timeout, and configuration via `~/.config/aura/config.toml`.
 
----
-
 ## Before opening a PR — `scripts/pre-pr.sh`
 
 `scripts/pre-pr.sh` runs the **same checks as CI**, locally, in parallel where
@@ -173,14 +161,14 @@ The script mirrors `.github/workflows/quality-and-security.yml` and
 `.github/workflows/secret_scanning.yml` (CodeQL and SBOM are GitHub-only and
 intentionally skipped).
 
-| Stage  | Check          | Action                                                    |
-| ------ | -------------- | --------------------------------------------------------- |
-| Wave 1 | `rustfmt`      | **Auto-fixes** with `cargo fmt --all`                     |
-| Wave 1 | `clippy`       | `cargo clippy --workspace --all-targets --locked -D warnings` |
-| Wave 1 | `test`         | `cargo test --workspace --locked`                         |
-| Wave 1 | `gitleaks`     | Secret scan (skipped if `gitleaks` is not installed)      |
-| Wave 2 | `cargo_audit`  | `cargo audit` — runs only if Wave 1 passes                |
-| Wave 3 | `build_release`| `cargo build --workspace --release --locked` — runs only if `cargo_audit` passes |
+| Stage  | Check           | Action                                                                           |
+| ------ | --------------- | -------------------------------------------------------------------------------- |
+| Wave 1 | `rustfmt`       | **Auto-fixes** with `cargo fmt --all`                                            |
+| Wave 1 | `clippy`        | `cargo clippy --workspace --all-targets --locked -D warnings`                    |
+| Wave 1 | `test`          | `cargo test --workspace --locked`                                                |
+| Wave 1 | `gitleaks`      | Secret scan (skipped if `gitleaks` is not installed)                             |
+| Wave 2 | `cargo_audit`   | `cargo audit` — runs only if Wave 1 passes                                       |
+| Wave 3 | `build_release` | `cargo build --workspace --release --locked` — runs only if `cargo_audit` passes |
 
 ### Reading the output
 
@@ -208,8 +196,6 @@ exec ./scripts/pre-pr.sh' > .git/hooks/pre-push
 chmod +x .git/hooks/pre-push
 ```
 
----
-
 ## Commit & PR conventions
 
 - **Commit style** — match the existing history: a short imperative subject,
@@ -223,8 +209,6 @@ chmod +x .git/hooks/pre-push
   audit, or secrets will not be merged until green.
 - **Target `main`** unless coordinating a longer-running branch with a maintainer.
 
----
-
 ## Reporting bugs & requesting features
 
 Open an issue at <https://github.com/Rfluid/aura/issues>. Helpful bug reports include:
@@ -237,8 +221,6 @@ Open an issue at <https://github.com/Rfluid/aura/issues>. Helpful bug reports in
 Security issues — please **do not** file a public issue. See `SECURITY.md`
 (coming soon) or contact the maintainer directly.
 
----
-
 ## Documentation index
 
 User-facing and architectural docs live under `docs/`. Visual design lives under
@@ -246,34 +228,32 @@ User-facing and architectural docs live under `docs/`. Visual design lives under
 
 ### `docs/` — architecture, configuration, plugins
 
-| Doc                                                    | What's in it                                                              |
-| ------------------------------------------------------ | ------------------------------------------------------------------------- |
-| [`architecture.md`](./docs/architecture.md)            | High-level system diagram: data collection, UI, plugin orchestration      |
-| [`configuration.md`](./docs/configuration.md)          | `~/.config/aura/config.toml` schema, agent kinds, state file              |
-| [`plugin-system.md`](./docs/plugin-system.md)          | Plugin contract, JSON IPC, timeout, authoring guide                       |
-| [`ui-design.md`](./docs/ui-design.md)                  | UI behavior and interaction notes                                         |
-| [`roadmap.md`](./docs/roadmap.md)                      | Planned features and ordering                                             |
+| Doc                                           | What's in it                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------- |
+| [`architecture.md`](./docs/architecture.md)   | High-level system diagram: data collection, UI, plugin orchestration |
+| [`configuration.md`](./docs/configuration.md) | `~/.config/aura/config.toml` schema, agent kinds, state file         |
+| [`plugin-system.md`](./docs/plugin-system.md) | Plugin contract, JSON IPC, timeout, authoring guide                  |
+| [`ui-design.md`](./docs/ui-design.md)         | UI behavior and interaction notes                                    |
+| [`roadmap.md`](./docs/roadmap.md)             | Planned features and ordering                                        |
 
 ### `.design/` — visual design system
 
-| Doc                                                     | What's in it                                                              |
-| ------------------------------------------------------- | ------------------------------------------------------------------------- |
-| [`README.md`](./.design/README.md)                      | Design philosophy and index                                               |
-| [`tokens.md`](./.design/tokens.md)                      | Canonical color, type, spacing, radius, shadow tokens                     |
-| [`agents.md`](./.design/agents.md)                      | Per-agent brand colors and luminance fallback rule                        |
-| [`components.md`](./.design/components.md)              | Visual primitives (stat-card, pill, tab, progress bar, plugin panel, modal) |
-| [`customization.md`](./.design/customization.md)        | Schema for user-overridable theme (`~/.config/aura/theme.toml`)           |
-| [`loading.md`](./.design/loading.md)                    | Spinner spec for fetch-triggering actions                                 |
+| Doc                                              | What's in it                                                                |
+| ------------------------------------------------ | --------------------------------------------------------------------------- |
+| [`README.md`](./.design/README.md)               | Design philosophy and index                                                 |
+| [`tokens.md`](./.design/tokens.md)               | Canonical color, type, spacing, radius, shadow tokens                       |
+| [`agents.md`](./.design/agents.md)               | Per-agent brand colors and luminance fallback rule                          |
+| [`components.md`](./.design/components.md)       | Visual primitives (stat-card, pill, tab, progress bar, plugin panel, modal) |
+| [`customization.md`](./.design/customization.md) | Schema for user-overridable theme (`~/.config/aura/theme.toml`)             |
+| [`loading.md`](./.design/loading.md)             | Spinner spec for fetch-triggering actions                                   |
 
 ### Other top-level docs
 
-| File                                  | What's in it                                          |
-| ------------------------------------- | ----------------------------------------------------- |
-| [`README.md`](./README.md)            | Project overview, install, common commands            |
-| [`PLAN.md`](./PLAN.md)                | Phased implementation plan                            |
-| [`SPONSOR.md`](./SPONSOR.md)          | Sponsorship info                                      |
-
----
+| File                         | What's in it                               |
+| ---------------------------- | ------------------------------------------ |
+| [`README.md`](./README.md)   | Project overview, install, common commands |
+| [`PLAN.md`](./PLAN.md)       | Phased implementation plan                 |
+| [`SPONSOR.md`](./SPONSOR.md) | Sponsorship info                           |
 
 Thanks for contributing! If anything in this guide is unclear or out of date,
 open a PR fixing it — that counts as a contribution too.

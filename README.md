@@ -13,8 +13,6 @@
 
 Aura is a lightweight Rust desktop widget that lives in your taskbar and gives you instant visibility into AI agent usage: tokens consumed, estimated costs, and custom optimizer metrics via a plugin system. Switch between agent profiles (Claude Code Personal, Enterprise, Codex, and more) with one click.
 
----
-
 ## Why Aura?
 
 Modern development workflows run on AI agents. But usage is invisible until the bill arrives. Aura surfaces that data where you already live — your taskbar — without switching context, opening a browser, or running a CLI command.
@@ -38,8 +36,6 @@ Modern development workflows run on AI agents. But usage is invisible until the 
 └────────────────────────────────────────────────────┘
 ```
 
----
-
 ## Features
 
 - **Multi-agent support** — Claude Code and Codex out of the box; custom command agents on the roadmap
@@ -47,8 +43,6 @@ Modern development workflows run on AI agents. But usage is invisible until the 
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin; ships with the RTK Gains plugin
 - **RTK Gains plugin** — surfaces token savings from the [RTK](https://github.com/rtk) optimizer directly alongside your usage stats
 - **Minimal footprint** — a small modal anchored near your taskbar widget; appears on click, disappears on blur
-
----
 
 ## Plugins
 
@@ -59,8 +53,6 @@ Plugins live outside the core codebase and load at runtime. Aura ships with:
 | **RTK Gains** | Shows tokens saved by the Rust Token Killer (RTK) optimizer — how much you spent vs. how much you would have spent |
 
 Plugins expose a simple trait interface. Authors can package them as shared libraries and distribute them independently of Aura.
-
----
 
 ## Configuration
 
@@ -82,8 +74,6 @@ name = "Codex"
 kind = "codex"
 ```
 
----
-
 ## Roadmap
 
 - [ ] Claude Code usage integration
@@ -93,8 +83,6 @@ kind = "codex"
 - [ ] Plugin authoring guide + example plugin
 - [ ] macOS support
 - [ ] Plugin registry
-
----
 
 ## Installation
 
@@ -210,9 +198,14 @@ systemctl --user enable --now aura
 | `just status` / `just logs` | Service status / tail journal                 |
 | `just uninstall`            | Remove binaries + unit (keeps config & state) |
 
+## Sponsor
+
+See [SPONSOR.md](./SPONSOR.md) for ways to support Aura.
+
 ## Contributing
 
-_Coming soon — see `CONTRIBUTING.md`_
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup, development workflow,
+and pull request guidance.
 
 ## License
 
