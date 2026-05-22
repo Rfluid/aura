@@ -343,6 +343,11 @@ fn toggle_window(
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
+        // Set a stable Wayland app_id / X11 WM_CLASS so KWin window rules
+        // (see README "Modal placement on Wayland") can match this surface.
+        // Without this, KDE shows "Window class not available" when the
+        // user tries to Detect Window Properties on the modal.
+        app_id: Some("aura".into()),
         ..Default::default()
     };
 
