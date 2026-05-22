@@ -17,17 +17,23 @@ consumed, subscription quota windows, estimated costs, and custom
 optimizer metrics via a plugin system. Click the icon, see your usage,
 click again to dismiss.
 
-## At a glance
+## Summary
 
-|  |  |
-| --- | --- |
-| **What it is** | A persistent tray icon that opens a small modal showing AI agent usage. |
-| **Agents** | Claude Code · Codex · Gemini (multiple profiles per agent). |
-| **Where data comes from** | Local JSONL session logs (`~/.claude`, `~/.codex`, `~/.gemini`) and provider quota APIs (Claude `/usage` endpoint, OAuth-authenticated). |
-| **What's shown** | Subscription quota windows · all-time / 7d / 30d session totals · per-model breakdown · plugin panels. |
-| **Where it runs** | Linux (KDE Plasma, GNOME, sway, …) · macOS · Windows. Autostarts at login. |
-| **Footprint** | ~30 MB on disk · ~85 MB RSS while idle · one D-Bus / WM_NOTIFY tray slot. |
-| **Privacy** | Zero telemetry. Reads only your own local agent state and Claude's per-user usage API. |
+Aura is a small system-tray indicator for AI-agent usage. It sits next
+to wifi and volume; click the icon and a modal opens showing your
+subscription quota windows (Claude's `/usage` API in real time),
+all-time / 7-day / 30-day session totals scanned from your local
+`~/.claude`, `~/.codex`, and `~/.gemini` logs, and a per-model
+breakdown of what actually ate your tokens. Switch between agent
+profiles with one click — the last selection is persisted across
+sessions — and surface third-party metrics through the plugin system.
+
+Aura runs on Linux (KDE Plasma, GNOME, sway, and any DE that supports
+StatusNotifierItem), macOS, and Windows. The installer wires up
+autostart per platform so the icon is present the moment you log in.
+Memory footprint is ~85 MB RSS while idle, and there is zero telemetry
+— Aura reads only your own local agent state and Claude's
+per-user usage endpoint.
 
 ## Screenshots
 
@@ -117,11 +123,11 @@ Plugins expose a simple trait interface. Authors can package them as shared libr
 
 Aura is configured via a single TOML file at the OS-standard config location:
 
-| Platform | Config path |
-|---|---|
-| Linux | `~/.config/aura/config.toml` |
-| macOS | `~/Library/Application Support/aura/config.toml` |
-| Windows | `%APPDATA%\aura\config.toml` |
+| Platform | Config path                                      |
+| -------- | ------------------------------------------------ |
+| Linux    | `~/.config/aura/config.toml`                     |
+| macOS    | `~/Library/Application Support/aura/config.toml` |
+| Windows  | `%APPDATA%\aura\config.toml`                     |
 
 Define as many profiles as you need:
 
@@ -151,10 +157,10 @@ Aura is a **system-tray indicator** — like wifi or volume in your panel.
 The installer wires up autostart by default so the icon is present the
 moment you log in:
 
-| Platform | What gets installed |
-|---|---|
-| **Linux**   | `~/.local/bin/aura` + a systemd user service (enabled & started) + an XDG `.desktop` entry for the app menu |
-| **macOS**   | `Aura.app` in `/Applications` + a launchd LaunchAgent (loaded now + at every login) |
+| Platform    | What gets installed                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------ |
+| **Linux**   | `~/.local/bin/aura` + a systemd user service (enabled & started) + an XDG `.desktop` entry for the app menu  |
+| **macOS**   | `Aura.app` in `/Applications` + a launchd LaunchAgent (loaded now + at every login)                          |
 | **Windows** | `aura.exe` in `%LOCALAPPDATA%\Programs\Aura` + a Startup-folder shortcut (autostart) + a Start Menu shortcut |
 
 **Left-click** the tray icon to open Aura's modal; left-click again to
@@ -171,7 +177,7 @@ On Plasma / GNOME the icon may land in the "hidden" overflow group first.
 Promote it so it sits permanently next to wifi/volume:
 
 - **KDE Plasma** — right-click the system tray → **Configure System Tray → Entries** → find **Aura** → set **Visibility: Always shown**.
-- **GNOME** — install the *AppIndicator and KStatusNotifierItem Support* extension if you don't have it; aura then appears in the panel by default.
+- **GNOME** — install the _AppIndicator and KStatusNotifierItem Support_ extension if you don't have it; aura then appears in the panel by default.
 - **macOS** — the menu-bar icon is always visible; nothing to configure.
 - **Windows** — click the `^` overflow arrow in the tray, drag the Aura icon to the always-visible area.
 
@@ -359,12 +365,12 @@ $lnk.Save()
 
 ### Common commands
 
-| Command                                       | What it does                                                                  |
-| --------------------------------------------- | ----------------------------------------------------------------------------- |
-| `just run`                                    | Launch Aura (debug build) without installing                                  |
-| `just start` / `just stop` / `just status`    | Start, stop, or check the running `aura` process (Linux/macOS)                |
-| `just start-windows` / `just stop-windows`    | Same, for Windows                                                             |
-| `just uninstall` / `just uninstall-windows`   | Remove binaries + autostart artifacts + launcher (keeps config & state)       |
+| Command                                     | What it does                                                            |
+| ------------------------------------------- | ----------------------------------------------------------------------- |
+| `just run`                                  | Launch Aura (debug build) without installing                            |
+| `just start` / `just stop` / `just status`  | Start, stop, or check the running `aura` process (Linux/macOS)          |
+| `just start-windows` / `just stop-windows`  | Same, for Windows                                                       |
+| `just uninstall` / `just uninstall-windows` | Remove binaries + autostart artifacts + launcher (keeps config & state) |
 
 `just uninstall` also clears the KDE window rule and any opt-in
 LaunchAgent / Startup-folder shortcut — you don't have to remember
@@ -378,16 +384,16 @@ Shell_NotifyIcon (Windows). Where the table says "untested" it means
 the code path is the same as a tested case — please open an issue if
 anything goes wrong, with the desktop env / compositor version.
 
-| Platform     | Desktop / Compositor | Tray protocol         | Status                                  |
-| ------------ | -------------------- | --------------------- | --------------------------------------- |
-| Linux        | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni) | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive |
-| Linux        | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni) | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right |
-| Linux        | KDE Plasma 5                  | StatusNotifierItem (ksni) | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ |
-| Linux        | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear |
-| Linux        | sway / Hyprland / wlroots     | StatusNotifierItem    | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.) |
-| Linux        | XFCE / Cinnamon / MATE        | StatusNotifierItem    | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work |
-| **macOS 12+** | —                            | AppKit menu-bar item  | ⚠️ Untested in CI — uses `tray-icon`'s native AppKit backend, single-click activation works natively |
-| **Windows 10/11** | —                       | Shell_NotifyIcon      | ⚠️ Untested in CI — uses `tray-icon`'s native Win32 backend, single-click activation works natively |
+| Platform          | Desktop / Compositor          | Tray protocol                                                                                                     | Status                                                                                               |
+| ----------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Linux             | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni)                                                                                         | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive                  |
+| Linux             | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right                    |
+| Linux             | KDE Plasma 5                  | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ                           |
+| Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear                                           |
+| Linux             | sway / Hyprland / wlroots     | StatusNotifierItem                                                                                                | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.)                                 |
+| Linux             | XFCE / Cinnamon / MATE        | StatusNotifierItem                                                                                                | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work                                  |
+| **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ⚠️ Untested in CI — uses `tray-icon`'s native AppKit backend, single-click activation works natively |
+| **Windows 10/11** | —                             | Shell_NotifyIcon                                                                                                  | ⚠️ Untested in CI — uses `tray-icon`'s native Win32 backend, single-click activation works natively  |
 
 Pull requests confirming or fixing any of the ⚠️ rows are welcome — see
 [Under the hood](#under-the-hood) for the relevant code paths.
