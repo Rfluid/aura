@@ -4,24 +4,19 @@ version           = "0.1.8"
 edition.workspace = true
 license.workspace = true
 
+# gpui drives the in-app modal on all platforms.
+# The crates.io 0.2.2 snapshot panicked on macOS 26 (Tahoe) because it
+# subclassed NSApplication via ClassDecl; Tahoe calls +sharedApplication
+# before the #[ctor] registers the subclass. We vendor gpui and patch that
+# ivar out (see vendor/gpui and the [patch.crates-io] in the root Cargo.toml).
 [dependencies]
 aura-core.workspace = true
 anyhow.workspace    = true
 chrono.workspace    = true
 dirs.workspace      = true
+gpui                = { version = "0.2", features = ["runtime_shaders"] }
 resvg               = { version = "0.47", default-features = false }
 tiny-skia           = "0.12"
-
-# gpui drives the in-app modal on Linux / Windows. We deliberately exclude it
-# from the macOS build: gpui 0.2.2 (the crates.io snapshot) panics during
-# `Application::run` on macOS 26 (Tahoe) because its `objc 0.2`-era pattern
-# of subclassing `NSApplication` via `ClassDecl` no longer holds — Tahoe
-# eagerly creates the shared NSApplication instance before GPUI's class
-# registration, so `[GPUIApplication sharedApplication]` hands back a plain
-# `NSApplication` and the ivar lookup blows up. See issue #4. macOS therefore
-# runs a slim AppKit-only loop and ships as a tray-only app for now.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-gpui = "0.2"
 
 # Tray backend split by OS:
 #
@@ -44,14 +39,3 @@ ksni = { version = "0.3", default-features = false, features = ["blocking", "asy
 [target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
 
-# macOS is tray-only (see the gpui-exclusion comment above), so this crate
-# drives the AppKit lifecycle itself: set `setActivationPolicy(Accessory)`
-# so the app lives in the menu bar without claiming a Dock slot, then pump
-# `NSRunLoop::runMode:beforeDate:` in short bursts and drain tray events
-# between bursts. The objc2 family is bumped to 0.6 / 0.3 to match the
-# versions `tray-icon 0.24` already pulls in transitively — leaving the
-# old 0.5 / 0.2 here would link two parallel copies into the macOS binary.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2            = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSThread", "NSRunLoop", "NSDate", "NSString", "NSObjCRuntime"] }
-objc2-app-kit    = { version = "0.3", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }

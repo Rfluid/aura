@@ -124,7 +124,7 @@ fn list_rollout_files_newest_first(config_path: &Path) -> Result<Vec<PathBuf>> {
             }
         }
     }
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|(_path, mtime)| std::cmp::Reverse(*mtime));
     Ok(files.into_iter().map(|(p, _)| p).collect())
 }
 
