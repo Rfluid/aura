@@ -225,6 +225,13 @@ jobs:
                       Copy-Item "scripts/install.ps1" "$stageRoot/install.ps1"
                   }
 
+                  # Brand icon for the Start Menu / Startup shortcuts created
+                  # by install.ps1. Without it the .lnk files fall back to the
+                  # generic executable icon.
+                  if (Test-Path "packaging/windows/aura.ico") {
+                      Copy-Item "packaging/windows/aura.ico" "$stageRoot/aura.ico"
+                  }
+
                   foreach ($f in @('README.md', 'LICENSE')) {
                       if (Test-Path $f) { Copy-Item $f "$stageRoot/$f" }
                   }

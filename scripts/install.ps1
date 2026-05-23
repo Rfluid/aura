@@ -169,6 +169,23 @@ Copy-Item -Force (Join-Path $StageDir 'aura.exe')            (Join-Path $Install
 Copy-Item -Force (Join-Path $StageDir 'aura-plugin-rtk.exe') (Join-Path $InstallDir 'aura-plugin-rtk.exe')
 Write-Host "▸ Installed binaries to $InstallDir"
 
+# Brand icon for Start Menu / Startup shortcuts. Source mode picks it up from
+# the repo; release archives ship it alongside the .exe (see release.yml).
+# Without this, the .lnk falls back to the generic Windows executable icon
+# because aura.exe has no embedded icon resource.
+$IconStagePath = if ($Mode -eq 'source') {
+    Join-Path $RepoRoot 'packaging\windows\aura.ico'
+} else {
+    Join-Path $StageDir 'aura.ico'
+}
+$InstalledIcon = Join-Path $InstallDir 'aura.ico'
+if (Test-Path $IconStagePath) {
+    Copy-Item -Force $IconStagePath $InstalledIcon
+} else {
+    Write-Warning "aura.ico not found at $IconStagePath; shortcuts will use the generic icon"
+    $InstalledIcon = $null
+}
+
 # ── Detect agents and seed/merge config ──────────────────────────────────────
 # Runs before autostart so the app picks up the populated config on its first
 # launch. Failure is non-fatal — AppConfig::load() writes a default config on
@@ -190,6 +207,9 @@ function New-AuraShortcut {
     $lnk.WorkingDirectory = $InstallDir
     $lnk.WindowStyle      = 7  # Minimized — tray-icon only.
     $lnk.Description      = 'Aura — Agent Usage Reporter'
+    if ($InstalledIcon) {
+        $lnk.IconLocation = "$InstalledIcon,0"
+    }
     $lnk.Save()
 }
 

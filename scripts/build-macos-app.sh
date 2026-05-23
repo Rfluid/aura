@@ -44,12 +44,27 @@ mkdir -p "$MACOS_DIR" "$RES_DIR"
 install -m 755 "$BIN" "${MACOS_DIR}/aura"
 
 # ── Info.plist ────────────────────────────────────────────────────────────────
-install -m 644 "${ROOT}/packaging/macos/Info.plist" "${CONTENTS}/Info.plist"
+# Substitute the version token from the aura crate manifest so CFBundleVersion
+# and CFBundleShortVersionString match the release tag (otherwise Finder's
+# "Get Info" and `defaults read` report whatever the template was last set to).
+AURA_VERSION="$(
+    sed -nE 's/^version[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*$/\1/p' \
+        "${ROOT}/crates/aura/Cargo.toml" | head -n1
+)"
+if [ -z "$AURA_VERSION" ]; then
+    echo "error: could not read version from crates/aura/Cargo.toml" >&2
+    exit 1
+fi
+sed "s/__AURA_VERSION__/${AURA_VERSION}/g" \
+    "${ROOT}/packaging/macos/Info.plist" > "${CONTENTS}/Info.plist"
+chmod 644 "${CONTENTS}/Info.plist"
 
 # ── Icon ──────────────────────────────────────────────────────────────────────
 # Convert the brand SVG → .icns when the toolchain is available; otherwise
 # ship the SVG so the app still launches (Finder shows the generic icon).
-ICON_SRC="${ROOT}/assets/icons/aura.svg"
+# Use packaging/aura.svg (brand purple #8b5cf6) instead of assets/icons/aura.svg
+# (which uses stroke="currentColor" and renders black without a CSS context).
+ICON_SRC="${ROOT}/packaging/aura.svg"
 if command -v rsvg-convert >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
     ICONSET_DIR="$(mktemp -d)/Aura.iconset"
     mkdir -p "$ICONSET_DIR"
