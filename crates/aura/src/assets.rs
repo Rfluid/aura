@@ -3,10 +3,6 @@
 /// macOS where the modal UI is gated out.
 pub const AURA_LOGO_SVG: &[u8] = include_bytes!("../../../assets/icons/aura.svg");
 
-// The remaining icons are only consumed by the GPUI `AssetSource` adapter
-// below, so gate the whole table off macOS to keep that build free of
-// unused-const warnings.
-#[cfg(not(target_os = "macos"))]
 macro_rules! icon_assets {
     ( $( ($name:ident, $file:literal) ),* $(,)? ) => {
         $(
@@ -19,7 +15,6 @@ macro_rules! icon_assets {
     };
 }
 
-#[cfg(not(target_os = "macos"))]
 icon_assets! {
     (AURA,             "aura.svg"),
     (CLAUDE,           "claude.svg"),
@@ -43,10 +38,7 @@ icon_assets! {
     (RTK,              "rtk.svg"),
 }
 
-// Everything below this point is the GPUI `AssetSource` adapter that feeds
-// SVGs into the modal view. macOS doesn't render the modal (no GPUI), so
-// the adapter would just be dead code referencing a missing dependency.
-#[cfg(not(target_os = "macos"))]
+// GPUI `AssetSource` adapter that feeds SVGs into the modal view.
 mod gpui_source {
     use std::borrow::Cow;
 
@@ -98,5 +90,4 @@ mod gpui_source {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 pub use gpui_source::EmbeddedAssets;

@@ -1,15 +1,9 @@
-#[cfg(not(target_os = "macos"))]
 mod app;
 mod assets;
-#[cfg(not(target_os = "macos"))]
 mod format;
-#[cfg(target_os = "macos")]
-mod macos;
 mod tray;
-#[cfg(not(target_os = "macos"))]
 mod work_area;
 
-#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,22 +11,17 @@ use aura_core::{
     config::{AgentStatus, AppConfig},
     state::AppState,
 };
-#[cfg(not(target_os = "macos"))]
 use gpui::{
     div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
     WindowHandle, WindowKind, WindowOptions,
 };
 
-#[cfg(not(target_os = "macos"))]
 use crate::tray::TrayEvent;
-
-#[cfg(not(target_os = "macos"))]
 use crate::{app::AuraView, assets::EmbeddedAssets};
 
 /// How often the GPUI main thread checks for pending tray menu events.
 /// 150 ms is well under the human "instant" threshold (~200 ms) for the
 /// click → modal latency while costing essentially nothing CPU-wise.
-#[cfg(not(target_os = "macos"))]
 const MENU_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 fn main() -> Result<()> {
@@ -60,8 +49,6 @@ fn main() -> Result<()> {
     let state = AppState::load()?;
 
     // ── Install tray icon (best-effort: warn on failure but keep going) ───────
-    // On Linux this spawns a dedicated GTK thread that owns the icon; on
-    // macOS / Windows the returned handle owns it and must be kept alive.
     let _tray = match tray::install() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -69,22 +56,6 @@ fn main() -> Result<()> {
             None
         }
     };
-
-    // ── macOS: skip GPUI and run AppKit directly ─────────────────────────────
-    //
-    // GPUI 0.2.2 panics inside `Application::run` on macOS 26 (Tahoe) — see
-    // issue #4 and the comment block in `crates/aura/Cargo.toml`. Until
-    // crates.io has a fixed gpui, the macOS build ships as tray-only and
-    // we drive the event loop from `macos::run_event_loop` instead. The
-    // config/state are still loaded above so the first-run side effect
-    // (creating `~/Library/Application Support/aura/config.toml`) matches
-    // the Linux experience.
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (config, config_path, state);
-        macos::run_event_loop();
-        return Ok(());
-    }
 
     // ── Launch GPUI app ───────────────────────────────────────────────────────
     //
@@ -94,7 +65,6 @@ fn main() -> Result<()> {
     // process when `state.windows.is_empty()`. The keepalive guarantees
     // that count is always ≥ 1, so the tray icon survives across any
     // number of open/close cycles.
-    #[cfg(not(target_os = "macos"))]
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
@@ -116,20 +86,34 @@ fn main() -> Result<()> {
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
 
+                    // macOS: auto-close when the user clicks outside the modal.
+                    // cx.active_window() returns None once another app takes
+                    // focus; we treat that as "dismiss".
+                    #[cfg(target_os = "macos")]
+                    if current.is_some() {
+                        let lost_focus = cx
+                            .update(|cx| cx.active_window().is_none())
+                            .unwrap_or(false);
+                        if lost_focus {
+                            if let Some(handle) = current.take() {
+                                let _ = cx.update(|cx| {
+                                    let _ = handle
+                                        .update(cx, |_view, window, _cx| window.remove_window());
+                                });
+                            }
+                        }
+                    }
+
                     while let Some(event) = tray::try_recv_event() {
                         match event {
-                            // We discard `hint` for now: an earlier attempt
-                            // to anchor the modal near the click coords
-                            // produced a malformed window on Wayland/KWin
-                            // (see git history). Restoring centered open
-                            // until we understand the size regression.
-                            TrayEvent::Show { hint: _ } => {
+                            TrayEvent::Show { hint } => {
                                 current = toggle(
                                     cx,
                                     current.take(),
                                     config.clone(),
                                     config_path.clone(),
                                     state.clone(),
+                                    hint,
                                 )
                                 .await;
                             }
@@ -155,10 +139,8 @@ fn main() -> Result<()> {
 /// Empty root view for the hidden keepalive window. The view is never
 /// rendered to a screen — its only job is to satisfy `open_window`'s
 /// `V: Render` bound so the window can exist in `state.windows`.
-#[cfg(not(target_os = "macos"))]
 struct KeepAliveView;
 
-#[cfg(not(target_os = "macos"))]
 impl Render for KeepAliveView {
     fn render(
         &mut self,
@@ -194,7 +176,6 @@ impl Render for KeepAliveView {
 ///   no-op, so the tray can't be killed by a stray click. Our own
 ///   `toggle()` uses `window.remove_window()` which bypasses this
 ///   guard (it's an internal close, not a platform request).
-#[cfg(not(target_os = "macos"))]
 fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveView>> {
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -235,15 +216,15 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
 /// fresh window and return its handle. Called from both the tray "Show"
 /// menu item and a primary-click on the tray icon — each click flips
 /// modal visibility.
-#[cfg(not(target_os = "macos"))]
 async fn toggle(
     cx: &gpui::AsyncApp,
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
     state: AppState,
+    hint: Option<(i32, i32)>,
 ) -> Option<WindowHandle<AuraView>> {
-    cx.update(move |cx| toggle_window(cx, existing, config, config_path, state))
+    cx.update(move |cx| toggle_window(cx, existing, config, config_path, state, hint))
         .ok()
         .flatten()
 }
@@ -254,11 +235,8 @@ async fn toggle(
 /// vertically to fit content (capped at the available work area), so the
 /// initial 640 is just a sensible starting size that lets the first
 /// paint render without thrashing.
-#[cfg(not(target_os = "macos"))]
 const MODAL_W: f32 = 520.;
-#[cfg(not(target_os = "macos"))]
 const MODAL_H: f32 = 640.;
-#[cfg(not(target_os = "macos"))]
 const SCREEN_GAP: f32 = 8.;
 /// Defensive blind reserve for the bottom edge when
 /// [`crate::work_area::available_bottom`] returns `None` (non-KDE,
@@ -268,36 +246,20 @@ const SCREEN_GAP: f32 = 8.;
 #[cfg(not(target_os = "macos"))]
 const BLIND_BOTTOM_RESERVE: f32 = 120.;
 
-/// Computes the modal bounds anchored to the bottom-right of the
-/// available work area — the corner where the system tray icon lives
-/// on the common KDE Plasma / Windows / macOS layouts.
+/// Compute where to place the modal window.
 ///
-/// ## Wayland caveat
+/// **macOS**: the tray icon lives in the menu bar at the top. We anchor the
+/// modal just below the bar, horizontally centred on the icon's X coord
+/// (from `hint`). Falls back to top-right if `hint` is absent.
 ///
-/// On Wayland (KWin / Mutter / sway) the compositor — not the client
-/// — decides where xdg_toplevel surfaces appear. GPUI 0.2 always
-/// creates toplevels (never xdg-popup; see
-/// `gpui/src/platform/linux/wayland/window.rs:288`), so KWin will
-/// generally ignore our bounds origin and center the window. That's a
-/// protocol-level limit, not a GPUI bug.
-///
-/// Users who want exact placement on Plasma can add a KWin window
-/// rule (System Settings → Window Management → Window Rules → New →
-/// match WM class `aura` → Apply initially `Position`).
-///
-/// On X11 / Windows / macOS the request is honoured natively and the
-/// modal opens where the tray icon lives.
-///
-/// We deliberately don't consult the tray click position — an earlier
-/// attempt at that produced a malformed (very narrow) window on
-/// KWin/Wayland for reasons we never root-caused.
-#[cfg(not(target_os = "macos"))]
-fn corner_anchored_bounds(cx: &mut gpui::App) -> Bounds<gpui::Pixels> {
+/// **Linux / Windows**: anchors to the bottom-right of the available work
+/// area (above the taskbar/panel). Wayland compositors may ignore the
+/// requested origin and centre the window instead; users can override via a
+/// KWin window rule.
+fn compute_modal_bounds(cx: &mut gpui::App, hint: Option<(i32, i32)>) -> Bounds<gpui::Pixels> {
     let modal_size = size(px(MODAL_W), px(MODAL_H));
 
     let Some(display) = cx.primary_display() else {
-        // No display info — fall back to centered. We can't anchor
-        // anywhere meaningful without knowing where the screen is.
         return Bounds::centered(None, modal_size, cx);
     };
     let display_bounds = display.bounds();
@@ -305,32 +267,39 @@ fn corner_anchored_bounds(cx: &mut gpui::App) -> Bounds<gpui::Pixels> {
     let screen_left = f32::from(display_bounds.origin.x);
     let screen_top = f32::from(display_bounds.origin.y);
     let screen_right = f32::from(display_bounds.origin.x + display_bounds.size.width);
-    let screen_bottom_full = f32::from(display_bounds.origin.y + display_bounds.size.height);
 
-    // Bottom of the available area: prefer the exact panel-aware value
-    // from `work_area::available_bottom`, otherwise reserve a blind
-    // 120 px margin so we still clear the panel on platforms where we
-    // can't measure it.
-    let work_bottom = crate::work_area::available_bottom(display_bounds)
-        .unwrap_or(screen_bottom_full - BLIND_BOTTOM_RESERVE);
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS the tray sits in the menu bar (~25 pt tall). Place the
+        // modal just below it, horizontally centred on the click position.
+        // GPUI uses top-left origin with Y increasing downward on macOS.
+        const MENU_BAR_H: f32 = 25.0;
+        let icon_x = hint
+            .map(|(x, _)| x as f32)
+            .unwrap_or(screen_right - MODAL_W / 2.0);
+        let x = (icon_x - MODAL_W / 2.0).clamp(screen_left, screen_right - MODAL_W);
+        let y = screen_top + MENU_BAR_H + SCREEN_GAP;
+        Bounds::new(point(px(x), px(y)), modal_size)
+    }
 
-    // Place the modal flush against the right edge (where the tray
-    // sits on a horizontal panel) with a small gap; clamp so we never
-    // run off the left side on tiny displays.
-    let x = (screen_right - MODAL_W - SCREEN_GAP).max(screen_left);
-    // Same idea vertically: bottom-anchor with a gap, clamp at top.
-    let y = (work_bottom - MODAL_H - SCREEN_GAP).max(screen_top);
-
-    Bounds::new(point(px(x), px(y)), modal_size)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let screen_bottom_full = f32::from(display_bounds.origin.y + display_bounds.size.height);
+        let work_bottom = crate::work_area::available_bottom(display_bounds)
+            .unwrap_or(screen_bottom_full - BLIND_BOTTOM_RESERVE);
+        let x = (screen_right - MODAL_W - SCREEN_GAP).max(screen_left);
+        let y = (work_bottom - MODAL_H - SCREEN_GAP).max(screen_top);
+        Bounds::new(point(px(x), px(y)), modal_size)
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn toggle_window(
     cx: &mut gpui::App,
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
     state: AppState,
+    hint: Option<(i32, i32)>,
 ) -> Option<WindowHandle<AuraView>> {
     if let Some(handle) = existing {
         // `update` returns Err if the window has already been removed;
@@ -339,7 +308,7 @@ fn toggle_window(
         return None;
     }
 
-    let bounds = corner_anchored_bounds(cx);
+    let bounds = compute_modal_bounds(cx, hint);
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,

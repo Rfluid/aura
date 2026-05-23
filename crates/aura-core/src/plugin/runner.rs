@@ -11,7 +11,13 @@ use crate::reader::Period;
 
 use super::{LegacyPluginPanel, PluginPanel};
 
+// Production: tight budget so a hung plugin doesn't freeze the UI.
+// Tests: generous budget because macOS process spawning under parallel test
+// load can take 1-2 s (SIP/Gatekeeper overhead), causing spurious timeouts.
+#[cfg(not(test))]
 const TIMEOUT_MS: u64 = 500;
+#[cfg(test)]
+const TIMEOUT_MS: u64 = 5_000;
 
 pub struct PluginRunner;
 
@@ -209,7 +215,7 @@ EOF
     #[test]
     fn returns_error_panel_on_timeout() {
         let dir = tempdir().unwrap();
-        let script = write_script(dir.path(), "sleep 2\n");
+        let script = write_script(dir.path(), "sleep 7\n");
 
         let panel = PluginRunner::run(&cfg(&script));
         assert!(panel.error.is_some());

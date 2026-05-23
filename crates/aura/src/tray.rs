@@ -12,6 +12,7 @@
 //! Both backends feed a unified [`TrayEvent`] stream that `main.rs` drains
 //! from the GPUI side via [`try_recv_event`].
 
+#[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
@@ -242,7 +243,7 @@ mod non_linux {
     use super::*;
     use tray_icon::{
         menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
-        Icon, MouseButton, TrayIconBuilder, TrayIconEvent,
+        Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent,
     };
 
     pub(super) const MENU_ID_SHOW: &str = "aura.show";
@@ -255,6 +256,8 @@ mod non_linux {
         let menu = Menu::new();
         let show = MenuItem::with_id(MenuId::new(MENU_ID_SHOW), "Show Aura", true, None);
         let quit = MenuItem::with_id(MenuId::new(MENU_ID_QUIT), "Quit Aura", true, None);
+        // Note: quitting removes the tray icon; the LaunchAgent will restart
+        // aura automatically in ~5 seconds (KeepAlive + ThrottleInterval).
         menu.append(&show).context("menu append Show")?;
         menu.append(&PredefinedMenuItem::separator())
             .context("menu separator")?;
@@ -282,14 +285,17 @@ mod non_linux {
                 _ => {}
             }
         }
-        // Primary-click on the icon itself. `position` is the cursor
-        // location at click time — close enough to the icon to anchor
-        // the modal near it.
-        if let Ok(TrayIconEvent::Click {
-            button, position, ..
-        }) = TrayIconEvent::receiver().try_recv()
-        {
-            if button == MouseButton::Left {
+        // Drain all pending icon events. We only act on a left-button
+        // *release* (Up) so we fire exactly once per click and don't
+        // toggle back off on the matching Down event.
+        while let Ok(evt) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                position,
+                ..
+            } = evt
+            {
                 return Some(TrayEvent::Show {
                     hint: Some((position.x as i32, position.y as i32)),
                 });

@@ -6,6 +6,14 @@ members = [
 ]
 resolver = "2"
 
+# Patch gpui 0.2.2 to fix the macOS 26 (Tahoe) NSApplication subclass panic.
+# The original stores a `platform` ivar on a GPUIApplication subclass; Tahoe
+# calls +[NSApplication sharedApplication] before the #[ctor] can register
+# that subclass, causing "Ivar platform not found". Our patch replaces the ivar
+# with an AtomicPtr global so no subclassing of NSApplication is needed.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
+
 [workspace.package]
 edition = "2021"
 license = "MIT"
