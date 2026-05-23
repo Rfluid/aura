@@ -1,0 +1,186 @@
+name: Bug report
+description: Report a bug, regression, or platform compatibility issue in Aura.
+title: "<area>(<platform>): <one-line symptom>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! A few notes before you start:
+
+        - **Search existing issues first**: <https://github.com/Rfluid/aura/issues?q=is%3Aissue>. Comment on an existing thread instead of opening a duplicate.
+        - **Title format**: `<area>(<platform>): <one-line symptom>` — e.g. `tray(linux/gnome): icon never appears without AppIndicator extension`. Mirrors Aura's commit-message convention.
+        - **Don't paste secrets**: no OAuth tokens, no contents of `~/.claude/.credentials.json`, no Keychain/Credential Manager entries. Redact agent-profile names if you'd rather not share them.
+        - **Compatibility caveats** (Plasma 5, GNOME-without-AppIndicator, sway, Windows aarch64, musl Linux) are already documented in the README's [Compatibility](https://github.com/Rfluid/aura#compatibility) table — please mention if your environment is one of the ⚠️ Untested rows.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the bug. Lead with the symptom, not the suspected cause.
+      placeholder: "Tray icon never appears in the GNOME 45 panel on Wayland, even after restarting the session."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Pick the OS family. Specific desktop / compositor goes in the next field.
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS / kernel version
+      description: e.g. `Fedora 40 (kernel 6.9.4)`, `Ubuntu 24.04`, `macOS 14.5 (Tahoe)`, `Windows 11 23H2 build 22631.3593`.
+      placeholder: "Fedora 40, kernel 6.9.4-200.fc40.x86_64"
+    validations:
+      required: true
+
+  - type: input
+    id: desktop_compositor
+    attributes:
+      label: Desktop environment & session type (Linux only)
+      description: |
+        For Linux, paste the output of `echo "$XDG_CURRENT_DESKTOP / $XDG_SESSION_TYPE"`. Leave blank on macOS / Windows.
+      placeholder: "KDE / wayland   (or)   GNOME / wayland   (or)   sway / wayland"
+    validations:
+      required: false
+
+  - type: input
+    id: aura_version
+    attributes:
+      label: Aura version
+      description: Output of `aura --version`. If the binary won't start, paste the release tag you installed or the commit you built from.
+      placeholder: "aura 0.1.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      description: How did you get Aura onto the machine?
+      options:
+        - GitHub Releases archive via install.sh (Linux/macOS)
+        - GitHub Releases archive via install.ps1 (Windows)
+        - Built from source via ./install.sh
+        - Built from source via just install / just install-windows
+        - Built from source manually (cargo build + install -Dm755 …)
+        - Distro / Homebrew / scoop / other package manager
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which subsystem of Aura is affected? Pick the closest match; you can elaborate in the steps section.
+      options:
+        - Installer / build script
+        - Autostart (systemd user unit / launchd / Startup shortcut)
+        - Tray icon (StatusNotifierItem / AppKit / Shell_NotifyIcon)
+        - Modal window (placement, sizing, close behaviour)
+        - Modal content / rendering (GPUI)
+        - Agent data source — Claude Code
+        - Agent data source — Codex
+        - Agent data source — Gemini
+        - Plugin system / RTK Gains plugin
+        - Configuration (config.toml / theme.toml)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered list. Start from a clean state if you can ("after fresh install on a new VM…").
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "Tray icon should appear in the top-right panel and respond to a single click."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: "No icon ever appears. `pgrep -x aura` shows the process running. Right-clicking the panel reveals nothing related to Aura."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / command output
+      description: |
+        Paste the most relevant captures. Useful sources per platform:
+        - **Linux**: `journalctl --user -u aura -n 200 --no-pager`, or run `systemctl --user stop aura && ~/.local/bin/aura` to capture stderr live.
+        - **macOS**: `launchctl print "gui/$(id -u)/com.aura.agent-usage" | head -50` and `log show --predicate 'process == "aura"' --info --last 30m`, or run `/Applications/Aura.app/Contents/MacOS/aura` to see stderr.
+        - **Windows**: run `& "$env:LOCALAPPDATA\Programs\Aura\aura.exe"` from PowerShell to capture stderr.
+        Use fenced code blocks (triple backticks) so output stays formatted.
+      render: text
+      placeholder: |
+        $ ~/.local/bin/aura
+        2026-05-23T10:14:22Z  WARN  aura::tray  StatusNotifierWatcher not registered on the session bus; tray icon will not appear
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: regression
+    attributes:
+      label: Was it ever working?
+      description: If yes, what changed around the time it broke? (Aura update, OS update, DE update, GPU driver, etc.) If you can name the last known good Aura version, please do.
+      placeholder: "Worked on Aura 0.1.7 with the same Fedora install. Broke after upgrading to 0.1.8."
+    validations:
+      required: false
+
+  - type: textarea
+    id: workarounds
+    attributes:
+      label: Workarounds tried
+      description: Anything you tried before filing — reinstall, switch session type, toggle an extension, edit a config, etc.
+      value: |
+        -
+        -
+    validations:
+      required: false
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Possible cause / hypothesis
+      description: |
+        Optional. Only include if you have *evidence* — a stack trace pointing at a function, a `git bisect` result, a code path you read. Reference paths like `crates/aura/src/app.rs:274`. Speculation without evidence is fine to leave blank; the maintainers prefer "I don't know" over guesses.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched [open and closed issues](https://github.com/Rfluid/aura/issues?q=is%3Aissue) and this is not a duplicate (or it's a regression of a closed one — I'll mention the original below).
+          required: true
+        - label: The logs/output above do not contain OAuth tokens, API keys, Keychain/Credential Manager values, or any other secret.
+          required: true
+        - label: I'm reporting a bug, not asking how to use Aura. (Usage questions belong in a discussion, not an issue.)
+          required: true

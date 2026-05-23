@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage question / how-do-I
+    url: https://github.com/Rfluid/aura#readme
+    about: For "how do I install / configure / customize Aura?" please check the README first; it covers the supported platforms, autostart wiring, KWin window rules, and config schema.
+  - name: Plugin authoring help
+    url: https://github.com/Rfluid/aura/blob/main/docs/plugin-system.md
+    about: If you're building a plugin and the docs are unclear, start a discussion rather than filing a bug.
+  - name: Security disclosure
+    url: https://github.com/Rfluid/aura/security/advisories/new
+    about: Please do not file security-sensitive reports as public issues. Use a private security advisory instead.
