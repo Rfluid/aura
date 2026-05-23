@@ -256,7 +256,7 @@ const BLIND_BOTTOM_RESERVE: f32 = 120.;
 /// area (above the taskbar/panel). Wayland compositors may ignore the
 /// requested origin and centre the window instead; users can override via a
 /// KWin window rule.
-fn compute_modal_bounds(cx: &mut gpui::App, hint: Option<(i32, i32)>) -> Bounds<gpui::Pixels> {
+fn compute_modal_bounds(cx: &mut gpui::App, _hint: Option<(i32, i32)>) -> Bounds<gpui::Pixels> {
     let modal_size = size(px(MODAL_W), px(MODAL_H));
 
     let Some(display) = cx.primary_display() else {
@@ -274,7 +274,7 @@ fn compute_modal_bounds(cx: &mut gpui::App, hint: Option<(i32, i32)>) -> Bounds<
         // modal just below it, horizontally centred on the click position.
         // GPUI uses top-left origin with Y increasing downward on macOS.
         const MENU_BAR_H: f32 = 25.0;
-        let icon_x = hint
+        let icon_x = _hint
             .map(|(x, _)| x as f32)
             .unwrap_or(screen_right - MODAL_W / 2.0);
         let x = (icon_x - MODAL_W / 2.0).clamp(screen_left, screen_right - MODAL_W);
