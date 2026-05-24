@@ -23,6 +23,37 @@ use gpui::{
 use crate::tray::TrayEvent;
 use crate::{app::AuraView, assets::EmbeddedAssets};
 
+/// DWM-cloak or -uncloak a window on Windows. Cloaking makes the window
+/// invisible to the user (DWM hides it during composition) while it still
+/// receives WM_PAINT and renders normally — used to hide the first-frame
+/// resize flash (window opens at MODAL_H, shrinks to content height on the
+/// next frame; without cloaking the user sees a one-frame flicker).
+#[cfg(target_os = "windows")]
+pub(crate) fn win32_set_cloak(window: &gpui::Window, cloak: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+
+    // Use fully-qualified syntax: Window has an inherent window_handle() that
+    // returns AnyWindowHandle; we want the raw_window_handle trait method.
+    let wh = match <gpui::Window as HasWindowHandle>::window_handle(window) {
+        Ok(wh) => wh,
+        Err(_) => return,
+    };
+    let RawWindowHandle::Win32(h) = wh.as_raw() else { return };
+    let hwnd = HWND(h.hwnd.get() as usize as *mut _);
+    // pvAttribute is a pointer to a BOOL (i32, 4 bytes): 1 = cloak, 0 = uncloak.
+    let val: i32 = cloak as i32;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            std::ptr::addr_of!(val).cast(),
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+}
+
 /// How often the GPUI main thread checks for pending tray menu events.
 /// 150 ms is well under the human "instant" threshold (~200 ms) for the
 /// click → modal latency while costing essentially nothing CPU-wise.
@@ -390,10 +421,24 @@ fn toggle_window(
     }) {
         Ok(handle) => {
             cx.activate(true);
-            // cx.activate is a no-op on Windows; explicitly bring the window
-            // to the foreground so the OS delivers focus and click-outside
-            // detection works correctly.
-            let _ = handle.update(cx, |_, window, _| window.activate_window());
+
+            #[cfg(target_os = "windows")]
+            {
+                // Cloak immediately so the first frame (at MODAL_H before
+                // on_children_prepainted shrinks it to content height) is
+                // invisible. AuraView's on_children_prepainted uncloak fires
+                // on the second frame after the resize, showing the window at
+                // the correct size.
+                let _ = handle.update(cx, |_, window, _| {
+                    win32_set_cloak(window, true);
+                    window.activate_window();
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+
             Some(handle)
         }
         Err(e) => {
