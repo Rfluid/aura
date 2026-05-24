@@ -382,8 +382,6 @@ fn do_refresh(
 
 impl AuraView {
     /// Open the config file in the desktop's default editor.
-    /// Tries `xdg-open` first (right call from a GUI context), falls back to
-    /// `$EDITOR` if it's set.
     fn open_config(&mut self, cx: &mut Context<Self>) {
         // Ensure the file exists so the editor doesn't open a blank buffer.
         if !self.config_path.exists() {
@@ -420,7 +418,15 @@ impl AuraView {
     fn open_in_editor(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         use std::process::{Command, Stdio};
 
-        let spawned = Command::new("xdg-open")
+        // macOS: `open` is the native file-opener (xdg-open doesn't exist).
+        // Linux/BSD: try xdg-open.
+        // Fallback on all platforms: $EDITOR.
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+
+        let spawned = Command::new(opener)
             .arg(path)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -431,7 +437,7 @@ impl AuraView {
                 let _ = Command::new(editor).arg(path).spawn();
             } else {
                 self.error = Some(format!(
-                    "Could not open editor (no `xdg-open` and `$EDITOR` unset). \
+                    "Could not open editor (`{opener}` failed and `$EDITOR` unset). \
                      Edit {} manually.",
                     path.display()
                 ));
