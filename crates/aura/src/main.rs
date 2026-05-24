@@ -139,8 +139,9 @@ fn main() -> Result<()> {
                 // poll intervals after opening the modal. On Windows,
                 // cx.activate() is a no-op and the new window needs a moment
                 // for Win32 to grant foreground focus; checking too soon makes
-                // the modal close itself immediately.
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                // the modal close itself immediately. The same race shows up
+                // on Wayland compositors that defer focus events until the
+                // surface has been mapped and committed.
                 let mut just_opened: u8 = 0;
 
                 loop {
@@ -154,7 +155,6 @@ fn main() -> Result<()> {
                     // focus; we treat that as "dismiss". The keepalive window
                     // is hidden and never active, so it doesn't interfere.
                     // Skip this check during the grace period after opening.
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if current.is_some() {
                         if just_opened > 0 {
                             just_opened -= 1;
@@ -187,8 +187,7 @@ fn main() -> Result<()> {
                                 .await;
                                 // If a window was just opened, arm the grace
                                 // period so the focus-loss check doesn't fire
-                                // before Win32 has delivered foreground focus.
-                                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                                // before the OS has delivered foreground focus.
                                 if current.is_some() {
                                     just_opened = 4; // ~600 ms at 150 ms/poll
                                 }
