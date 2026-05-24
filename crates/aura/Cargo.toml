@@ -44,3 +44,7 @@ ksni = { version = "0.3", default-features = false, features = ["blocking", "asy
 [target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "=0.26.0"
+objc  = "0.2"
+
