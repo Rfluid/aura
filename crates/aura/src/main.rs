@@ -1,3 +1,7 @@
+// Suppress the console window on Windows — without this the OS opens a CMD
+// prompt alongside the GUI process.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod assets;
 mod cli;
@@ -98,6 +102,13 @@ fn main() -> Result<()> {
                 // "Show Aura" click: open if closed, close if open.
                 let mut current: Option<WindowHandle<AuraView>> = None;
 
+                // Grace-period counter: skip focus-loss checks for this many
+                // poll intervals after opening the modal. On Windows,
+                // cx.activate() is a no-op and the new window needs a moment
+                // for Win32 to grant foreground focus; checking too soon makes
+                // the modal close itself immediately.
+                let mut just_opened: u8 = 0;
+
                 loop {
                     // Poll: ksni / tray-icon both expose blocking
                     // crossbeam channels under the hood, so we drain
@@ -108,17 +119,22 @@ fn main() -> Result<()> {
                     // cx.active_window() returns None once another app takes
                     // focus; we treat that as "dismiss". The keepalive window
                     // is hidden and never active, so it doesn't interfere.
+                    // Skip this check during the grace period after opening.
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if current.is_some() {
-                        let lost_focus = cx
-                            .update(|cx| cx.active_window().is_none())
-                            .unwrap_or(false);
-                        if lost_focus {
-                            if let Some(handle) = current.take() {
-                                let _ = cx.update(|cx| {
-                                    let _ = handle
-                                        .update(cx, |_view, window, _cx| window.remove_window());
-                                });
+                        if just_opened > 0 {
+                            just_opened -= 1;
+                        } else {
+                            let lost_focus = cx
+                                .update(|cx| cx.active_window().is_none())
+                                .unwrap_or(false);
+                            if lost_focus {
+                                if let Some(handle) = current.take() {
+                                    let _ = cx.update(|cx| {
+                                        let _ = handle
+                                            .update(cx, |_view, window, _cx| window.remove_window());
+                                    });
+                                }
                             }
                         }
                     }
@@ -134,6 +150,12 @@ fn main() -> Result<()> {
                                     hint,
                                 )
                                 .await;
+                                // If a window was just opened, arm the grace
+                                // period so the focus-loss check doesn't fire
+                                // before Win32 has delivered foreground focus.
+                                if current.is_some() {
+                                    just_opened = 4; // ~600 ms at 150 ms/poll
+                                }
                             }
                             TrayEvent::Quit => {
                                 // Explicit user exit from the right-click
@@ -362,6 +384,10 @@ fn toggle_window(
     }) {
         Ok(handle) => {
             cx.activate(true);
+            // cx.activate is a no-op on Windows; explicitly bring the window
+            // to the foreground so the OS delivers focus and click-outside
+            // detection works correctly.
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
             Some(handle)
         }
         Err(e) => {
