@@ -30,10 +30,12 @@ pub fn make_reader(agent: &AgentConfig) -> Box<dyn AgentReader> {
 use std::collections::HashMap;
 
 use anyhow::Result;
+use serde::Serialize;
 
 // ── Period ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Period {
     AllTime,
     Last7Days,
@@ -42,7 +44,7 @@ pub enum Period {
 
 // ── Per-model usage ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ModelUsage {
     pub model: String,
     pub input_tokens: u64,
@@ -62,13 +64,13 @@ impl ModelUsage {
 
 /// Tokens per model per calendar day. Only `input + output` (no cache),
 /// matching the `dailyModelTokens` field in `stats-cache.json`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DailyModelTokens {
     pub date: String, // "YYYY-MM-DD"
     pub by_model: HashMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DailyActivity {
     pub date: String,
     pub message_count: u64,
@@ -77,7 +79,7 @@ pub struct DailyActivity {
 
 // ── Streaks ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Streaks {
     pub current: u32,
     pub longest: u32,
@@ -87,7 +89,7 @@ pub struct Streaks {
 
 /// The final output of a snapshot read — all data needed by the Overview and
 /// Models panels. Mirrors the object produced by `zT5` / `_T5` in `claude /usage`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct UsageSnapshot {
     // ── Token totals ──────────────────────────────────────────────────────────
     /// `input + output` across all models (the number `/usage` calls "Total tokens").
