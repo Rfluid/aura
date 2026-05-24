@@ -1,4 +1,6 @@
 use std::{
+    collections::HashSet,
+    ffi::OsString,
     path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
@@ -50,6 +52,46 @@ fn resolve_command(cmd: &str) -> PathBuf {
     PathBuf::from(cmd)
 }
 
+/// Build the `PATH` to hand to spawned plugins. GUI launchers (Linux .desktop
+/// files, macOS .app bundles, systemd user units) do not source the user's
+/// shell rc files, so the inherited `PATH` is often missing `~/.local/bin`,
+/// `~/.cargo/bin`, `/opt/homebrew/bin`, etc. — exactly the dirs plugins need
+/// to find tools they shell out to (e.g. `aura-plugin-rtk` running `rtk`).
+fn augmented_path() -> OsString {
+    augmented_path_from(dirs::home_dir(), std::env::var_os("PATH"))
+}
+
+fn augmented_path_from(home: Option<PathBuf>, existing: Option<OsString>) -> OsString {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    let push = |p: PathBuf, entries: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
+        if p.is_dir() && seen.insert(p.clone()) {
+            entries.push(p);
+        }
+    };
+
+    if let Some(home) = home {
+        for sub in [".local/bin", ".cargo/bin", ".bun/bin", "bin"] {
+            push(home.join(sub), &mut entries, &mut seen);
+        }
+    }
+    // /opt/homebrew/bin is Apple Silicon Homebrew; harmless on Linux (won't exist).
+    for p in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        push(PathBuf::from(p), &mut entries, &mut seen);
+    }
+
+    if let Some(existing) = existing.as_ref() {
+        for p in std::env::split_paths(existing) {
+            if !p.as_os_str().is_empty() && seen.insert(p.clone()) {
+                entries.push(p);
+            }
+        }
+    }
+
+    std::env::join_paths(entries).unwrap_or_else(|_| existing.unwrap_or_default())
+}
+
 impl PluginRunner {
     /// Spawn `config.command` (default period: AllTime).
     pub fn run(config: &PluginConfig) -> PluginPanel {
@@ -65,10 +107,12 @@ impl PluginRunner {
         let cmd = resolve_command(&config.command);
         let period_str = period_arg(period).to_string();
 
+        let path_env = augmented_path();
         thread::spawn(move || {
             let result = Command::new(&cmd)
                 .arg("--period")
                 .arg(&period_str)
+                .env("PATH", path_env)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output();
@@ -235,6 +279,48 @@ EOF
             .as_deref()
             .unwrap()
             .contains("invalid plugin JSON"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn augmented_path_prepends_existing_user_dirs() {
+        let home = tempdir().unwrap();
+        let local_bin = home.path().join(".local/bin");
+        let cargo_bin = home.path().join(".cargo/bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        // `~/.bun/bin` deliberately missing — must be skipped.
+
+        let existing = OsString::from("/usr/bin:/bin");
+        let merged = augmented_path_from(Some(home.path().to_path_buf()), Some(existing));
+        let parts: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+
+        assert!(parts.contains(&local_bin), "missing ~/.local/bin: {parts:?}");
+        assert!(parts.contains(&cargo_bin), "missing ~/.cargo/bin: {parts:?}");
+        assert!(parts.contains(&PathBuf::from("/usr/bin")));
+        assert!(parts.contains(&PathBuf::from("/bin")));
+        // Augmented dirs must come before the inherited entries.
+        let local_idx = parts.iter().position(|p| p == &local_bin).unwrap();
+        let usr_idx = parts.iter().position(|p| p == &PathBuf::from("/usr/bin")).unwrap();
+        assert!(local_idx < usr_idx);
+        // Non-existent ~/.bun/bin should not appear.
+        assert!(!parts.contains(&home.path().join(".bun/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn augmented_path_dedupes_existing_entries() {
+        let home = tempdir().unwrap();
+        let local_bin = home.path().join(".local/bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+
+        // Existing PATH already contains ~/.local/bin — should not duplicate.
+        let existing = OsString::from(format!("{}:/usr/bin", local_bin.display()));
+        let merged = augmented_path_from(Some(home.path().to_path_buf()), Some(existing));
+        let count = std::env::split_paths(&merged)
+            .filter(|p| p == &local_bin)
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[cfg(unix)]
