@@ -104,10 +104,11 @@ fn main() -> Result<()> {
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
 
-                    // macOS: auto-close when the user clicks outside the modal.
+                    // Auto-close when the user clicks outside the modal:
                     // cx.active_window() returns None once another app takes
-                    // focus; we treat that as "dismiss".
-                    #[cfg(target_os = "macos")]
+                    // focus; we treat that as "dismiss". The keepalive window
+                    // is hidden and never active, so it doesn't interfere.
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if current.is_some() {
                         let lost_focus = cx
                             .update(|cx| cx.active_window().is_none())
