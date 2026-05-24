@@ -112,6 +112,7 @@ pub struct AuraView {
     /// resize (MODAL_H → content height). This flag drives the uncloak that
     /// fires in `on_next_frame` after the first resize, so the window becomes
     /// visible at the correct size with no visible flash.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     needs_uncloak: Rc<Cell<bool>>,
 }
 
@@ -595,6 +596,7 @@ impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
+        #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
             .flex()
@@ -668,6 +670,7 @@ impl Render for AuraView {
                 }
                 last_height.set(measured);
                 let new_size = size(px(WINDOW_WIDTH), measured);
+                #[cfg(target_os = "windows")]
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
                     window.resize(new_size);

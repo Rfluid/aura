@@ -40,7 +40,9 @@ pub(crate) fn win32_set_cloak(window: &gpui::Window, cloak: bool) {
         Ok(wh) => wh,
         Err(_) => return,
     };
-    let RawWindowHandle::Win32(h) = wh.as_raw() else { return };
+    let RawWindowHandle::Win32(h) = wh.as_raw() else {
+        return;
+    };
     let hwnd = HWND(h.hwnd.get() as usize as *mut _);
     // pvAttribute is a pointer to a BOOL (i32, 4 bytes): 1 = cloak, 0 = uncloak.
     let val: i32 = cloak as i32;
@@ -73,9 +75,9 @@ fn main() -> Result<()> {
     // lifetime of the process; the OS releases it on exit.
     #[cfg(target_os = "windows")]
     {
+        use windows::core::w;
         use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows::Win32::System::Threading::CreateMutexW;
-        use windows::core::w;
         match unsafe { CreateMutexW(None, false, w!("Local\\AuraSingleInstance")) } {
             Ok(h) => {
                 if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
@@ -138,6 +140,7 @@ fn main() -> Result<()> {
                 // cx.activate() is a no-op and the new window needs a moment
                 // for Win32 to grant foreground focus; checking too soon makes
                 // the modal close itself immediately.
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 let mut just_opened: u8 = 0;
 
                 loop {
@@ -162,8 +165,9 @@ fn main() -> Result<()> {
                             if lost_focus {
                                 if let Some(handle) = current.take() {
                                     let _ = cx.update(|cx| {
-                                        let _ = handle
-                                            .update(cx, |_view, window, _cx| window.remove_window());
+                                        let _ = handle.update(cx, |_view, window, _cx| {
+                                            window.remove_window()
+                                        });
                                     });
                                 }
                             }
@@ -184,6 +188,7 @@ fn main() -> Result<()> {
                                 // If a window was just opened, arm the grace
                                 // period so the focus-loss check doesn't fire
                                 // before Win32 has delivered foreground focus.
+                                #[cfg(any(target_os = "macos", target_os = "windows"))]
                                 if current.is_some() {
                                     just_opened = 4; // ~600 ms at 150 ms/poll
                                 }
