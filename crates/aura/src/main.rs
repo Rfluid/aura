@@ -70,23 +70,12 @@ fn main() -> Result<()> {
         return cli::dispatch(command);
     }
 
-    // Single-instance guard: if another aura.exe is already running, exit
-    // silently. The named mutex is held (intentionally leaked) for the
-    // lifetime of the process; the OS releases it on exit.
-    #[cfg(target_os = "windows")]
-    {
-        use windows::core::w;
-        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-        use windows::Win32::System::Threading::CreateMutexW;
-        match unsafe { CreateMutexW(None, false, w!("Local\\AuraSingleInstance")) } {
-            Ok(h) => {
-                if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-                    return Ok(());
-                }
-                let _ = h; // HANDLE is Copy; Win32 keeps it open until process exit
-            }
-            Err(e) => eprintln!("warning: single-instance check failed: {e}"),
-        }
+    // Single-instance guard: if another Aura is already running, exit
+    // silently — the running tray icon will service the next click. The
+    // lock is held (intentionally leaked) for the lifetime of the process;
+    // the OS releases it on exit. See `platform::acquire_single_instance`.
+    if !platform::acquire_single_instance() {
+        return Ok(());
     }
 
     // ── Load config ───────────────────────────────────────────────────────────
