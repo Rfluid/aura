@@ -376,6 +376,12 @@ fn toggle_window(
         // Without this, KDE shows "Window class not available" when the
         // user tries to Detect Window Properties on the modal.
         app_id: Some("aura".into()),
+        // On Windows use PopUp (WS_EX_TOOLWINDOW) so the modal doesn't get
+        // a taskbar button. The app already lives in the system tray; a
+        // taskbar entry would be redundant and causes a visible flash when
+        // the window animates in.
+        #[cfg(target_os = "windows")]
+        kind: WindowKind::PopUp,
         ..Default::default()
     };
 
