@@ -422,35 +422,12 @@ impl AuraView {
         self.open_in_editor(&self.theme_path.clone(), cx);
     }
 
-    fn open_in_editor(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        use std::process::{Command, Stdio};
-
-        // macOS: `open` is the native file-opener (xdg-open doesn't exist).
-        // Linux/BSD: try xdg-open.
-        // Fallback on all platforms: $EDITOR.
-        #[cfg(target_os = "macos")]
-        let opener = "open";
-        #[cfg(not(target_os = "macos"))]
-        let opener = "xdg-open";
-
-        let spawned = Command::new(opener)
-            .arg(path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-
-        if spawned.is_err() {
-            if let Ok(editor) = std::env::var("EDITOR") {
-                let _ = Command::new(editor).arg(path).spawn();
-            } else {
-                self.error = Some(format!(
-                    "Could not open editor (`{opener}` failed and `$EDITOR` unset). \
-                     Edit {} manually.",
-                    path.display()
-                ));
-                cx.notify();
-            }
-        }
+    fn open_in_editor(&mut self, path: &std::path::Path, _cx: &mut Context<Self>) {
+        // `platform::open_path` invokes the OS default handler (xdg-open /
+        // open / ShellExecuteW) and, on failure, falls back to revealing the
+        // file in the system file manager. We never block the UI on the
+        // spawn — both the open and the fallback happen on a detached thread.
+        crate::platform::open_path(path);
     }
 
     fn set_profile(&mut self, name: String, cx: &mut Context<Self>) {
@@ -2094,12 +2071,7 @@ const GITHUB_ISSUES_URL: &str = "https://github.com/Rfluid/aura/issues";
 const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
 
 fn open_url(url: &str) {
-    use std::process::{Command, Stdio};
-    let _ = Command::new("xdg-open")
-        .arg(url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    crate::platform::open_url(url);
 }
 
 // ── Helpers: icons, buttons, color math ──────────────────────────────────────
