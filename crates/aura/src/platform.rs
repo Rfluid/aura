@@ -19,6 +19,119 @@
 
 use std::path::Path;
 
+// ── Single-instance guard ───────────────────────────────────────────────────
+
+/// Try to acquire the per-user single-instance lock. Returns `true` if this
+/// process is now the sole Aura instance, `false` if another Aura is already
+/// running (in which case `main()` should exit silently — the running tray
+/// icon will service the next click).
+///
+/// Mechanism per platform:
+///
+/// - **Unix (Linux, macOS, BSD)**: an exclusive `flock()` on a file in
+///   `$XDG_RUNTIME_DIR` (Linux/BSD) or `$TMPDIR` (macOS). The lock is held
+///   for the process lifetime — we intentionally leak the file descriptor so
+///   the kernel releases it on exit.
+/// - **Windows**: a named mutex (`Local\AuraSingleInstance`) created via
+///   `CreateMutexW`. `ERROR_ALREADY_EXISTS` from the same call signals
+///   another instance owns it. The handle is leaked for the same reason.
+pub fn acquire_single_instance() -> bool {
+    #[cfg(unix)]
+    {
+        unix_lock::acquire()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_mutex::acquire()
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        true
+    }
+}
+
+#[cfg(unix)]
+mod unix_lock {
+    use std::os::fd::AsRawFd;
+    use std::path::PathBuf;
+
+    pub fn acquire() -> bool {
+        let path = lock_path();
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                // Couldn't even open the lock file — proceed without a
+                // guard rather than refusing to launch. Worst case is two
+                // tray icons appear; both will still work.
+                eprintln!(
+                    "aura: single-instance lock open failed at {}: {e}",
+                    path.display()
+                );
+                return true;
+            }
+        };
+
+        // SAFETY: libc::flock takes a raw fd we just opened. LOCK_EX |
+        // LOCK_NB returns 0 if we acquired the exclusive lock, -1 with
+        // errno EWOULDBLOCK if another process holds it.
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret == 0 {
+            // Keep the descriptor alive for the process lifetime so the
+            // kernel releases the lock automatically on exit (including
+            // SIGKILL / panic). std::mem::forget is fine — the kernel,
+            // not Drop, releases the lock.
+            std::mem::forget(file);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// $XDG_RUNTIME_DIR is per-user and on tmpfs (cleaned at logout) on
+    /// systemd distros — the canonical home for lock files. Fall back to
+    /// `std::env::temp_dir()`, which on macOS resolves to a per-user
+    /// `/var/folders/...` directory (also per-user) and on stripped-down
+    /// Linux to `/tmp`. The fallback is multi-user on /tmp, so we include
+    /// the UID in the filename to avoid stealing each other's lock.
+    fn lock_path() -> PathBuf {
+        if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
+            return PathBuf::from(d).join("aura.lock");
+        }
+        // SAFETY: getuid() is always safe — no inputs, no errno.
+        let uid = unsafe { libc::getuid() };
+        std::env::temp_dir().join(format!("aura-{uid}.lock"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_mutex {
+    pub fn acquire() -> bool {
+        use windows::core::w;
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        match unsafe { CreateMutexW(None, false, w!("Local\\AuraSingleInstance")) } {
+            Ok(h) => {
+                if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    return false;
+                }
+                // HANDLE is Copy; Win32 keeps it open until process exit.
+                let _ = h;
+                true
+            }
+            Err(e) => {
+                eprintln!("aura: single-instance check failed: {e}");
+                true
+            }
+        }
+    }
+}
+
 // ── macOS activation policy ──────────────────────────────────────────────────
 
 /// Set the macOS NSApplication activation policy.

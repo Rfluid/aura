@@ -493,6 +493,7 @@ dependencies = [
  "dirs 6.0.0",
  "gpui",
  "ksni",
+ "libc",
  "objc",
  "raw-window-handle",
  "resvg 0.47.0",
