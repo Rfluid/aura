@@ -92,3 +92,53 @@ Aura writes the active profile selection to `~/.local/share/aura/state.json`. Th
   "last_updated": "2026-05-21T14:30:00Z"
 }
 ```
+
+## Themes
+
+Aura ships with a built-in dark theme that you can override on a per-token basis
+via `~/.config/aura/theme.toml`. Every key is optional — anything you don't set
+falls back to the built-in default. Clicking the **Themes** entry in the more
+menu (•••) opens the file in your editor, seeding it from the defaults on first
+click.
+
+```toml
+[colors]
+bg          = "#0e0e10"
+surface     = "#1a1a1f"
+accent      = "#8b5cf6"
+error       = "#ff6b6b"
+warning     = "#e0a96d"
+agent_fallback = "#b8b8c0"   # used when a brand color would wash out on bg
+
+[typography]
+font_family = "JetBrains Mono"
+
+[spinner]
+style       = "braille"   # "braille" | "dot"
+interval_ms = 80
+
+# Per-agent overrides. Keys must match the agent's `name` from config.toml
+# (quote names with spaces or parentheses).
+[agents."Claude Code (Personal)"]
+accent = "#d97757"
+```
+
+### Precedence
+
+For an agent's accent color, the first match wins:
+
+1. `[agents."<name>"].accent` in `theme.toml`
+2. `[[agents]] color = "..."` in `config.toml`
+3. Per-kind brand default (Claude orange, OpenAI white, Gemini blue)
+
+A luminance fallback applies after all of the above: a resolved color whose
+relative luminance exceeds 0.85 is silently swapped for `colors.agent_fallback`
+so the accent never washes out against the dark surface.
+
+### Hot reload
+
+The refresh button in the header reloads `theme.toml` alongside `config.toml`
+— no restart required. A malformed file logs a warning and falls back to the
+built-in defaults rather than blanking the UI.
+
+See `.design/customization.md` for the full schema reference.

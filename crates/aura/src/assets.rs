@@ -29,6 +29,7 @@ icon_assets! {
     (DOWNLOAD,         "download.svg"),
     (SPARKLE,          "sparkle.svg"),
     (CIRCLE_HELP,      "circle_help.svg"),
+    (GITHUB,           "github.svg"),
     (ARROW_UP_RIGHT,   "arrow_up_right.svg"),
     (BLOCKS,           "blocks.svg"),
     (CHECK,            "check.svg"),

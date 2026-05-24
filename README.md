@@ -176,6 +176,44 @@ name = "Gemini"
 kind = "gemini"
 ```
 
+## Themes
+
+Aura's color tokens are user-customizable via a sibling file:
+
+| Platform | Theme path                                      |
+| -------- | ----------------------------------------------- |
+| Linux    | `~/.config/aura/theme.toml`                     |
+| macOS    | `~/Library/Application Support/aura/theme.toml` |
+| Windows  | `%APPDATA%\aura\theme.toml`                     |
+
+Every key is optional — anything you don't set falls back to the built-in
+default. Click **Themes** in the more menu (•••) and Aura will create the file
+seeded with the current defaults, then open it in your editor:
+
+```toml
+[colors]
+bg     = "#0e0e10"
+accent = "#8b5cf6"
+error  = "#ff6b6b"
+
+[typography]
+font_family = "JetBrains Mono"
+
+# Per-agent overrides (quote names with spaces or parentheses).
+[agents."Claude Code (Personal)"]
+accent = "#d97757"
+```
+
+For an agent's accent color, the first match wins: `[agents."<name>"].accent`
+in `theme.toml` → `[[agents]] color = "..."` in `config.toml` → the agent's
+per-kind brand default. A WCAG-luminance fallback then swaps any color that
+would wash out against the dark surface (`> 0.85` relative luminance) for
+`colors.agent_fallback`.
+
+The header refresh button reloads `theme.toml` alongside `config.toml`, so
+edits take effect without restarting Aura. The full schema lives in
+[`.design/customization.md`](.design/customization.md).
+
 ## Installation
 
 Aura is a **system-tray indicator** — like wifi or volume in your panel.

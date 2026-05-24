@@ -1,0 +1,43 @@
+# ~/.config/aura/theme.toml — every key is optional. Delete a line to fall
+# back to the built-in default. See .design/customization.md for the full
+# reference and precedence rules.
+
+[colors]
+# Neutrals
+bg          = "#0e0e10"
+surface     = "#1a1a1f"
+surface_hi  = "#252530"
+border      = "#2d2d36"
+
+# Text
+text        = "#e6e6ee"
+text_dim    = "#8a8a9a"
+
+# Accent
+accent      = "#8b5cf6"
+accent_dim  = "#4c1d95"
+
+# Status
+error       = "#ff6b6b"
+on_accent   = "#ffffff"
+warning     = "#e0a96d"
+
+# Fallback used when an agent's brand color is too light to read on `bg`.
+agent_fallback = "#b8b8c0"
+
+[typography]
+font_family = "monospace"
+
+[spinner]
+style       = "braille"   # one of: "braille" | "dot"
+color       = "#8b5cf6"   # defaults to colors.accent
+interval_ms = 80
+
+# Per-agent overrides. Keys must match `AgentConfig.name` from config.toml
+# exactly (including spaces and parentheses — quote them).
+#
+# [agents."Claude Code (Personal)"]
+# accent = "#d97757"
+#
+# [agents."Codex"]
+# accent = "#ffffff"

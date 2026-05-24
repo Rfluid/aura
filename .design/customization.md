@@ -1,7 +1,9 @@
 # Customization
 
-**Status**: not built yet. This file specifies the schema and behavior so the
-implementer can land it without re-deciding the shape.
+**Status**: implemented. The schema below is the source of truth; the runtime
+loader lives at `crates/aura-core/src/theme.rs`, with the AuraView wiring in
+`crates/aura/src/app.rs`. Built-in defaults are baked into
+`Theme::default()` and the seed file `crates/aura-core/src/theme_default.toml`.
 
 The goal: let users override **any** token from `tokens.md` and any agent's
 accent color from `agents.md`, without recompiling. Defaults stay hard-coded as
@@ -43,9 +45,10 @@ text_dim    = "#8a8a9a"   # COLOR_TEXT_DIM
 accent      = "#8b5cf6"   # COLOR_ACCENT
 accent_dim  = "#4c1d95"   # COLOR_ACCENT_DIM
 
-# Status (currently inline literals; promote to tokens)
+# Status
 error       = "#ff6b6b"
 on_accent   = "#ffffff"
+warning     = "#e0a96d"   # quota-fallback chip and similar advisory surfaces
 
 # Per-agent accent fallback (when brand luminance > 0.85)
 agent_fallback = "#b8b8c0"

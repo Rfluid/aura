@@ -1,11 +1,12 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
-    config::{parse_hex_color, AgentConfig, AgentKind, AppConfig, PluginConfig},
+    config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
+    theme::Theme,
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
@@ -14,21 +15,6 @@ use gpui::{
 };
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
-
-// ── Theme tokens (Zed-ish dark) ───────────────────────────────────────────────
-const COLOR_BG: u32 = 0x0e0e10;
-const COLOR_SURFACE: u32 = 0x1a1a1f;
-const COLOR_SURFACE_HI: u32 = 0x252530;
-const COLOR_BORDER: u32 = 0x2d2d36;
-const COLOR_TEXT: u32 = 0xe6e6ee;
-const COLOR_TEXT_DIM: u32 = 0x8a8a9a;
-const COLOR_ACCENT: u32 = 0x8b5cf6;
-const COLOR_WARNING: u32 = 0xe0a96d;
-
-// Per-agent brand tints used for the icon next to each profile name.
-const COLOR_CLAUDE: u32 = 0xd97757;
-const COLOR_OPENAI: u32 = 0xffffff;
-const COLOR_GEMINI: u32 = 0x4285f4;
 
 /// Fixed window width. The window grows vertically to fit content (see
 /// `on_children_prepainted` in `render`), so only the height is dynamic.
@@ -86,6 +72,8 @@ impl AgentSection {
 pub struct AuraView {
     config: AppConfig,
     config_path: PathBuf,
+    theme: Theme,
+    theme_path: PathBuf,
     state: AppState,
     active_profile: String,
     active_period: Period,
@@ -127,6 +115,8 @@ pub struct AuraView {
 struct RefreshResult {
     /// Reloaded config — `None` means "keep the old one".
     config: Option<AppConfig>,
+    /// Reloaded theme — `None` means "keep the old one".
+    theme: Option<Theme>,
     /// `Some` if the active profile had to fall back to the first agent.
     fallback_profile: Option<String>,
     snapshot: Option<UsageSnapshot>,
@@ -154,9 +144,17 @@ impl AuraView {
             _ => Period::AllTime,
         };
 
+        let theme_path = Theme::default_path();
+        let theme = Theme::load(&theme_path).unwrap_or_else(|e| {
+            eprintln!("aura: theme.toml load failed ({e}); using defaults");
+            Theme::default()
+        });
+
         let mut view = Self {
             config,
             config_path,
+            theme,
+            theme_path,
             state,
             active_profile,
             active_period,
@@ -195,13 +193,14 @@ impl AuraView {
         self.spawn_spinner_tick(cx);
 
         let config_path = self.config_path.clone();
+        let theme_path = self.theme_path.clone();
         let active_profile = self.active_profile.clone();
         let period = self.active_period;
 
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { do_refresh(config_path, active_profile, period) })
+                .spawn(async move { do_refresh(config_path, theme_path, active_profile, period) })
                 .await;
 
             this.update(cx, |view, cx| {
@@ -216,6 +215,9 @@ impl AuraView {
     fn apply_refresh_result(&mut self, result: RefreshResult, cx: &mut Context<Self>) {
         if let Some(cfg) = result.config {
             self.config = cfg;
+        }
+        if let Some(theme) = result.theme {
+            self.theme = theme;
         }
         if let Some(fallback) = result.fallback_profile {
             self.active_profile = fallback;
@@ -277,7 +279,22 @@ impl AuraView {
 /// thread can keep rendering the spinner. Errors are bundled into the
 /// returned `RefreshResult` rather than returned via `Result` so partial
 /// success (e.g. quota OK but snapshot failed) still surfaces.
-fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> RefreshResult {
+fn do_refresh(
+    config_path: PathBuf,
+    theme_path: PathBuf,
+    active_profile: String,
+    period: Period,
+) -> RefreshResult {
+    // Reload theme alongside the config so an edit to either file takes
+    // effect on the same "Refresh" click (see .design/customization.md
+    // §"Hot reload"). Failures fall back to `Theme::default()` rather than
+    // failing the whole refresh — a malformed theme.toml shouldn't blank
+    // the modal.
+    let theme = Some(Theme::load(&theme_path).unwrap_or_else(|e| {
+        eprintln!("aura: theme.toml reload failed ({e}); using defaults");
+        Theme::default()
+    }));
+
     // Reload config so edits made via the settings button take effect.
     // `load_with_discovery` also picks up any binaries added to the user
     // plugins dir since the last open (via `aura plugin add` or a manual
@@ -287,6 +304,7 @@ fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> R
         Err(e) => {
             return RefreshResult {
                 config: None,
+                theme,
                 fallback_profile: None,
                 snapshot: None,
                 quota: None,
@@ -315,6 +333,7 @@ fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> R
     else {
         return RefreshResult {
             config: Some(config),
+            theme,
             fallback_profile,
             snapshot: None,
             quota: None,
@@ -350,6 +369,7 @@ fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> R
 
     RefreshResult {
         config: Some(config),
+        theme,
         fallback_profile,
         snapshot,
         quota,
@@ -363,8 +383,6 @@ impl AuraView {
     /// Tries `xdg-open` first (right call from a GUI context), falls back to
     /// `$EDITOR` if it's set.
     fn open_config(&mut self, cx: &mut Context<Self>) {
-        use std::process::{Command, Stdio};
-
         // Ensure the file exists so the editor doesn't open a blank buffer.
         if !self.config_path.exists() {
             if let Err(e) = AppConfig::load(&self.config_path) {
@@ -373,21 +391,47 @@ impl AuraView {
                 return;
             }
         }
+        self.open_in_editor(&self.config_path.clone(), cx);
+    }
+
+    /// Open `theme.toml` in the user's editor. Mirrors `open_config`. The
+    /// file is seeded from the built-in default theme on first click so the
+    /// editor opens with an editable example rather than a blank buffer.
+    fn open_theme(&mut self, cx: &mut Context<Self>) {
+        if !self.theme_path.exists() {
+            if let Some(parent) = self.theme_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    self.error = Some(format!("Could not create theme dir: {e}"));
+                    cx.notify();
+                    return;
+                }
+            }
+            if let Err(e) = std::fs::write(&self.theme_path, Theme::DEFAULT_TOML) {
+                self.error = Some(format!("Could not create theme.toml: {e}"));
+                cx.notify();
+                return;
+            }
+        }
+        self.open_in_editor(&self.theme_path.clone(), cx);
+    }
+
+    fn open_in_editor(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        use std::process::{Command, Stdio};
 
         let spawned = Command::new("xdg-open")
-            .arg(&self.config_path)
+            .arg(path)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
 
         if spawned.is_err() {
             if let Ok(editor) = std::env::var("EDITOR") {
-                let _ = Command::new(editor).arg(&self.config_path).spawn();
+                let _ = Command::new(editor).arg(path).spawn();
             } else {
                 self.error = Some(format!(
                     "Could not open editor (no `xdg-open` and `$EDITOR` unset). \
                      Edit {} manually.",
-                    self.config_path.display()
+                    path.display()
                 ));
                 cx.notify();
             }
@@ -500,12 +544,12 @@ impl AuraView {
         match self.mode {
             Mode::Agent => self
                 .current_agent()
-                .map(agent_accent)
-                .unwrap_or(COLOR_ACCENT),
+                .map(|a| self.theme.agent_accent(a))
+                .unwrap_or(self.theme.colors.accent),
             Mode::Plugin => self
                 .current_plugin_config()
-                .map(plugin_accent)
-                .unwrap_or(COLOR_ACCENT),
+                .map(|p| self.theme.plugin_accent(p))
+                .unwrap_or(self.theme.colors.accent),
         }
     }
 }
@@ -524,9 +568,11 @@ impl Render for AuraView {
             // when content exceeds the (capped) window height, letting it
             // scroll instead of being clipped off the bottom.
             .h_full()
-            .bg(rgb(COLOR_BG))
-            .text_color(rgb(COLOR_TEXT))
-            .font_family("monospace")
+            .bg(rgb(self.theme.colors.bg))
+            .text_color(rgb(self.theme.colors.text))
+            .font_family(SharedString::from(
+                self.theme.typography.font_family.clone(),
+            ))
             .text_sm()
             .child(self.render_header(cx))
             .child(self.render_selector_row(cx))
@@ -611,8 +657,8 @@ impl AuraView {
             .px_4()
             .py_3()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(COLOR_SURFACE));
+            .border_color(rgb(self.theme.colors.border))
+            .bg(rgb(self.theme.colors.surface));
 
         // Left: brand (+ spinner when a fetch is in flight)
         let frame = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
@@ -621,37 +667,42 @@ impl AuraView {
             .flex_row()
             .items_center()
             .gap_2()
-            .child(svg_icon("icons/aura.svg", COLOR_ACCENT, 18.0))
+            .child(svg_icon("icons/aura.svg", self.theme.colors.accent, 18.0))
             .when(self.is_loading, |d| {
-                d.child(div().text_color(rgb(COLOR_TEXT_DIM)).child(frame))
+                d.child(
+                    div()
+                        .text_color(rgb(self.theme.colors.text_dim))
+                        .child(frame),
+                )
             });
 
         // Right: action buttons (refresh, config, more)
-        let actions =
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_3()
-                .child(
-                    icon_button("act-refresh", "icons/rotate_cw.svg").on_click(cx.listener(
-                        |view, _: &ClickEvent, _, cx| {
-                            // Early-return if a refresh is already running so we
-                            // don't double-spawn.
-                            if view.is_loading {
-                                return;
-                            }
-                            view.refresh(cx);
-                        },
-                    )),
-                )
-                .child(
-                    icon_button("act-config", "icons/settings.svg")
-                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_config(cx))),
-                )
-                .child(icon_button("act-more", "icons/ellipsis.svg").on_click(
+        let actions = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(
+                icon_button("act-refresh", "icons/rotate_cw.svg", &self.theme).on_click(
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        // Early-return if a refresh is already running so we
+                        // don't double-spawn.
+                        if view.is_loading {
+                            return;
+                        }
+                        view.refresh(cx);
+                    }),
+                ),
+            )
+            .child(
+                icon_button("act-config", "icons/settings.svg", &self.theme)
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_config(cx))),
+            )
+            .child(
+                icon_button("act-more", "icons/ellipsis.svg", &self.theme).on_click(
                     cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_more_modal(cx)),
-                ));
+                ),
+            );
 
         row.child(brand).child(actions).into_any_element()
     }
@@ -668,7 +719,7 @@ impl AuraView {
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER));
+            .border_color(rgb(self.theme.colors.border));
 
         // Left: agent pills (Agent mode) or plugin pills (Plugin mode)
         let left = match self.mode {
@@ -695,8 +746,8 @@ impl AuraView {
             let name = agent.name.clone();
             let active = self.active_profile == agent.name;
             let pill_name = name.clone();
-            let accent = agent_accent(agent);
-            let icon = agent_icon(agent);
+            let accent = self.theme.agent_accent(agent);
+            let icon = agent_icon(agent, &self.theme);
             picker = picker.child(
                 div()
                     .id(SharedString::from(format!("profile-{}", agent.name)))
@@ -710,11 +761,12 @@ impl AuraView {
                     .rounded_md()
                     .text_xs()
                     .when(active, |d| {
-                        d.bg(rgb(blend(accent, COLOR_BG, 0.75)))
-                            .text_color(rgb(COLOR_TEXT))
+                        d.bg(rgb(Theme::blend(accent, self.theme.colors.bg, 0.75)))
+                            .text_color(rgb(self.theme.colors.text))
                     })
                     .when(!active, |d| {
-                        d.bg(rgb(COLOR_SURFACE_HI)).text_color(rgb(COLOR_TEXT_DIM))
+                        d.bg(rgb(self.theme.colors.surface_hi))
+                            .text_color(rgb(self.theme.colors.text_dim))
                     })
                     .child(icon)
                     .child(SharedString::from(name))
@@ -730,7 +782,7 @@ impl AuraView {
         if self.config.plugins.is_empty() {
             return div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(self.theme.colors.text_dim))
                 .child("No plugins configured")
                 .into_any_element();
         }
@@ -746,9 +798,13 @@ impl AuraView {
             let name = plugin.name.clone();
             let active = self.active_plugin.as_deref() == Some(name.as_str());
             let pill_name = name.clone();
-            let accent = plugin_accent(plugin);
+            let accent = self.theme.plugin_accent(plugin);
             let icon_path = plugin_icon_path(plugin);
-            let icon_color = if active { accent } else { COLOR_TEXT_DIM };
+            let icon_color = if active {
+                accent
+            } else {
+                self.theme.colors.text_dim
+            };
             picker = picker.child(
                 div()
                     .id(SharedString::from(format!("plugin-{}", plugin.name)))
@@ -762,11 +818,12 @@ impl AuraView {
                     .rounded_md()
                     .text_xs()
                     .when(active, |d| {
-                        d.bg(rgb(blend(accent, COLOR_BG, 0.75)))
-                            .text_color(rgb(COLOR_TEXT))
+                        d.bg(rgb(Theme::blend(accent, self.theme.colors.bg, 0.75)))
+                            .text_color(rgb(self.theme.colors.text))
                     })
                     .when(!active, |d| {
-                        d.bg(rgb(COLOR_SURFACE_HI)).text_color(rgb(COLOR_TEXT_DIM))
+                        d.bg(rgb(self.theme.colors.surface_hi))
+                            .text_color(rgb(self.theme.colors.text_dim))
                     })
                     .child(svg_icon_dynamic(icon_path, icon_color, 12.0))
                     .child(SharedString::from(name))
@@ -796,10 +853,12 @@ impl AuraView {
                     .text_xs()
                     .rounded_md()
                     .when(active, |d| {
-                        d.bg(rgb(COLOR_ACCENT)).text_color(rgb(0xffffff))
+                        d.bg(rgb(self.theme.colors.accent))
+                            .text_color(rgb(self.theme.colors.on_accent))
                     })
                     .when(!active, |d| {
-                        d.bg(rgb(COLOR_SURFACE)).text_color(rgb(COLOR_TEXT_DIM))
+                        d.bg(rgb(self.theme.colors.surface))
+                            .text_color(rgb(self.theme.colors.text_dim))
                     })
                     .child(label)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -821,7 +880,7 @@ impl AuraView {
         // accent color so the filter row reads as "belonging to" the
         // currently-selected profile — see .design/agents.md.
         let accent = self.current_accent();
-        let on_accent = on_accent_text(accent);
+        let on_accent = self.theme.on_accent_text(accent);
 
         let mut row = div()
             .flex()
@@ -831,7 +890,7 @@ impl AuraView {
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER));
+            .border_color(rgb(self.theme.colors.border));
 
         for (label, period, id) in periods {
             let active = self.active_period == period;
@@ -844,7 +903,8 @@ impl AuraView {
                     .text_xs()
                     .when(active, |d| d.bg(rgb(accent)).text_color(rgb(on_accent)))
                     .when(!active, |d| {
-                        d.bg(rgb(COLOR_SURFACE)).text_color(rgb(COLOR_TEXT_DIM))
+                        d.bg(rgb(self.theme.colors.surface))
+                            .text_color(rgb(self.theme.colors.text_dim))
                     })
                     .child(label)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -867,8 +927,8 @@ impl AuraView {
             .py_2()
             .overflow_x_scroll()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(COLOR_SURFACE));
+            .border_color(rgb(self.theme.colors.border))
+            .bg(rgb(self.theme.colors.surface));
 
         match self.mode {
             Mode::Agent => {
@@ -886,11 +946,11 @@ impl AuraView {
                             .text_sm()
                             .pb_1()
                             .when(active, |d| {
-                                d.text_color(rgb(COLOR_TEXT))
+                                d.text_color(rgb(self.theme.colors.text))
                                     .border_b_2()
                                     .border_color(rgb(accent))
                             })
-                            .when(!active, |d| d.text_color(rgb(COLOR_TEXT_DIM)))
+                            .when(!active, |d| d.text_color(rgb(self.theme.colors.text_dim)))
                             .child(s.label())
                             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 view.set_agent_section(s, cx);
@@ -912,11 +972,11 @@ impl AuraView {
                                 .text_sm()
                                 .pb_1()
                                 .when(active, |d| {
-                                    d.text_color(rgb(COLOR_TEXT))
+                                    d.text_color(rgb(self.theme.colors.text))
                                         .border_b_2()
                                         .border_color(rgb(accent))
                                 })
-                                .when(!active, |d| d.text_color(rgb(COLOR_TEXT_DIM)))
+                                .when(!active, |d| d.text_color(rgb(self.theme.colors.text_dim)))
                                 .child(SharedString::from(label))
                                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                     view.set_plugin_section(click_sid.clone(), cx);
@@ -938,28 +998,32 @@ impl AuraView {
                 .items_center()
                 .justify_center()
                 .p_6()
-                .child(div().text_color(rgb(0xff6b6b)).child(err.clone()))
+                .child(
+                    div()
+                        .text_color(rgb(self.theme.colors.error))
+                        .child(err.clone()),
+                )
                 .into_any_element()
         } else if self.is_loading {
             // While a refresh is in flight, hide whatever the previous
             // agent/plugin/period produced and show a clean loading state.
             // Otherwise switching from Claude → Codex (etc.) flashes the
             // outgoing profile's numbers under the new tab.
-            render_loading(self.spinner_frame)
+            render_loading(&self.theme, self.spinner_frame)
         } else {
             let accent = self.current_accent();
             match self.mode {
                 Mode::Agent => match self.active_agent_section {
                     AgentSection::Quota => {
-                        render_quota(self.quota.as_ref(), accent, self.spinner_frame)
+                        render_quota(&self.theme, self.quota.as_ref(), accent, self.spinner_frame)
                     }
                     AgentSection::Summary => match self.snapshot.as_ref() {
-                        Some(snap) => render_summary(snap),
-                        None => render_loading(self.spinner_frame),
+                        Some(snap) => render_summary(&self.theme, snap),
+                        None => render_loading(&self.theme, self.spinner_frame),
                     },
                     AgentSection::Models => match self.snapshot.as_ref() {
-                        Some(snap) => render_models(snap, accent),
-                        None => render_loading(self.spinner_frame),
+                        Some(snap) => render_models(&self.theme, snap, accent),
+                        None => render_loading(&self.theme, self.spinner_frame),
                     },
                 },
                 Mode::Plugin => self.render_plugin_body(),
@@ -992,7 +1056,7 @@ impl AuraView {
                 .p_6()
                 .child(
                     div()
-                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .text_color(rgb(self.theme.colors.text_dim))
                         .child("No plugin selected"),
                 )
                 .into_any_element();
@@ -1008,7 +1072,7 @@ impl AuraView {
                 .p_6()
                 .child(
                     div()
-                        .text_color(rgb(0xff6b6b))
+                        .text_color(rgb(self.theme.colors.error))
                         .child(SharedString::from(err.clone())),
                 )
                 .into_any_element();
@@ -1017,8 +1081,8 @@ impl AuraView {
         let section_id = self.active_plugin_section.as_deref().unwrap_or("");
         let section = panel.section(section_id).or_else(|| panel.sections.first());
         match section {
-            Some(s) => render_plugin_section(s, self.current_accent()),
-            None => render_loading(self.spinner_frame),
+            Some(s) => render_plugin_section(&self.theme, s, self.current_accent()),
+            None => render_loading(&self.theme, self.spinner_frame),
         }
     }
 }
@@ -1029,7 +1093,7 @@ impl AuraView {
 /// height of two quota windows (label + progress bar + resets row) so the
 /// modal barely resizes when the initial fetch completes — fewer visible
 /// jumps on first paint and on agent/plugin switches.
-fn render_loading(spinner_frame: usize) -> AnyElement {
+fn render_loading(theme: &Theme, spinner_frame: usize) -> AnyElement {
     let frame = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
     div()
         .flex()
@@ -1047,25 +1111,30 @@ fn render_loading(spinner_frame: usize) -> AnyElement {
                 .w(px(48.0))
                 .h(px(48.0))
                 .rounded_md()
-                .bg(rgb(COLOR_SURFACE))
+                .bg(rgb(theme.colors.surface))
                 .border_1()
-                .border_color(rgb(COLOR_BORDER))
+                .border_color(rgb(theme.colors.border))
                 .text_lg()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child(frame),
         )
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child("Loading…"),
         )
         .into_any_element()
 }
 
-fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32, spinner_frame: usize) -> AnyElement {
+fn render_quota(
+    theme: &Theme,
+    quota: Option<&QuotaSnapshot>,
+    accent: u32,
+    spinner_frame: usize,
+) -> AnyElement {
     let Some(quota) = quota else {
-        return render_loading(spinner_frame);
+        return render_loading(theme, spinner_frame);
     };
 
     let mut col = div().flex().flex_col().px_4().py_3().gap_3();
@@ -1075,13 +1144,13 @@ fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32, spinner_frame: usize
         col = col.child(
             div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child(SharedString::from(format!("Subscription: {sub}"))),
         );
     }
 
     if quota.source != QuotaSource::Api {
-        col = col.child(render_fallback_warning(quota));
+        col = col.child(render_fallback_warning(theme, quota));
     }
 
     if quota.windows.is_empty() {
@@ -1092,16 +1161,16 @@ fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32, spinner_frame: usize
                     .py_2()
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(COLOR_BORDER))
-                    .bg(rgb(COLOR_SURFACE))
-                    .text_color(rgb(COLOR_TEXT_DIM))
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_color(rgb(theme.colors.text_dim))
                     .text_xs()
                     .child("No quota data available."),
             );
         }
     } else {
         for w in &quota.windows {
-            col = col.child(render_quota_window(w, accent));
+            col = col.child(render_quota_window(theme, w, accent));
         }
     }
 
@@ -1111,7 +1180,7 @@ fn render_quota(quota: Option<&QuotaSnapshot>, accent: u32, spinner_frame: usize
 /// Discrete warning chip shown when the quota snapshot didn't come from the
 /// `/api/oauth/usage` endpoint. Distinguishes the fallback kind so the user
 /// knows whether numbers are local estimates or absent entirely.
-fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
+fn render_fallback_warning(theme: &Theme, quota: &QuotaSnapshot) -> AnyElement {
     let (kind, default_note) = match quota.source {
         QuotaSource::Fallback => (
             "Local estimate",
@@ -1138,12 +1207,12 @@ fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
         .py_2()
         .rounded_md()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_SURFACE))
+        .border_color(rgb(theme.colors.border))
+        .bg(rgb(theme.colors.surface))
         .child(
             div()
                 .mt(px(1.0))
-                .child(svg_icon("icons/info.svg", COLOR_WARNING, 12.0)),
+                .child(svg_icon("icons/info.svg", theme.colors.warning, 12.0)),
         )
         .child(
             div()
@@ -1155,20 +1224,20 @@ fn render_fallback_warning(quota: &QuotaSnapshot) -> AnyElement {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(COLOR_WARNING))
+                        .text_color(rgb(theme.colors.warning))
                         .child(SharedString::from(kind)),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .text_color(rgb(theme.colors.text_dim))
                         .child(SharedString::from(note)),
                 ),
         )
         .into_any_element()
 }
 
-fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
+fn render_quota_window(theme: &Theme, w: &QuotaWindow, accent: u32) -> impl IntoElement {
     let pct_label = match w.used_percentage {
         Some(p) => format!("{:.0}% used", p),
         None => match w.used_tokens {
@@ -1185,13 +1254,13 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
         .gap_2()
         .px_3()
         .py_3()
-        .bg(rgb(COLOR_SURFACE))
+        .bg(rgb(theme.colors.surface))
         .rounded_md()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(theme.colors.border))
         .child(
             div()
-                .text_color(rgb(COLOR_TEXT))
+                .text_color(rgb(theme.colors.text))
                 .child(SharedString::from(w.label.clone())),
         );
 
@@ -1210,7 +1279,7 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
                     div()
                         .h(px(8.0))
                         .flex_1()
-                        .bg(rgb(COLOR_SURFACE_HI))
+                        .bg(rgb(theme.colors.surface_hi))
                         .rounded_md()
                         .child(
                             div()
@@ -1223,14 +1292,14 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(COLOR_TEXT))
+                        .text_color(rgb(theme.colors.text))
                         .child(SharedString::from(pct_label)),
                 ),
         )
     } else {
         row.child(
             div()
-                .text_color(rgb(COLOR_TEXT))
+                .text_color(rgb(theme.colors.text))
                 .child(SharedString::from(pct_label)),
         )
     };
@@ -1239,7 +1308,7 @@ fn render_quota_window(w: &QuotaWindow, accent: u32) -> impl IntoElement {
         row = row.child(
             div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child(SharedString::from(format!("Resets {}", label))),
         );
     }
@@ -1286,7 +1355,7 @@ fn format_reset(ts: DateTime<Utc>) -> String {
 
 // ── Summary (the old "Overview" — stat-card grid) ────────────────────────────
 
-fn render_summary(snap: &UsageSnapshot) -> AnyElement {
+fn render_summary(theme: &Theme, snap: &UsageSnapshot) -> AnyElement {
     let rows = [
         (
             "Favorite model",
@@ -1330,14 +1399,14 @@ fn render_summary(snap: &UsageSnapshot) -> AnyElement {
     for chunk in rows.chunks(2) {
         let mut row = div().flex().flex_row().gap_4();
         for (label, value) in chunk {
-            row = row.child(stat_card(label, value));
+            row = row.child(stat_card(theme, label, value));
         }
         col = col.child(row);
     }
     col.into_any_element()
 }
 
-fn stat_card(label: &str, value: &str) -> impl IntoElement {
+fn stat_card(theme: &Theme, label: &str, value: &str) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -1345,30 +1414,30 @@ fn stat_card(label: &str, value: &str) -> impl IntoElement {
         .gap_1()
         .px_3()
         .py_2()
-        .bg(rgb(COLOR_SURFACE))
+        .bg(rgb(theme.colors.surface))
         .rounded_md()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(theme.colors.border))
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child(SharedString::from(label.to_string())),
         )
         .child(
             div()
-                .text_color(rgb(COLOR_TEXT))
+                .text_color(rgb(theme.colors.text))
                 .child(SharedString::from(value.to_string())),
         )
 }
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
-fn render_models(snap: &UsageSnapshot, accent: u32) -> AnyElement {
+fn render_models(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> AnyElement {
     let mut col = div().flex().flex_col().px_4().py_3().gap_4();
 
     // Tokens per Day chart
-    col = col.child(render_daily_chart(snap, accent));
+    col = col.child(render_daily_chart(theme, snap, accent));
 
     // Per-model breakdown
     let total: u64 = snap
@@ -1385,13 +1454,19 @@ fn render_models(snap: &UsageSnapshot, accent: u32) -> AnyElement {
         } else {
             0.0
         };
-        models_col = models_col.child(render_model_row(&m.model, tokens, pct, accent));
+        models_col = models_col.child(render_model_row(theme, &m.model, tokens, pct, accent));
     }
     col = col.child(models_col);
     col.into_any_element()
 }
 
-fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl IntoElement {
+fn render_model_row(
+    theme: &Theme,
+    model: &str,
+    tokens: u64,
+    pct: f64,
+    accent: u32,
+) -> impl IntoElement {
     let bar_width_pct = pct.clamp(2.0, 100.0);
     div()
         .flex()
@@ -1399,10 +1474,10 @@ fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl Int
         .gap_1()
         .px_3()
         .py_2()
-        .bg(rgb(COLOR_SURFACE))
+        .bg(rgb(theme.colors.surface))
         .rounded_md()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(theme.colors.border))
         .child(
             div()
                 .flex()
@@ -1410,13 +1485,13 @@ fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl Int
                 .justify_between()
                 .child(
                     div()
-                        .text_color(rgb(COLOR_TEXT))
+                        .text_color(rgb(theme.colors.text))
                         .child(SharedString::from(model.to_string())),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .text_color(rgb(theme.colors.text_dim))
                         .child(SharedString::from(format!(
                             "{:.1}% · {}",
                             pct,
@@ -1428,7 +1503,7 @@ fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl Int
             div()
                 .h(px(4.0))
                 .w_full()
-                .bg(rgb(COLOR_SURFACE_HI))
+                .bg(rgb(theme.colors.surface_hi))
                 .rounded_md()
                 .child(
                     div()
@@ -1440,7 +1515,7 @@ fn render_model_row(model: &str, tokens: u64, pct: f64, accent: u32) -> impl Int
         )
 }
 
-fn render_daily_chart(snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
+fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
     let days: Vec<(String, u64)> = snap
         .daily_tokens
         .iter()
@@ -1465,14 +1540,14 @@ fn render_daily_chart(snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
         .gap_2()
         .px_3()
         .py_2()
-        .bg(rgb(COLOR_SURFACE))
+        .bg(rgb(theme.colors.surface))
         .rounded_md()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(theme.colors.border))
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(COLOR_TEXT_DIM))
+                .text_color(rgb(theme.colors.text_dim))
                 .child("Tokens per day"),
         )
         .child(bars)
@@ -1480,7 +1555,7 @@ fn render_daily_chart(snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
 
 // ── Plugin section rendering ─────────────────────────────────────────────────
 
-fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
+fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) -> AnyElement {
     match &section.content {
         PluginContent::Lines { lines } => {
             let mut col = div().flex().flex_col().px_4().py_3().gap_2();
@@ -1491,10 +1566,10 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .bg(rgb(COLOR_SURFACE))
+                    .bg(rgb(theme.colors.surface))
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(COLOR_BORDER));
+                    .border_color(rgb(theme.colors.border));
 
                 card = card.child(
                     div()
@@ -1504,20 +1579,20 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(COLOR_TEXT_DIM))
+                                .text_color(rgb(theme.colors.text_dim))
                                 .child(SharedString::from(line.label.clone())),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .when(line.highlight, |d| d.text_color(rgb(accent)))
-                                .when(!line.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
+                                .when(!line.highlight, |d| d.text_color(rgb(theme.colors.text)))
                                 .child(SharedString::from(line.value.clone())),
                         ),
                 );
 
                 if let Some(p) = line.progress {
-                    card = card.child(progress_bar(p, accent, 6.0));
+                    card = card.child(progress_bar(theme, p, accent, 6.0));
                 }
 
                 col = col.child(card);
@@ -1582,7 +1657,7 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                 .px_3()
                 .py_2()
                 .border_b_1()
-                .border_color(rgb(COLOR_BORDER));
+                .border_color(rgb(theme.colors.border));
             for (i, h) in headers.iter().enumerate() {
                 let right = col_right.get(i).copied().unwrap_or(false);
                 header_row = header_row.child(
@@ -1590,7 +1665,7 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                         .w(px(col_widths[i]))
                         .flex_none()
                         .text_xs()
-                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .text_color(rgb(theme.colors.text_dim))
                         .when(right, |d| d.text_right())
                         .child(SharedString::from(h.clone())),
                 );
@@ -1600,7 +1675,7 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                     div()
                         .flex_1()
                         .text_xs()
-                        .text_color(rgb(COLOR_TEXT_DIM))
+                        .text_color(rgb(theme.colors.text_dim))
                         .child("Impact"),
                 );
             }
@@ -1624,13 +1699,14 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
                             .flex_none()
                             .text_xs()
                             .when(row.highlight, |d| d.text_color(rgb(accent)))
-                            .when(!row.highlight, |d| d.text_color(rgb(COLOR_TEXT)))
+                            .when(!row.highlight, |d| d.text_color(rgb(theme.colors.text)))
                             .when(right, |d| d.text_right())
                             .child(SharedString::from(cell.clone())),
                     );
                 }
                 if has_progress {
                     r = r.child(div().flex_1().child(progress_bar(
+                        theme,
                         row.progress.unwrap_or(0.0),
                         accent,
                         6.0,
@@ -1644,7 +1720,7 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
             .px_4()
             .py_3()
             .text_xs()
-            .text_color(rgb(COLOR_TEXT))
+            .text_color(rgb(theme.colors.text))
             .child(SharedString::from(text.clone()))
             .into_any_element(),
     }
@@ -1652,12 +1728,12 @@ fn render_plugin_section(section: &PluginSection, accent: u32) -> AnyElement {
 
 /// A thin filled bar. `fraction` is clamped to 0.0–1.0. Used by plugin
 /// `progress` fields (e.g. rtk-gains efficiency meter / impact column).
-fn progress_bar(fraction: f64, accent: u32, height: f32) -> impl IntoElement {
+fn progress_bar(theme: &Theme, fraction: f64, accent: u32, height: f32) -> impl IntoElement {
     let f = fraction.clamp(0.0, 1.0) as f32;
     div()
         .h(px(height))
         .w_full()
-        .bg(rgb(COLOR_SURFACE_HI))
+        .bg(rgb(theme.colors.surface_hi))
         .rounded_md()
         .child(
             div()
@@ -1692,6 +1768,12 @@ impl AuraView {
                 ModalAction::Sponsor,
             ),
             (
+                "modal-github",
+                "icons/github.svg",
+                "View on GitHub",
+                ModalAction::Github,
+            ),
+            (
                 "modal-issues",
                 "icons/circle_help.svg",
                 "Report issue",
@@ -1719,14 +1801,15 @@ impl AuraView {
             .gap_1()
             .p_3()
             .min_w(px(260.0))
-            .bg(rgb(COLOR_SURFACE))
+            .bg(rgb(self.theme.colors.surface))
             .rounded_md()
             .border_1()
-            .border_color(rgb(COLOR_BORDER))
+            .border_color(rgb(self.theme.colors.border))
             // Swallow click so it doesn't bubble to the backdrop.
             .on_click(cx.listener(|_, _: &ClickEvent, _, _| {}));
 
         for (id, icon_path, label, action) in items {
+            let surface_hi = self.theme.colors.surface_hi;
             card = card.child(
                 div()
                     .id(SharedString::from(id))
@@ -1738,9 +1821,9 @@ impl AuraView {
                     .py_2()
                     .rounded_md()
                     .text_xs()
-                    .text_color(rgb(COLOR_TEXT))
-                    .hover(|d| d.bg(rgb(COLOR_SURFACE_HI)))
-                    .child(svg_icon(icon_path, COLOR_TEXT_DIM, 14.0))
+                    .text_color(rgb(self.theme.colors.text))
+                    .hover(move |d| d.bg(rgb(surface_hi)))
+                    .child(svg_icon(icon_path, self.theme.colors.text_dim, 14.0))
                     .child(label)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.handle_modal_action(action, cx);
@@ -1753,16 +1836,10 @@ impl AuraView {
 
     fn handle_modal_action(&mut self, action: ModalAction, cx: &mut Context<Self>) {
         match action {
-            ModalAction::Themes => {
-                // User-customizable themes are spec'd in .design/customization.md
-                // but not implemented yet. Showing a placeholder.
-                self.error = Some(
-                    "Themes are coming soon. See .design/customization.md for the spec."
-                        .to_string(),
-                );
-            }
+            ModalAction::Themes => self.open_theme(cx),
             ModalAction::Updates => open_url(GITHUB_RELEASES_URL),
             ModalAction::Sponsor => open_url(SPONSOR_URL),
+            ModalAction::Github => open_url(GITHUB_REPO_URL),
             ModalAction::Reports => open_url(GITHUB_ISSUES_URL),
         }
         self.close_more_modal(cx);
@@ -1774,9 +1851,11 @@ enum ModalAction {
     Themes,
     Updates,
     Sponsor,
+    Github,
     Reports,
 }
 
+const GITHUB_REPO_URL: &str = "https://github.com/Rfluid/aura";
 const GITHUB_RELEASES_URL: &str = "https://github.com/Rfluid/aura/releases";
 const GITHUB_ISSUES_URL: &str = "https://github.com/Rfluid/aura/issues";
 const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
@@ -1827,7 +1906,8 @@ fn plugin_icon_path(plugin: &PluginConfig) -> SharedString {
 }
 
 /// A click-target wrapping an SVG icon. Caller chains `.on_click(...)`.
-fn icon_button(id: &'static str, path: &'static str) -> gpui::Stateful<gpui::Div> {
+fn icon_button(id: &'static str, path: &'static str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    let text = theme.colors.text;
     div()
         .id(id)
         .flex()
@@ -1835,13 +1915,13 @@ fn icon_button(id: &'static str, path: &'static str) -> gpui::Stateful<gpui::Div
         .justify_center()
         .w(px(20.0))
         .h(px(20.0))
-        .text_color(rgb(COLOR_TEXT_DIM))
-        .hover(|d| d.text_color(rgb(COLOR_TEXT)))
-        .child(svg_icon(path, COLOR_TEXT_DIM, 14.0))
+        .text_color(rgb(theme.colors.text_dim))
+        .hover(move |d| d.text_color(rgb(text)))
+        .child(svg_icon(path, theme.colors.text_dim, 14.0))
 }
 
 /// Icon for the given agent profile, tinted with the agent's brand color.
-fn agent_icon(agent: &AgentConfig) -> impl IntoElement {
+fn agent_icon(agent: &AgentConfig, theme: &Theme) -> impl IntoElement {
     let path = match agent.kind {
         AgentKind::ClaudeCode => "icons/claude.svg",
         AgentKind::Codex => "icons/openai.svg",
@@ -1851,91 +1931,7 @@ fn agent_icon(agent: &AgentConfig) -> impl IntoElement {
         .path(path)
         .size(px(14.0))
         .flex_none()
-        .text_color(rgb(agent_accent(agent)))
-}
-
-/// Default accent color for an agent kind. Spec: see `.design/agents.md`.
-pub fn agent_kind_default_color(kind: AgentKind) -> u32 {
-    match kind {
-        AgentKind::ClaudeCode => COLOR_CLAUDE,
-        AgentKind::Codex => COLOR_OPENAI,
-        AgentKind::Gemini => COLOR_GEMINI,
-    }
-}
-
-/// Resolve the accent color for a configured agent. Precedence:
-/// 1. `config.color` (hex string from `~/.config/aura/config.toml`)
-/// 2. Per-kind default (`COLOR_CLAUDE`, `COLOR_OPENAI`, …)
-///
-/// The luminance fallback applies last — any color (override or default) whose
-/// relative luminance exceeds 0.85 is replaced with the neutral light grey
-/// fallback so it reads against `COLOR_BG`. See `.design/agents.md`.
-pub fn agent_accent(agent: &AgentConfig) -> u32 {
-    let resolved = agent
-        .color
-        .as_deref()
-        .and_then(parse_hex_color)
-        .unwrap_or_else(|| agent_kind_default_color(agent.kind));
-    if relative_luminance(resolved) > 0.85 {
-        COLOR_AGENT_FALLBACK
-    } else {
-        resolved
-    }
-}
-
-/// Resolve the accent color for a configured plugin. Falls back to the global
-/// `COLOR_ACCENT` when no override is set. The same luminance fallback as for
-/// agents applies.
-pub fn plugin_accent(plugin: &PluginConfig) -> u32 {
-    let resolved = plugin
-        .color
-        .as_deref()
-        .and_then(parse_hex_color)
-        .unwrap_or(COLOR_ACCENT);
-    if relative_luminance(resolved) > 0.85 {
-        COLOR_AGENT_FALLBACK
-    } else {
-        resolved
-    }
-}
-
-/// WCAG relative luminance, 0.0–1.0.
-fn relative_luminance(rgb_hex: u32) -> f64 {
-    let r = ((rgb_hex >> 16) & 0xff) as f64 / 255.0;
-    let g = ((rgb_hex >> 8) & 0xff) as f64 / 255.0;
-    let b = (rgb_hex & 0xff) as f64 / 255.0;
-    let lin = |c: f64| {
-        if c <= 0.03928 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-}
-
-/// Blend `a` toward `b` by `t` (0.0 = pure a, 1.0 = pure b).
-fn blend(a: u32, b: u32, t: f64) -> u32 {
-    let ch = |shift: u32| {
-        let av = ((a >> shift) & 0xff) as f64;
-        let bv = ((b >> shift) & 0xff) as f64;
-        ((av * (1.0 - t) + bv * t).round() as u32) & 0xff
-    };
-    (ch(16) << 16) | (ch(8) << 8) | ch(0)
-}
-
-/// Light-grey fallback for agents whose brand color is too light.
-const COLOR_AGENT_FALLBACK: u32 = 0xb8b8c0;
-
-/// Pick a legible text color to render on top of `bg`. White over light
-/// pastels (e.g. the agent-fallback grey) reads as a smudge; flip to the dark
-/// app background instead when the accent is too light.
-fn on_accent_text(bg: u32) -> u32 {
-    if relative_luminance(bg) > 0.55 {
-        COLOR_BG
-    } else {
-        0xffffff
-    }
+        .text_color(rgb(theme.agent_accent(agent)))
 }
 
 fn rgba(value: u32) -> gpui::Rgba {

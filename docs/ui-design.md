@@ -96,6 +96,12 @@ Visual style decisions are pending the UI framework choice. Key constraints:
 - Accent color for highlights: pending
 - Font: system monospace for numbers; system UI font for labels
 
+The default surface stack — `bg / surface / surface_hi / border / text /
+text_dim / accent` and per-kind brand tints — is now overridable on a
+per-token basis via `~/.config/aura/theme.toml`. See
+[`.design/customization.md`](../.design/customization.md) for the full schema
+and precedence rules.
+
 ## Taskbar widget
 
 The taskbar widget (e.g., eww module) shows a minimal summary: the active agent name and a cost figure. Clicking it opens the modal.
