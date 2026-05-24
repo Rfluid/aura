@@ -437,7 +437,7 @@ dependencies = [
  "anyhow",
  "aura-core",
  "chrono",
- "dirs 5.0.1",
+ "dirs 6.0.0",
  "gpui",
  "ksni",
  "resvg 0.47.0",
@@ -451,7 +451,7 @@ version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
- "dirs 5.0.1",
+ "dirs 6.0.0",
  "keyring",
  "notify-debouncer-mini",
  "security-framework 2.11.1",
