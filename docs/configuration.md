@@ -92,10 +92,13 @@ anchor = "auto"
 # which is handy when copy-pasting from the modal into another window.
 dismiss_on_focus_loss = true
 
-# macOS only: appear in Cmd+Tab app switcher and the Dock.
-# Default false — Aura runs as an Accessory app (menu-bar only) so it
-# doesn't clutter the switcher. The settings panel exposes this as a
-# toggle that applies immediately without a restart.
+# Appear in the OS's "where are my windows" surfaces:
+# - macOS:   Cmd+Tab app switcher + Dock (NSApp activation policy)
+# - Windows: Alt+Tab + taskbar (WS_EX_APPWINDOW vs WS_EX_TOOLWINDOW)
+# - Linux:   panel / window switcher (WindowKind::Normal vs PopUp)
+# Default false — Aura runs as a tray-only indicator. Reapplies on the
+# next refresh (modal Refresh button) or modal open, so a config edit
+# takes effect without restarting the service.
 show_in_app_switcher = false
 ```
 

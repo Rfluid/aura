@@ -114,11 +114,13 @@ fn main() -> Result<()> {
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
-            // Switch to Accessory policy (no Dock icon / no Cmd+Tab) unless
-            // the user has explicitly opted in to regular app-switcher appearance.
-            // Must run after GPUI's did_finish_launching (which forces Regular)
-            // so this fires inside the run callback, not before it.
-            platform::apply_app_switcher_policy(config.display.show_in_app_switcher);
+            // GPUI forces NSApplicationActivationPolicyRegular in
+            // did_finish_launching; reapply the user's preference here so it
+            // sticks. `runtime::set_from_config` (called at startup before
+            // .run) only fires once, *before* GPUI launches — without this
+            // second push, the user's Accessory choice would be overwritten
+            // by the time we hit the run closure on macOS.
+            platform::apply_app_switcher_policy(runtime::show_in_app_switcher());
 
             // Hold the handle in the move-closure so it isn't dropped.
             let _keepalive = open_keepalive_window(cx);
@@ -420,6 +422,25 @@ fn toggle_window(
     });
 
     let bounds = compute_modal_bounds(cx, hint);
+    // `display.show_in_app_switcher` controls whether the modal appears in
+    // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
+    // Alt+Tab + taskbar on Windows, panel + window switcher on Linux. The
+    // process-wide macOS NSApp policy is applied separately at startup and
+    // on each refresh (see `platform::apply_app_switcher_policy`).
+    //
+    // - true  → WindowKind::Normal: regular app window (WS_EX_APPWINDOW on
+    //           Windows; default xdg_toplevel on Wayland). Visible in the
+    //           switcher.
+    // - false → WindowKind::PopUp: WS_EX_TOOLWINDOW on Windows, no taskbar
+    //           entry on most Linux DEs. The visible flash from the
+    //           taskbar animation goes away in this mode, which is the
+    //           reason we kept it the hard-coded default on Windows
+    //           historically.
+    let kind = if config.display.show_in_app_switcher {
+        WindowKind::Normal
+    } else {
+        WindowKind::PopUp
+    };
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
@@ -428,12 +449,7 @@ fn toggle_window(
         // Without this, KDE shows "Window class not available" when the
         // user tries to Detect Window Properties on the modal.
         app_id: Some("aura".into()),
-        // On Windows use PopUp (WS_EX_TOOLWINDOW) so the modal doesn't get
-        // a taskbar button. The app already lives in the system tray; a
-        // taskbar entry would be redundant and causes a visible flash when
-        // the window animates in.
-        #[cfg(target_os = "windows")]
-        kind: WindowKind::PopUp,
+        kind,
         ..Default::default()
     };
 

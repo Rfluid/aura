@@ -97,7 +97,15 @@ pub struct DisplayConfig {
     /// case-insensitive.
     #[serde(default)]
     pub plugin_order: Vec<String>,
-    /// macOS: appear in Cmd+Tab app switcher. Default false (background-only).
+    /// Whether the modal appears in the OS's "where are my windows"
+    /// surfaces — Cmd+Tab + Dock on macOS, Alt+Tab + taskbar on Windows,
+    /// panel + window switcher on Linux. Default `false` so Aura behaves
+    /// like a true tray-indicator (the icon by the clock is the entire
+    /// UI surface). Set `true` if you want to alt-tab to the modal.
+    ///
+    /// On macOS this also drives the process-wide NSApplication
+    /// activation policy (Accessory vs Regular); on Windows / Linux it
+    /// only affects the modal's window kind, picked at open time.
     pub show_in_app_switcher: bool,
     /// Auto-close the modal when it loses focus (click outside, switch app).
     /// Default true — matches typical menu-bar / tray-popup behaviour.
