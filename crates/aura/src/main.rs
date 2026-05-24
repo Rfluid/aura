@@ -33,6 +33,25 @@ fn main() -> Result<()> {
         return cli::dispatch(command);
     }
 
+    // Single-instance guard: if another aura.exe is already running, exit
+    // silently. The named mutex is held (intentionally leaked) for the
+    // lifetime of the process; the OS releases it on exit.
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        use windows::core::w;
+        match unsafe { CreateMutexW(None, false, w!("Local\\AuraSingleInstance")) } {
+            Ok(h) => {
+                if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    return Ok(());
+                }
+                let _ = h; // HANDLE is Copy; Win32 keeps it open until process exit
+            }
+            Err(e) => eprintln!("warning: single-instance check failed: {e}"),
+        }
+    }
+
     // ── Load config ───────────────────────────────────────────────────────────
     //
     // `AppState` is *not* loaded here on purpose — `toggle_window` reloads it
@@ -183,6 +202,12 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
         titlebar: None,
         focus: false,
         show: false,
+        // On Windows use PopUp (WS_EX_TOOLWINDOW) so the hidden keepalive
+        // doesn't create a taskbar button. Normal (WS_EX_APPWINDOW) is fine
+        // on other platforms where the window is never surfaced to the user.
+        #[cfg(target_os = "windows")]
+        kind: WindowKind::PopUp,
+        #[cfg(not(target_os = "windows"))]
         kind: WindowKind::Normal,
         is_movable: false,
         is_resizable: false,
@@ -199,6 +224,12 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
             // keeps the keepalive alive.
             let _ = handle.update(cx, |_view, window, cx| {
                 window.on_window_should_close(cx, |_, _| false);
+                // On Wayland, `show: false` is ignored — the compositor
+                // creates a surface unconditionally. Minimize immediately so
+                // KDE places it in the taskbar overflow instead of the
+                // desktop. On Windows, SW_MINIMIZE on a hidden window would
+                // force it visible (minimized), so skip this call there.
+                #[cfg(not(target_os = "windows"))]
                 window.minimize_window();
             });
             Some(handle)
