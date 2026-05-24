@@ -94,6 +94,7 @@ pub struct AuraView {
     plugin_panels: Vec<(String, PluginPanel)>,
 
     show_more_modal: bool,
+    show_settings_panel: bool,
     is_loading: bool,
     /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
     spinner_frame: usize,
@@ -166,6 +167,7 @@ impl AuraView {
             quota: None,
             plugin_panels: Vec::new(),
             show_more_modal: false,
+            show_settings_panel: false,
             is_loading: false,
             spinner_frame: 0,
             error: None,
@@ -498,6 +500,27 @@ impl AuraView {
         cx.notify();
     }
 
+    fn toggle_settings_panel(&mut self, cx: &mut Context<Self>) {
+        self.show_settings_panel = !self.show_settings_panel;
+        cx.notify();
+    }
+
+    fn close_settings_panel(&mut self, cx: &mut Context<Self>) {
+        self.show_settings_panel = false;
+        cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn toggle_app_switcher(&mut self, cx: &mut Context<Self>) {
+        self.config.display.show_in_app_switcher = !self.config.display.show_in_app_switcher;
+        let show = self.config.display.show_in_app_switcher;
+        if let Err(e) = self.config.save(&self.config_path) {
+            self.error = Some(format!("Could not save settings: {e}"));
+        }
+        crate::platform::apply_app_switcher_policy(show);
+        cx.notify();
+    }
+
     fn current_agent(&self) -> Option<&AgentConfig> {
         self.config
             .agents
@@ -640,6 +663,9 @@ impl Render for AuraView {
         if self.show_more_modal {
             root = root.child(self.render_more_modal(cx));
         }
+        if self.show_settings_panel {
+            root = root.child(self.render_settings_panel(cx));
+        }
         root
     }
 }
@@ -695,8 +721,9 @@ impl AuraView {
                 ),
             )
             .child(
-                icon_button("act-config", "icons/settings.svg", &self.theme)
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_config(cx))),
+                icon_button("act-config", "icons/settings.svg", &self.theme).on_click(
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_settings_panel(cx)),
+                ),
             )
             .child(
                 icon_button("act-more", "icons/ellipsis.svg", &self.theme).on_click(
@@ -1830,6 +1857,119 @@ impl AuraView {
                     })),
             );
         }
+
+        backdrop.child(card).into_any_element()
+    }
+
+    fn render_settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let backdrop = div()
+            .id("settings-backdrop")
+            .absolute()
+            .inset_0()
+            .bg(gpui::rgba(0x000000a0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.close_settings_panel(cx)));
+
+        let mut card = div()
+            .id("settings-card")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .min_w(gpui::px(260.0))
+            .bg(rgb(self.theme.colors.surface))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(self.theme.colors.border))
+            .on_click(cx.listener(|_, _: &ClickEvent, _, _| {}));
+
+        // ── macOS: Show in App Switcher toggle ───────────────────────────────
+        #[cfg(target_os = "macos")]
+        {
+            let enabled = self.config.display.show_in_app_switcher;
+            let (pill_bg, knob_x) = if enabled {
+                (self.theme.colors.accent, gpui::px(14.0))
+            } else {
+                (self.theme.colors.border, gpui::px(2.0))
+            };
+            let toggle_pill = div()
+                .id("toggle-pill")
+                .w(gpui::px(32.0))
+                .h(gpui::px(18.0))
+                .rounded_full()
+                .bg(rgb(pill_bg))
+                .flex()
+                .items_center()
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .left(knob_x)
+                        .w(gpui::px(14.0))
+                        .h(gpui::px(14.0))
+                        .rounded_full()
+                        .bg(rgb(self.theme.colors.text)),
+                )
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.toggle_app_switcher(cx);
+                }));
+
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(rgb(self.theme.colors.text))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(svg_icon(
+                                "icons/sliders.svg",
+                                self.theme.colors.text_dim,
+                                14.0,
+                            ))
+                            .child("Show in App Switcher"),
+                    )
+                    .child(toggle_pill),
+            );
+        }
+
+        // ── Open config file ─────────────────────────────────────────────────
+        card = card.child(
+            div()
+                .id("settings-open-config")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_md()
+                .text_xs()
+                .text_color(rgb(self.theme.colors.text))
+                .hover(|d| d.bg(rgb(self.theme.colors.surface_hi)))
+                .child(svg_icon(
+                    "icons/arrow_up_right.svg",
+                    self.theme.colors.text_dim,
+                    14.0,
+                ))
+                .child("Open config file")
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.open_config(cx);
+                    view.close_settings_panel(cx);
+                })),
+        );
 
         backdrop.child(card).into_any_element()
     }
