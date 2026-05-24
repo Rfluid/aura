@@ -85,6 +85,18 @@ plugin_order = ["Hello", "RTK Gains"]
 # Options: "auto" | "top" | "bottom" | "left" | "right"
 # "auto" lets Aura pick based on available screen space
 anchor = "auto"
+
+# Auto-close the modal when it loses focus (click outside, switch app).
+# Default true — matches typical menu-bar / tray-popup behaviour. Set
+# to false to make the modal sticky (only the tray icon closes it),
+# which is handy when copy-pasting from the modal into another window.
+dismiss_on_focus_loss = true
+
+# macOS only: appear in Cmd+Tab app switcher and the Dock.
+# Default false — Aura runs as an Accessory app (menu-bar only) so it
+# doesn't clutter the switcher. The settings panel exposes this as a
+# toggle that applies immediately without a restart.
+show_in_app_switcher = false
 ```
 
 ## Agent kinds
