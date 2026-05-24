@@ -169,13 +169,13 @@ fn main() {
                             cells: vec!["Plugin".to_string(), "aura-plugin-hello".to_string()],
                         },
                         PluginRow {
-                            cells: vec!["Version".to_string(), env!("CARGO_PKG_VERSION").to_string()],
+                            cells: vec![
+                                "Version".to_string(),
+                                env!("CARGO_PKG_VERSION").to_string(),
+                            ],
                         },
                         PluginRow {
-                            cells: vec![
-                                "Docs".to_string(),
-                                "docs/plugin-authoring.md".to_string(),
-                            ],
+                            cells: vec!["Docs".to_string(), "docs/plugin-authoring.md".to_string()],
                         },
                     ],
                 },

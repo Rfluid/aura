@@ -324,8 +324,7 @@ fn ensure_executable(path: &Path) -> Result<()> {
         .permissions();
     let mode = perms.mode() | 0o755;
     perms.set_mode(mode);
-    fs::set_permissions(path, perms)
-        .with_context(|| format!("chmod +x {}", path.display()))?;
+    fs::set_permissions(path, perms).with_context(|| format!("chmod +x {}", path.display()))?;
     Ok(())
 }
 
@@ -499,8 +498,7 @@ icon = "icons/demo.svg"
         assert!(outcome.sidecar.is_some());
         let sidecar = outcome.sidecar.unwrap();
         assert!(sidecar.exists());
-        let parsed: PluginSidecar =
-            toml::from_str(&fs::read_to_string(&sidecar).unwrap()).unwrap();
+        let parsed: PluginSidecar = toml::from_str(&fs::read_to_string(&sidecar).unwrap()).unwrap();
         assert_eq!(parsed.name.as_deref(), Some("Demo"));
         assert_eq!(parsed.color.as_deref(), Some("#112233"));
 

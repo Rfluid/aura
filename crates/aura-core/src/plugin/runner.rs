@@ -295,13 +295,22 @@ EOF
         let merged = augmented_path_from(Some(home.path().to_path_buf()), Some(existing));
         let parts: Vec<PathBuf> = std::env::split_paths(&merged).collect();
 
-        assert!(parts.contains(&local_bin), "missing ~/.local/bin: {parts:?}");
-        assert!(parts.contains(&cargo_bin), "missing ~/.cargo/bin: {parts:?}");
+        assert!(
+            parts.contains(&local_bin),
+            "missing ~/.local/bin: {parts:?}"
+        );
+        assert!(
+            parts.contains(&cargo_bin),
+            "missing ~/.cargo/bin: {parts:?}"
+        );
         assert!(parts.contains(&PathBuf::from("/usr/bin")));
         assert!(parts.contains(&PathBuf::from("/bin")));
         // Augmented dirs must come before the inherited entries.
         let local_idx = parts.iter().position(|p| p == &local_bin).unwrap();
-        let usr_idx = parts.iter().position(|p| p == &PathBuf::from("/usr/bin")).unwrap();
+        let usr_idx = parts
+            .iter()
+            .position(|p| p == &PathBuf::from("/usr/bin"))
+            .unwrap();
         assert!(local_idx < usr_idx);
         // Non-existent ~/.bun/bin should not appear.
         assert!(!parts.contains(&home.path().join(".bun/bin")));

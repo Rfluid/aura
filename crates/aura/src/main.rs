@@ -440,8 +440,8 @@ fn run_plugin_subcommand(args: &[String]) -> Result<()> {
 
 fn run_plugin_list() -> Result<()> {
     let config_path = AppConfig::default_path();
-    let config = AppConfig::load(&config_path)
-        .with_context(|| format!("load {}", config_path.display()))?;
+    let config =
+        AppConfig::load(&config_path).with_context(|| format!("load {}", config_path.display()))?;
     let plugins_dir = plugin::user_plugins_dir();
     let discovered = plugin::discover_plugins(&plugins_dir);
 
@@ -454,7 +454,7 @@ fn run_plugin_list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<24} {:<12} {}", "NAME", "SOURCE", "COMMAND");
+    println!("{:<24} {:<12} COMMAND", "NAME", "SOURCE");
     for p in &config.plugins {
         println!("{:<24} {:<12} {}", p.name, "config", p.command);
     }
