@@ -494,6 +494,7 @@ dependencies = [
  "gpui",
  "ksni",
  "objc",
+ "raw-window-handle",
  "resvg 0.47.0",
  "serde",
  "serde_json",

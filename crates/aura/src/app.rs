@@ -108,6 +108,11 @@ pub struct AuraView {
     /// allowed to shrink below its content when the window hits the screen
     /// cap; without this we couldn't tell capped layouts from natural ones).
     body_scroll: ScrollHandle,
+    /// On Windows the modal is DWM-cloaked on open to hide the first-frame
+    /// resize (MODAL_H → content height). This flag drives the uncloak that
+    /// fires in `on_next_frame` after the first resize, so the window becomes
+    /// visible at the correct size with no visible flash.
+    needs_uncloak: Rc<Cell<bool>>,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -173,6 +178,7 @@ impl AuraView {
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
             body_scroll: ScrollHandle::new(),
+            needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
         };
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
@@ -589,6 +595,7 @@ impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
+        let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
             .flex()
             .flex_col()
@@ -661,8 +668,15 @@ impl Render for AuraView {
                 }
                 last_height.set(measured);
                 let new_size = size(px(WINDOW_WIDTH), measured);
+                let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
                     window.resize(new_size);
+                    // On Windows: uncloak after the first resize so the window
+                    // becomes visible at its final size, not at MODAL_H.
+                    #[cfg(target_os = "windows")]
+                    if uncloak.replace(false) {
+                        crate::win32_set_cloak(window, false);
+                    }
                 });
             });
 

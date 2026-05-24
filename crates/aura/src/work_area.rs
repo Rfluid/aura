@@ -41,10 +41,59 @@ pub fn available_bottom(display: Bounds<Pixels>) -> Option<f32> {
     {
         linux::available_bottom(display)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_impl::available_bottom(display)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = display;
         None
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_impl {
+    use std::sync::OnceLock;
+
+    use gpui::{Bounds, Pixels};
+
+    // Cached ratio: physical_work_bottom / physical_screen_height.
+    // Dividing by this ratio cancels the DPI scale factor, so the same
+    // value works in logical-pixel coordinates.
+    static RATIO: OnceLock<Option<f32>> = OnceLock::new();
+
+    pub fn available_bottom(display: Bounds<Pixels>) -> Option<f32> {
+        let ratio = (*RATIO.get_or_init(query_ratio))?;
+        let logical_h = f32::from(display.size.height);
+        let logical_y = f32::from(display.origin.y);
+        Some(logical_y + logical_h * ratio)
+    }
+
+    fn query_ratio() -> Option<f32> {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CYSCREEN, SPI_GETWORKAREA,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        };
+
+        let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32;
+        if screen_h <= 0.0 {
+            return None;
+        }
+        let mut rect = RECT::default();
+        unsafe {
+            SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some(&mut rect as *mut _ as *mut _),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .ok()?;
+        }
+        // work_bottom / screen_h is scale-factor-agnostic: the same fraction
+        // describes the work area in both physical and logical coordinates.
+        Some(rect.bottom as f32 / screen_h)
     }
 }
 
