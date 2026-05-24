@@ -504,17 +504,6 @@ impl AuraView {
         cx.notify();
     }
 
-    #[cfg(target_os = "macos")]
-    fn toggle_app_switcher(&mut self, cx: &mut Context<Self>) {
-        self.config.display.show_in_app_switcher = !self.config.display.show_in_app_switcher;
-        let show = self.config.display.show_in_app_switcher;
-        if let Err(e) = self.config.save(&self.config_path) {
-            self.error = Some(format!("Could not save settings: {e}"));
-        }
-        crate::platform::apply_app_switcher_policy(show);
-        cx.notify();
-    }
-
     fn current_agent(&self) -> Option<&AgentConfig> {
         self.config
             .agents
@@ -1939,65 +1928,6 @@ impl AuraView {
             .border_1()
             .border_color(rgb(self.theme.colors.border))
             .on_click(cx.listener(|_, _: &ClickEvent, _, _| {}));
-
-        // ── macOS: Show in App Switcher toggle ───────────────────────────────
-        #[cfg(target_os = "macos")]
-        {
-            let enabled = self.config.display.show_in_app_switcher;
-            let (pill_bg, knob_x) = if enabled {
-                (self.theme.colors.accent, gpui::px(14.0))
-            } else {
-                (self.theme.colors.border, gpui::px(2.0))
-            };
-            let toggle_pill = div()
-                .id("toggle-pill")
-                .w(gpui::px(32.0))
-                .h(gpui::px(18.0))
-                .rounded_full()
-                .bg(rgb(pill_bg))
-                .flex()
-                .items_center()
-                .relative()
-                .child(
-                    div()
-                        .absolute()
-                        .left(knob_x)
-                        .w(gpui::px(14.0))
-                        .h(gpui::px(14.0))
-                        .rounded_full()
-                        .bg(rgb(self.theme.colors.text)),
-                )
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.toggle_app_switcher(cx);
-                }));
-
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_2()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(rgb(self.theme.colors.text))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(svg_icon(
-                                "icons/sliders.svg",
-                                self.theme.colors.text_dim,
-                                14.0,
-                            ))
-                            .child("Show in App Switcher"),
-                    )
-                    .child(toggle_pill),
-            );
-        }
 
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;

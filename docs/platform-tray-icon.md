@@ -137,18 +137,27 @@ The lookup is cached process-wide after the first call; resizing your
 panel without restarting Aura yields stale numbers, which is preferable to
 hitting the file system / D-Bus on every resize frame.
 
-## macOS Accessory mode
+## Show-in-app-switcher (cross-platform)
 
-GPUI forces `NSApplicationActivationPolicyRegular` in `did_finish_launching`,
-which would make Aura appear in Cmd+Tab and the Dock. For a tray-indicator
-that's noise. `platform::apply_app_switcher_policy` flips the policy to
-`Accessory` (menu-bar-only, no Dock icon, no Cmd+Tab) right after GPUI
-finishes launching.
+`display.show_in_app_switcher` controls whether Aura's modal appears in
+each OS's "where are my windows" surfaces:
 
-Users who want Aura in the Cmd+Tab list (e.g. to alt-tab to the modal) can
-flip `display.show_in_app_switcher = true` in `config.toml` or use the
-"Show in App Switcher" toggle in the settings panel — the change applies
-immediately, no restart.
+| Platform | `false` (default)                                        | `true`                                                          |
+| -------- | -------------------------------------------------------- | --------------------------------------------------------------- |
+| macOS    | `NSApplicationActivationPolicyAccessory` (menu-bar only) | `NSApplicationActivationPolicyRegular` (Cmd+Tab + Dock)         |
+| Windows  | `WindowKind::PopUp` → `WS_EX_TOOLWINDOW` (no taskbar entry) | `WindowKind::Normal` → `WS_EX_APPWINDOW` (Alt+Tab + taskbar)    |
+| Linux    | `WindowKind::PopUp` (skipped by most DEs' window list)   | `WindowKind::Normal` (visible to the panel / window switcher)   |
+
+The macOS policy is process-wide and is applied at startup *and* on every
+modal refresh, so editing the field in `config.toml` and clicking the
+refresh icon (or just reopening the modal) picks up the new value
+without a service restart. On Windows / Linux the field is read at modal
+open time — clicking the tray icon to reopen swaps the `WindowKind`.
+
+GPUI forces `NSApplicationActivationPolicyRegular` in
+`did_finish_launching`, which would override our setting on first launch.
+`platform::apply_app_switcher_policy` is therefore reapplied inside the
+GPUI `run` closure (after launching completes) to win the race.
 
 ## File-handler dispatch
 
