@@ -432,7 +432,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aura"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "aura-core",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "aura-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "aura-plugin-hello"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "aura-plugin-rtk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
