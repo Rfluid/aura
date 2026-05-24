@@ -9,8 +9,8 @@ use aura_core::{
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, SharedString,
-    Window,
+    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, ScrollHandle,
+    SharedString, Window,
 };
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
@@ -114,6 +114,11 @@ pub struct AuraView {
     /// `on_children_prepainted` callback so we only issue a `Window::resize`
     /// when the measured content height actually changes.
     last_window_height: Rc<Cell<Pixels>>,
+    /// Tracks the body's scroll state so the window-resize callback can read
+    /// `max_offset` to recover the body's natural content height (the body is
+    /// allowed to shrink below its content when the window hits the screen
+    /// cap; without this we couldn't tell capped layouts from natural ones).
+    body_scroll: ScrollHandle,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -167,6 +172,7 @@ impl AuraView {
             spinner_frame: 0,
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
+            body_scroll: ScrollHandle::new(),
         };
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
@@ -506,10 +512,15 @@ impl AuraView {
 impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last_height = self.last_window_height.clone();
+        let body_scroll = self.body_scroll.clone();
         let mut root = div()
             .flex()
             .flex_col()
             .w_full()
+            // Fill the window vertically so the body's `flex_shrink` engages
+            // when content exceeds the (capped) window height, letting it
+            // scroll instead of being clipped off the bottom.
+            .h_full()
             .bg(rgb(COLOR_BG))
             .text_color(rgb(COLOR_TEXT))
             .font_family("monospace")
@@ -522,15 +533,14 @@ impl Render for AuraView {
             .child(self.render_tab_row(cx))
             .child(self.render_body(cx))
             // After children have been laid out, sum their vertical extent
-            // and resize the window so it tightly fits the content. The root
-            // has no padding/border, and children are stacked top-to-bottom
-            // in window coordinates, so the bottom of the lowest child is
-            // the natural content height.
+            // and resize the window so it tightly fits the content. The body
+            // is allowed to shrink below its content (overflow_y_scroll), so
+            // we add its scroll max-offset back to recover the natural total.
             .on_children_prepainted(move |bounds, window, app| {
                 let Some(bottom) = bounds.iter().map(|b| b.origin.y + b.size.height).max() else {
                     return;
                 };
-                let mut measured = bottom.ceil();
+                let mut measured = (bottom + body_scroll.max_offset().height).ceil();
 
                 // Cap measured at a safe distance above the primary
                 // display's bottom edge so the window never grows into a
@@ -592,6 +602,7 @@ impl AuraView {
         let row = div()
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .items_center()
             .justify_between()
             .px_4()
@@ -647,6 +658,7 @@ impl AuraView {
         let mut row = div()
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .items_center()
             .justify_between()
             .gap_2()
@@ -668,7 +680,14 @@ impl AuraView {
     }
 
     fn render_agent_pills(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut picker = div().flex().flex_row().gap_2();
+        let mut picker = div()
+            .id("agent-pills-row")
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .overflow_x_scroll();
         for agent in &self.config.agents {
             let name = agent.name.clone();
             let active = self.active_profile == agent.name;
@@ -680,6 +699,7 @@ impl AuraView {
                     .id(SharedString::from(format!("profile-{}", agent.name)))
                     .flex()
                     .flex_row()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_1p5()
                     .px_2()
@@ -711,7 +731,14 @@ impl AuraView {
                 .child("No plugins configured")
                 .into_any_element();
         }
-        let mut picker = div().flex().flex_row().gap_2();
+        let mut picker = div()
+            .id("plugin-pills-row")
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .overflow_x_scroll();
         for plugin in &self.config.plugins {
             let name = plugin.name.clone();
             let active = self.active_plugin.as_deref() == Some(name.as_str());
@@ -724,6 +751,7 @@ impl AuraView {
                     .id(SharedString::from(format!("plugin-{}", plugin.name)))
                     .flex()
                     .flex_row()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_1p5()
                     .px_2()
@@ -752,7 +780,9 @@ impl AuraView {
             ("Agents", Mode::Agent, "mode-agent"),
             ("Plugins", Mode::Plugin, "mode-plugin"),
         ];
-        let mut row = div().flex().flex_row().gap_1();
+        // `flex_shrink_0` keeps the toggle visible when the sibling pill row
+        // overflows and scrolls.
+        let mut row = div().flex().flex_row().flex_shrink_0().gap_1();
         for (label, mode, id) in modes {
             let active = self.mode == mode;
             row = row.child(
@@ -793,6 +823,7 @@ impl AuraView {
         let mut row = div()
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .gap_2()
             .px_4()
             .py_2()
@@ -824,11 +855,14 @@ impl AuraView {
     fn render_tab_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let accent = self.current_accent();
         let mut row = div()
+            .id("section-tab-row")
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .gap_4()
             .px_4()
             .py_2()
+            .overflow_x_scroll()
             .border_b_1()
             .border_color(rgb(COLOR_BORDER))
             .bg(rgb(COLOR_SURFACE));
@@ -845,6 +879,7 @@ impl AuraView {
                     row = row.child(
                         div()
                             .id(SharedString::from(format!("agent-section-{}", s.id())))
+                            .flex_shrink_0()
                             .text_sm()
                             .pb_1()
                             .when(active, |d| {
@@ -870,6 +905,7 @@ impl AuraView {
                         row = row.child(
                             div()
                                 .id(SharedString::from(format!("plugin-section-{}", sid)))
+                                .flex_shrink_0()
                                 .text_sm()
                                 .pb_1()
                                 .when(active, |d| {
@@ -927,7 +963,19 @@ impl AuraView {
             }
         };
 
-        div().id("body").child(inner).into_any_element()
+        // `min_h_0` lets the body shrink below its content when the window is
+        // capped at the screen bottom; `overflow_y_scroll` lets the user reach
+        // the clipped portion; `track_scroll` exposes the overflow back to the
+        // auto-resize callback so the window still re-grows when content fits.
+        div()
+            .id("body")
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.body_scroll)
+            .child(inner)
+            .into_any_element()
     }
 
     fn render_plugin_body(&self) -> AnyElement {
