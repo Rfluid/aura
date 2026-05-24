@@ -135,6 +135,7 @@ Each plugin's README explains how to build and install it. The
 aura plugin add ./target/release/aura-plugin-rtk    # install a built plugin
 aura plugin list                                     # see what's wired up
 aura plugin remove "RTK Gains"                       # uninstall by display name
+aura plugin run "RTK Gains" --period 7d              # debug-print panel JSON
 ```
 
 Anything in `~/.config/aura/plugins/` is auto-discovered at modal open —
@@ -143,6 +144,23 @@ no `config.toml` edit required. To pin the order of the pill row, set
 (see [`docs/configuration.md`](docs/configuration.md)). See
 [`docs/plugin-authoring.md`](docs/plugin-authoring.md) for the full wire
 contract and authoring checklist.
+
+## CLI
+
+Running `aura` with no arguments launches the tray; subcommands run
+headless so they can be scripted. Highlights:
+
+```bash
+aura doctor                              # paths + agent detection + plugin discovery
+aura usage --period 7d --format json     # token snapshot for the active profile
+aura quota --format json                 # subscription rate-limit windows
+aura state set-profile "Codex"           # switch the active profile from the shell
+aura completions zsh > ~/.zfunc/_aura    # shell completions
+```
+
+Every read command takes `--format text|json`. The legacy spelling
+`aura setup-config` still works (hidden alias for `aura config setup`).
+See [`docs/cli.md`](docs/cli.md) for the full reference.
 
 ## Configuration
 

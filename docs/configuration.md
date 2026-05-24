@@ -1,10 +1,10 @@
 ---
 title: Configuration
 status: draft
-version: 0.1.0
-last_updated: 2026-05-21
-last_verified: 2026-05-21
-source_refs: []
+version: 0.1.1
+last_updated: 2026-05-24
+last_verified: 2026-05-24
+source_refs: ["crates/aura-core/src/config.rs", "crates/aura/src/cli/config.rs"]
 owner: "@rfluid"
 tags: [configuration, docs]
 ---
@@ -16,6 +16,18 @@ tags: [configuration, docs]
 `~/.config/aura/config.toml`
 
 Aura creates a default config on first run if none exists.
+
+For scripted access, prefer the CLI:
+
+```text
+aura config path        # print resolved path
+aura config show        # dump current config (--format text|json)
+aura config edit        # open in $EDITOR (seeds defaults if missing)
+aura config validate    # parse-check
+aura config setup       # re-detect installed agents (alias: setup-config)
+```
+
+See `docs/cli.md` for the full subcommand surface.
 
 ## Full example
 

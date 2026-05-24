@@ -229,6 +229,17 @@ aura plugin remove "Hello"
 "discovered" ones). Config-file entries must be removed by editing
 `config.toml`.
 
+Other useful subcommands for plugin authors:
+
+```bash
+aura plugin dir                    # print the user-plugins directory path
+aura plugin list --format json     # machine-readable for scripts
+aura plugin run "Hello" --period 7d
+# pretty-prints the panel JSON your plugin emitted — no need to install
+# and reopen the modal on every change. Combine with `--link` above for
+# a tight edit/build/inspect loop.
+```
+
 ## Checklist
 
 Before publishing a plugin:
