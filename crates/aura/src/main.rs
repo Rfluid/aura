@@ -7,6 +7,7 @@ mod assets;
 mod cli;
 mod format;
 mod platform;
+mod runtime;
 mod tray;
 mod work_area;
 
@@ -82,10 +83,16 @@ fn main() -> Result<()> {
     //
     // `AppState` is *not* loaded here on purpose — `toggle_window` reloads it
     // from disk each time the modal opens, so a profile change made in one
-    // session is visible the next time the user clicks the tray icon. Loading
-    // it once at startup would cache a stale snapshot in the closure below.
+    // session is visible the next time the user clicks the tray icon.
+    //
+    // `AppConfig` is also reloaded on every tray click (see the `Show` arm
+    // below) and on every Refresh-button click (see `app::do_refresh`).
+    // The shared `runtime` module mirrors a handful of `[display]` fields
+    // into atomics so both reload paths keep `main`'s tray loop in sync
+    // with the modal view.
     let config_path = AppConfig::default_path();
     let config = AppConfig::load_with_discovery(&config_path)?;
+    runtime::set_from_config(&config);
 
     // ── Install tray icon (best-effort: warn on failure but keep going) ───────
     let _tray = match tray::install() {
@@ -119,7 +126,6 @@ fn main() -> Result<()> {
             let config = config.clone();
             let config_path = config_path.clone();
 
-            let dismiss_on_focus_loss = config.display.dismiss_on_focus_loss;
             cx.spawn(async move |cx| {
                 // The currently-open window, if any. We toggle on each
                 // "Show Aura" click: open if closed, close if open.
@@ -146,8 +152,11 @@ fn main() -> Result<()> {
                     // is hidden and never active, so it doesn't interfere.
                     // Skip this check during the grace period after opening,
                     // and skip it entirely when the user has opted out via
-                    // display.dismiss_on_focus_loss=false.
-                    if dismiss_on_focus_loss && current.is_some() {
+                    // display.dismiss_on_focus_loss=false. The flag is read
+                    // from `runtime::dismiss_on_focus_loss()` on every poll
+                    // so a refresh-button click or a tray-click reload picks
+                    // up the new value without a service restart.
+                    if runtime::dismiss_on_focus_loss() && current.is_some() {
                         if just_opened > 0 {
                             just_opened -= 1;
                         } else {
@@ -169,10 +178,26 @@ fn main() -> Result<()> {
                     while let Some(event) = tray::try_recv_event() {
                         match event {
                             TrayEvent::Show { hint } => {
+                                // Reload AppConfig from disk so edits made
+                                // since the last open (whether via the
+                                // settings panel, an external editor, or
+                                // `aura plugin add`) take effect on this
+                                // open. Fall back to the startup snapshot
+                                // if the reload fails so a transient I/O
+                                // error doesn't break the toggle.
+                                let fresh_config =
+                                    AppConfig::load_with_discovery(&config_path)
+                                        .unwrap_or_else(|e| {
+                                            eprintln!(
+                                                "aura: config reload failed ({e}); using cached snapshot"
+                                            );
+                                            config.clone()
+                                        });
+                                runtime::set_from_config(&fresh_config);
                                 current = toggle(
                                     cx,
                                     current.take(),
-                                    config.clone(),
+                                    fresh_config,
                                     config_path.clone(),
                                     hint,
                                 )

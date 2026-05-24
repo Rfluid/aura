@@ -223,6 +223,10 @@ impl AuraView {
     /// Apply a `RefreshResult` back to the view on the foreground thread.
     fn apply_refresh_result(&mut self, result: RefreshResult, cx: &mut Context<Self>) {
         if let Some(cfg) = result.config {
+            // Push shared-config fields out to the tray loop so its
+            // focus-loss check picks up the new dismiss_on_focus_loss
+            // value on the next poll without a service restart.
+            crate::runtime::set_from_config(&cfg);
             self.config = cfg;
         }
         if let Some(theme) = result.theme {
