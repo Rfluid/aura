@@ -1856,12 +1856,6 @@ impl AuraView {
     fn render_more_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         let items = [
             (
-                "modal-themes",
-                "icons/sliders.svg",
-                "Themes",
-                ModalAction::Themes,
-            ),
-            (
                 "modal-updates",
                 "icons/download.svg",
                 "Check updates",
@@ -2024,6 +2018,10 @@ impl AuraView {
             );
         }
 
+        let text = self.theme.colors.text;
+        let text_dim = self.theme.colors.text_dim;
+        let surface_hi = self.theme.colors.surface_hi;
+
         // ── Open config file ─────────────────────────────────────────────────
         card = card.child(
             div()
@@ -2036,16 +2034,34 @@ impl AuraView {
                 .py_2()
                 .rounded_md()
                 .text_xs()
-                .text_color(rgb(self.theme.colors.text))
-                .hover(|d| d.bg(rgb(self.theme.colors.surface_hi)))
-                .child(svg_icon(
-                    "icons/arrow_up_right.svg",
-                    self.theme.colors.text_dim,
-                    14.0,
-                ))
+                .text_color(rgb(text))
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .child(svg_icon("icons/arrow_up_right.svg", text_dim, 14.0))
                 .child("Open config file")
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.open_config(cx);
+                    view.close_settings_panel(cx);
+                })),
+        );
+
+        // ── Themes ───────────────────────────────────────────────────────────
+        card = card.child(
+            div()
+                .id("settings-themes")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_md()
+                .text_xs()
+                .text_color(rgb(text))
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .child(svg_icon("icons/sliders.svg", text_dim, 14.0))
+                .child("Themes")
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.open_theme(cx);
                     view.close_settings_panel(cx);
                 })),
         );
@@ -2055,7 +2071,6 @@ impl AuraView {
 
     fn handle_modal_action(&mut self, action: ModalAction, cx: &mut Context<Self>) {
         match action {
-            ModalAction::Themes => self.open_theme(cx),
             ModalAction::Updates => open_url(GITHUB_RELEASES_URL),
             ModalAction::Sponsor => open_url(SPONSOR_URL),
             ModalAction::Github => open_url(GITHUB_REPO_URL),
@@ -2067,7 +2082,6 @@ impl AuraView {
 
 #[derive(Debug, Clone, Copy)]
 enum ModalAction {
-    Themes,
     Updates,
     Sponsor,
     Github,
