@@ -97,6 +97,8 @@ pub struct DisplayConfig {
     /// case-insensitive.
     #[serde(default)]
     pub plugin_order: Vec<String>,
+    /// macOS: appear in Cmd+Tab app switcher. Default false (background-only).
+    pub show_in_app_switcher: bool,
 }
 
 impl Default for DisplayConfig {
@@ -105,6 +107,7 @@ impl Default for DisplayConfig {
             default_period: "all".to_string(),
             anchor: "auto".to_string(),
             plugin_order: Vec::new(),
+            show_in_app_switcher: false,
         }
     }
 }
@@ -128,6 +131,16 @@ impl AppConfig {
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("aura")
             .join("config.toml")
+    }
+
+    /// Serialize and write `self` to `path`.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create config dir {}", parent.display()))?;
+        }
+        let toml = toml::to_string_pretty(self).context("serialize config")?;
+        fs::write(path, toml).with_context(|| format!("write config to {}", path.display()))
     }
 
     /// Load from `path`. If the file does not exist, write a default config
