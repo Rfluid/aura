@@ -31,6 +31,8 @@ click again to dismiss.
   - [Install from GitHub Releases](#install-from-github-releases)
   - [Build from source](#build-from-source)
   - [Common commands](#common-commands)
+  - [Updating](#updating)
+  - [Uninstall](#uninstall)
 - [Compatibility](#compatibility)
 - [Under the hood](#under-the-hood)
 - [Roadmap](#roadmap)
@@ -378,6 +380,51 @@ $lnk.Save()
 `just uninstall` also clears the KDE window rule and any opt-in
 LaunchAgent / Startup-folder shortcut — you don't have to remember
 which install path you took.
+
+### Updating
+
+Re-running `./install.sh` always writes the new binary, but the **running
+process** is only replaced automatically on macOS (`launchctl kickstart -k`)
+and Windows (`Stop-Process` before copy). On Linux the installer calls
+`systemctl --user enable --now aura`, which is a no-op when the unit is
+already running — so the tray keeps serving the old build until you restart
+it explicitly.
+
+```bash
+# Linux — after ./install.sh, swap the old binary in:
+systemctl --user restart aura
+
+# macOS / Windows — nothing extra; ./install.sh (or scripts/install.ps1)
+# already restarted the process for you.
+```
+
+If you opted out of the systemd autostart (or `systemctl --user restart aura`
+reports "no such unit"), kill the stray tray process directly:
+
+```bash
+pkill -x aura && ~/.local/bin/aura >/dev/null 2>&1 &
+disown
+```
+
+### Uninstall
+
+```bash
+# Linux / macOS
+just uninstall            # disables autostart, kills the running tray,
+                          # removes binaries + launcher + systemd unit
+                          # (Linux) / LaunchAgent + Aura.app (macOS),
+                          # and clears the KDE keepalive window rule
+```
+
+```powershell
+# Windows (PowerShell)
+just uninstall-windows    # stops aura.exe and removes the binary +
+                          # Start Menu / Startup-folder shortcuts
+```
+
+Your **config and state are preserved** (`~/.config/aura/config.toml` and
+`~/.local/share/aura/state.json` on Linux; the equivalent OS-specific dirs
+on macOS / Windows). Delete those by hand if you want a full wipe.
 
 ## Compatibility
 
