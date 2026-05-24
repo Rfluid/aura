@@ -1816,6 +1816,13 @@ impl Window {
         self.scale_factor
     }
 
+    /// Returns the raw Win32 `HWND` as a `usize`.
+    /// Reconstruct the handle via `HWND(val as *mut _)`.
+    #[cfg(target_os = "windows")]
+    pub fn hwnd(&self) -> usize {
+        self.platform_window.get_raw_handle().0 as usize
+    }
+
     /// The size of an em for the base font of the application. Adjusting this value allows the
     /// UI to scale, just like zooming a web page.
     pub fn rem_size(&self) -> Pixels {
