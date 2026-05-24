@@ -99,6 +99,12 @@ pub struct DisplayConfig {
     pub plugin_order: Vec<String>,
     /// macOS: appear in Cmd+Tab app switcher. Default false (background-only).
     pub show_in_app_switcher: bool,
+    /// Auto-close the modal when it loses focus (click outside, switch app).
+    /// Default true — matches typical menu-bar / tray-popup behaviour.
+    /// Set to false if you'd rather the modal stay open until you click the
+    /// tray icon again (useful when copy-pasting from the modal into
+    /// another window).
+    pub dismiss_on_focus_loss: bool,
 }
 
 impl Default for DisplayConfig {
@@ -108,6 +114,7 @@ impl Default for DisplayConfig {
             anchor: "auto".to_string(),
             plugin_order: Vec::new(),
             show_in_app_switcher: false,
+            dismiss_on_focus_loss: true,
         }
     }
 }

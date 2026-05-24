@@ -119,6 +119,7 @@ fn main() -> Result<()> {
             let config = config.clone();
             let config_path = config_path.clone();
 
+            let dismiss_on_focus_loss = config.display.dismiss_on_focus_loss;
             cx.spawn(async move |cx| {
                 // The currently-open window, if any. We toggle on each
                 // "Show Aura" click: open if closed, close if open.
@@ -143,8 +144,10 @@ fn main() -> Result<()> {
                     // cx.active_window() returns None once another app takes
                     // focus; we treat that as "dismiss". The keepalive window
                     // is hidden and never active, so it doesn't interfere.
-                    // Skip this check during the grace period after opening.
-                    if current.is_some() {
+                    // Skip this check during the grace period after opening,
+                    // and skip it entirely when the user has opted out via
+                    // display.dismiss_on_focus_loss=false.
+                    if dismiss_on_focus_loss && current.is_some() {
                         if just_opened > 0 {
                             just_opened -= 1;
                         } else {
