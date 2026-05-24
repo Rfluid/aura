@@ -109,14 +109,23 @@ impl PluginRunner {
 
         let path_env = augmented_path();
         thread::spawn(move || {
-            let result = Command::new(&cmd)
+            let mut builder = Command::new(&cmd);
+            builder
                 .arg("--period")
                 .arg(&period_str)
                 .env("PATH", path_env)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output();
-            let _ = tx.send(result);
+                .stderr(Stdio::piped());
+            // When the parent is a GUI process (windows_subsystem = "windows"),
+            // Windows creates a console window for every console-subsystem child.
+            // CREATE_NO_WINDOW suppresses that flash.
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                builder.creation_flags(CREATE_NO_WINDOW);
+            }
+            let _ = tx.send(builder.output());
         });
 
         let output = match rx.recv_timeout(Duration::from_millis(TIMEOUT_MS)) {
