@@ -73,8 +73,8 @@ mod windows_impl {
     fn query_ratio() -> Option<f32> {
         use windows::Win32::Foundation::RECT;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CYSCREEN, SPI_GETWORKAREA,
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+            GetSystemMetrics, SystemParametersInfoW, SM_CYSCREEN, SPI_GETWORKAREA,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
         };
 
         let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32;
