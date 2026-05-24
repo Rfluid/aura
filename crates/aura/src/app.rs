@@ -671,11 +671,67 @@ impl Render for AuraView {
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
                     window.resize(new_size);
-                    // On Windows: uncloak after the first resize so the window
-                    // becomes visible at its final size, not at MODAL_H.
+                    // On Windows: GPUI's resize() uses SWP_NOMOVE, which keeps
+                    // the window's top-left origin fixed and moves the bottom.
+                    // We want the bottom to stay flush with the taskbar, so we
+                    // reposition to `work_bottom - content_h - gap` after the
+                    // resize.  Both ops are spawned on the ForegroundExecutor
+                    // (FIFO): resize task runs first, then reposition+uncloak,
+                    // so DWM sees only the final state at the next vsync.
                     #[cfg(target_os = "windows")]
-                    if uncloak.replace(false) {
-                        crate::win32_set_cloak(window, false);
+                    {
+                        let scale = window.scale_factor();
+                        let cur_x_phys =
+                            (f32::from(window.bounds().origin.x) * scale).round() as i32;
+                        let target_y_phys = if let Some(display) = _cx.primary_display() {
+                            let db = display.bounds();
+                            let full_bottom = f32::from(db.origin.y + db.size.height);
+                            let work_bottom = crate::work_area::available_bottom(db)
+                                .unwrap_or(full_bottom - 120.0);
+                            let y = work_bottom - f32::from(new_size.height) - 8.0;
+                            (y * scale).round() as i32
+                        } else {
+                            // No display info — fall back to sync uncloak only.
+                            if uncloak.replace(false) {
+                                crate::win32_set_cloak(window, false);
+                            }
+                            return;
+                        };
+                        let hwnd_val = window.hwnd();
+                        let do_uncloak = uncloak.replace(false);
+                        _cx.spawn(async move |_cx| {
+                            use windows::Win32::Foundation::HWND;
+                            use windows::Win32::UI::WindowsAndMessaging::{
+                                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                            };
+                            let hwnd = HWND(hwnd_val as *mut _);
+                            unsafe {
+                                let _ = SetWindowPos(
+                                    hwnd,
+                                    None,
+                                    cur_x_phys,
+                                    target_y_phys,
+                                    0,
+                                    0,
+                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                                );
+                            }
+                            if do_uncloak {
+                                use windows::Win32::Graphics::Dwm::{
+                                    DwmSetWindowAttribute, DWMWA_CLOAK,
+                                };
+                                let val: i32 = 0;
+                                unsafe {
+                                    let _ = DwmSetWindowAttribute(
+                                        hwnd,
+                                        DWMWA_CLOAK,
+                                        std::ptr::addr_of!(val).cast(),
+                                        std::mem::size_of::<i32>() as u32,
+                                    );
+                                }
+                            }
+                        })
+                        .detach();
                     }
                 });
             });
