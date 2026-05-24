@@ -1,0 +1,15 @@
+[package]
+name              = "aura-plugin-hello"
+version           = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish           = false
+
+# Reference plugin: shows the minimum needed to publish a panel into
+# Aura. Built by `cargo build --workspace` but intentionally NOT wired
+# into install.sh — users opt in via `aura plugin add` (or by dropping
+# the built binary into ~/.config/aura/plugins/).
+
+[dependencies]
+serde.workspace      = true
+serde_json.workspace = true

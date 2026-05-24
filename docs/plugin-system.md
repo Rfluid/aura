@@ -1,10 +1,12 @@
 ---
 title: Plugin system
-status: draft
+status: stable
 version: 0.1.0
-last_updated: 2026-05-21
-last_verified: 2026-05-21
-source_refs: []
+last_updated: 2026-05-23
+source_refs:
+  - crates/aura-core/src/plugin/mod.rs
+  - crates/aura-core/src/plugin/runner.rs
+  - crates/aura-core/src/plugin/discovery.rs
 owner: "@rfluid"
 tags: [plugins, docs]
 ---
@@ -13,88 +15,89 @@ tags: [plugins, docs]
 
 ## Overview
 
-Plugins extend Aura with custom metrics panels displayed in the modal beneath the core usage stats. Any developer can author a plugin. Aura ships with one built-in plugin: **RTK Gains**.
+Plugins extend Aura with custom metrics panels displayed in the modal
+beneath the core usage stats. Any developer can author a plugin in any
+language that can print JSON. **The core install ships no plugins** —
+the repo includes first-party plugin sources (`plugins/rtk-gains/`,
+`plugins/hello/`), but every plugin is installed separately via
+`aura plugin add` or by dropping a binary into the user plugins dir.
 
-## Plugin contract
+This document describes the system itself. For the practical
+how-to — wire schema, install flow, checklist — see
+[`plugin-authoring.md`](plugin-authoring.md).
 
-A plugin is a program that:
+## Architecture
 
-1. Reads from whatever data source it owns (files, env vars, APIs)
-2. Returns a structured panel payload when invoked by Aura
-3. Has no write access to Aura's state or config
-
-Aura calls plugins at modal open time and caches results for the modal's lifetime.
-
-## Interface (subprocess + JSON IPC)
-
-_Note: the loading strategy (dynamic library vs. subprocess) is a pending decision. This section describes the subprocess approach, which is the most portable and avoids ABI concerns._
-
-Aura spawns the plugin binary with no arguments and reads a single JSON object from stdout:
-
-```json
-{
-  "title": "RTK Gains",
-  "lines": [
-    { "label": "Tokens saved today",  "value": "1,247,832", "highlight": true },
-    { "label": "Savings rate",         "value": "61%" },
-    { "label": "Commands intercepted", "value": "342" }
-  ],
-  "error": null
-}
+```
+┌────────────────────┐   spawns        ┌──────────────────────┐
+│ aura (host, GPUI)  │ ──────────────▶ │ aura-plugin-foo      │
+│                    │ ◀────────────── │ (stand-alone binary) │
+│ PluginRunner       │   JSON / stderr └──────────────────────┘
+│ → PluginPanel      │   exit code
+│ → modal section    │
+└────────────────────┘
 ```
 
-If `error` is non-null, Aura shows the plugin panel with an error state and the error string.
+- **Loading strategy**: subprocess + JSON IPC (no dynamic linking).
+  This keeps the ABI a stable wire format, so plugins survive Aura
+  rebuilds and can be written in any language.
+- **Lifetime**: spawned at modal open, output cached for the modal's
+  lifetime, killed if it exceeds the budget.
+- **Isolation**: plugins have no write access to Aura's config or state.
+  They can read whatever the host user can read.
 
-Exit code: `0` on success, non-zero on fatal failure (panel hidden entirely).
+## Plugin sources
 
-Timeout: 500ms. Plugins that exceed this are shown in an error state.
+A plugin reaches the modal via one of three paths, merged at modal open:
 
-## Plugin configuration
+1. **`[[plugins]]` entries in `config.toml`** — the classic path. Used
+   for system-wide plugins on `$PATH` and any user override.
+2. **Auto-discovery from `~/.config/aura/plugins/`** — every executable
+   file in that directory is treated as a plugin. Sidecar TOML
+   (`<binary>.toml`) supplies optional display metadata.
+3. **`aura plugin add <path>`** — convenience wrapper that copies (or
+   symlinks) a binary into the user plugins dir and writes the sidecar.
 
-```toml
-# ~/.config/aura/config.toml
+On display-name collision, config entries always win, so users can
+override the color/icon of a discovered plugin without removing the
+binary.
 
-[[plugins]]
-name = "RTK Gains"
-command = "aura-plugin-rtk"     # binary on $PATH, or absolute path
+## Wire contract (summary)
 
-[[plugins]]
-name = "My Custom Plugin"
-command = "/usr/local/bin/my-aura-plugin"
-```
+Full schema and examples: [`plugin-authoring.md`](plugin-authoring.md#wire-contract).
 
-## Built-in plugins
+| Aspect       | Contract                                                  |
+| ------------ | --------------------------------------------------------- |
+| Invocation   | `<binary> --period <all\|7d\|30d>`                        |
+| Output       | One UTF-8 JSON object on stdout (`PluginPanel`)           |
+| Timeout      | 500 ms; exceeded → error panel                            |
+| Exit non-0   | stderr surfaced as the panel error                        |
+| Soft errors  | `{"title": "...", "error": "..."}` with exit 0            |
+
+The `PluginPanel` schema lives in
+[`aura-core/src/plugin/mod.rs`](../crates/aura-core/src/plugin/mod.rs)
+and is forward-compatible: the runner falls back to the legacy flat
+`{title, lines, error}` shape when a plugin doesn't emit `sections`.
+
+## First-party plugins (all opt-in)
 
 ### RTK Gains
 
-Source: `plugins/rtk-gains/`
+Source: [`plugins/rtk-gains/`](../plugins/rtk-gains). Surfaces tokens
+saved by the Rust Token Killer optimizer (today, this month, lifetime,
+savings rate, command count). See
+[`plugins/rtk-gains/README.md`](../plugins/rtk-gains/README.md) for
+build + install instructions.
 
-Reads RTK's gain log (location: `~/.local/share/rtk/gains.json` — pending confirmation from RTK authors). Reports:
-- Tokens saved today
-- Tokens saved this month  
-- Overall savings rate (%)
-- Number of commands intercepted
+### Hello (reference)
 
-## Authoring a plugin
+Source: [`plugins/hello/`](../plugins/hello). Minimal demonstration of
+the wire contract — emits both `lines` and `table` sections from
+static data. Built by `cargo build --workspace`; install via
+`aura plugin add ./target/release/aura-plugin-hello`.
 
-1. Create a binary (any language) that writes the JSON panel payload to stdout
-2. Handle the 500ms timeout — do not make network calls unless they're fast
-3. Ship it on `$PATH` or document the absolute path for config
-4. Register it in `~/.config/aura/config.toml` under `[[plugins]]`
+## Future
 
-A minimal plugin example (shell script):
-
-```bash
-#!/usr/bin/env bash
-echo '{
-  "title": "My Plugin",
-  "lines": [
-    { "label": "Status", "value": "OK" }
-  ],
-  "error": null
-}'
-```
-
-## Future: plugin registry
-
-A future version of Aura may ship a plugin registry (`aura plugin install <name>`) for discovering and installing community plugins. Out of scope for v0.1.
+- Plugin registry (`aura plugin install <name>`) — discover and pull
+  community plugins from a central index. Out of scope for v0.1.
+- Signed plugin manifests for trust on first use.

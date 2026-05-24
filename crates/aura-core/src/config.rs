@@ -90,6 +90,13 @@ pub struct DisplayConfig {
     pub default_period: String,
     /// Modal anchor relative to the tray icon: `"auto"`, `"top"`, `"bottom"`.
     pub anchor: String,
+    /// Display order for plugin pills. Plugins whose display `name`
+    /// appears here render in the listed order; anything not named
+    /// keeps its natural order (config-then-discovered-alphabetical)
+    /// and appends after the explicitly-ordered prefix. Match is
+    /// case-insensitive.
+    #[serde(default)]
+    pub plugin_order: Vec<String>,
 }
 
 impl Default for DisplayConfig {
@@ -97,6 +104,7 @@ impl Default for DisplayConfig {
         Self {
             default_period: "all".to_string(),
             anchor: "auto".to_string(),
+            plugin_order: Vec::new(),
         }
     }
 }
@@ -142,18 +150,74 @@ impl AppConfig {
         toml::from_str(&content).with_context(|| format!("parse config file {}", path.display()))
     }
 
-    /// Sensible out-of-the-box config: one Claude Code profile + RTK plugin.
+    /// Sensible out-of-the-box config: detected agents only, no bundled
+    /// plugins. Plugins are installed separately via `aura plugin add` or
+    /// by dropping a binary into `~/.config/aura/plugins/`.
     pub fn default_config() -> Self {
         Self {
             agents: known_agent_profiles(),
-            plugins: vec![PluginConfig {
-                name: "RTK Gains".to_string(),
-                command: "aura-plugin-rtk".to_string(),
-                color: Some("#f59e0b".to_string()),
-                icon: Some("icons/rtk.svg".to_string()),
-            }],
+            plugins: Vec::new(),
             display: DisplayConfig::default(),
         }
+    }
+
+    /// Same as [`Self::load`], plus any executable plugins discovered in
+    /// `<config-dir>/plugins/` are merged into `self.plugins` (config-listed
+    /// entries win on display-name collision). Discovered plugins are kept
+    /// in-memory only — the on-disk config is not rewritten, so removing a
+    /// binary from the plugins dir makes it disappear cleanly on the next
+    /// launch. Finally, [`Self::apply_plugin_order`] reorders the merged
+    /// list to honour `display.plugin_order`.
+    pub fn load_with_discovery(path: &Path) -> Result<Self> {
+        let mut cfg = Self::load(path)?;
+        let plugins_dir = crate::plugin::plugins_dir_for_config(path);
+        let discovered = crate::plugin::discover_plugins(&plugins_dir);
+        cfg.merge_plugins(discovered);
+        cfg.apply_plugin_order();
+        Ok(cfg)
+    }
+
+    /// Reorder `self.plugins` according to `self.display.plugin_order`.
+    /// Plugins whose display name appears in the order list move to the
+    /// front in the listed order; anything not named keeps its relative
+    /// position and is appended after the ordered prefix. Match is
+    /// case-insensitive. No-op when `plugin_order` is empty.
+    pub fn apply_plugin_order(&mut self) {
+        if self.display.plugin_order.is_empty() {
+            return;
+        }
+        let mut remaining = std::mem::take(&mut self.plugins);
+        let mut ordered: Vec<PluginConfig> = Vec::with_capacity(remaining.len());
+        for wanted in &self.display.plugin_order {
+            if let Some(pos) = remaining
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(wanted))
+            {
+                ordered.push(remaining.remove(pos));
+            }
+        }
+        ordered.extend(remaining);
+        self.plugins = ordered;
+    }
+
+    /// Append `additions` to `self.plugins`, skipping any whose display
+    /// `name` (case-insensitive) is already present. Existing entries in
+    /// the on-disk config always win — this lets the user override the
+    /// color or icon of a discovered plugin by adding a `[[plugins]]`
+    /// block with the same name.
+    pub fn merge_plugins(&mut self, additions: Vec<PluginConfig>) -> usize {
+        let mut added = 0;
+        for candidate in additions {
+            let already = self
+                .plugins
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(&candidate.name));
+            if !already {
+                self.plugins.push(candidate);
+                added += 1;
+            }
+        }
+        added
     }
 
     /// Append `additions` to `self.agents`, skipping any whose
@@ -320,6 +384,58 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn plug(name: &str) -> PluginConfig {
+        PluginConfig {
+            name: name.to_string(),
+            command: format!("aura-plugin-{}", name.to_ascii_lowercase()),
+            color: None,
+            icon: None,
+        }
+    }
+
+    #[test]
+    fn apply_plugin_order_moves_named_to_front_preserves_rest() {
+        let mut cfg = AppConfig {
+            agents: vec![],
+            plugins: vec![plug("Alpha"), plug("Beta"), plug("Gamma"), plug("Delta")],
+            display: DisplayConfig {
+                plugin_order: vec!["Gamma".into(), "Alpha".into()],
+                ..DisplayConfig::default()
+            },
+        };
+        cfg.apply_plugin_order();
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        // Named entries first (in listed order), then unlisted in original order.
+        assert_eq!(names, vec!["Gamma", "Alpha", "Beta", "Delta"]);
+    }
+
+    #[test]
+    fn apply_plugin_order_case_insensitive_and_ignores_unknown() {
+        let mut cfg = AppConfig {
+            agents: vec![],
+            plugins: vec![plug("RTK Gains"), plug("Hello")],
+            display: DisplayConfig {
+                plugin_order: vec!["hello".into(), "Nonexistent".into()],
+                ..DisplayConfig::default()
+            },
+        };
+        cfg.apply_plugin_order();
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Hello", "RTK Gains"]);
+    }
+
+    #[test]
+    fn apply_plugin_order_is_noop_when_empty() {
+        let mut cfg = AppConfig {
+            agents: vec![],
+            plugins: vec![plug("Alpha"), plug("Beta")],
+            display: DisplayConfig::default(),
+        };
+        cfg.apply_plugin_order();
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Beta"]);
+    }
+
     #[test]
     fn default_config_round_trips_through_toml() {
         let cfg = AppConfig::default_config();
@@ -439,7 +555,10 @@ mod tests {
 
         let cfg = AppConfig::load(&config_path).unwrap();
         assert_eq!(cfg.agents.len(), 2);
-        assert_eq!(cfg.plugins.len(), 1); // RTK still seeded.
+        // No plugins ship by default — they're installed separately
+        // via `aura plugin add` or by dropping a binary into the user
+        // plugins dir.
+        assert!(cfg.plugins.is_empty());
     }
 
     #[test]

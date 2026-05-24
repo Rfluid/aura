@@ -75,7 +75,7 @@ uninstall:
             # binaries + launcher + systemd unit.
             systemctl --user disable --now aura 2>/dev/null || true
             pkill -x aura 2>/dev/null || true
-            rm -f ~/.local/bin/aura ~/.local/bin/aura-plugin-rtk
+            rm -f ~/.local/bin/aura
             rm -f ~/.local/share/applications/aura.desktop
             rm -f ~/.local/share/icons/hicolor/scalable/apps/aura.svg
             rm -f ~/.config/systemd/user/aura.service
@@ -102,7 +102,7 @@ uninstall:
             launchctl bootout "gui/$(id -u)/com.aura.agent-usage" 2>/dev/null || true
             rm -f ~/Library/LaunchAgents/com.aura.agent-usage.plist
             rm -rf /Applications/Aura.app ~/Applications/Aura.app
-            rm -f ~/.local/bin/aura ~/.local/bin/aura-plugin-rtk
+            rm -f ~/.local/bin/aura
             ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Run 'just uninstall-windows' from PowerShell on Windows." >&2
@@ -110,7 +110,7 @@ uninstall:
             ;;
         *)
             echo "warning: unknown OS, removing binaries only" >&2
-            rm -f ~/.local/bin/aura ~/.local/bin/aura-plugin-rtk
+            rm -f ~/.local/bin/aura
             ;;
     esac
     echo "✔ Removed binaries and launcher (config + state preserved)"

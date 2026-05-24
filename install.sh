@@ -159,9 +159,10 @@ fi
 # ── Install binaries ──────────────────────────────────────────────────────────
 
 mkdir -p "$BIN_DIR"
-install -m 755 "$STAGING_DIR/aura"            "$BIN_DIR/aura"
-install -m 755 "$STAGING_DIR/aura-plugin-rtk" "$BIN_DIR/aura-plugin-rtk"
-echo "▸ Installed binaries to $BIN_DIR"
+install -m 755 "$STAGING_DIR/aura" "$BIN_DIR/aura"
+echo "▸ Installed aura to $BIN_DIR"
+echo "  Plugins (incl. RTK Gains) are installed separately — see"
+echo "  docs/plugin-authoring.md and each plugin's README."
 
 # ── Detect agents and seed/merge config ──────────────────────────────────────
 # Runs before autostart so the service picks up the populated config on its

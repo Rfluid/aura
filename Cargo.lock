@@ -464,6 +464,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aura-plugin-hello"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aura-plugin-rtk"
 version = "0.1.0"
 dependencies = [

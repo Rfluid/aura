@@ -109,20 +109,40 @@ running a CLI command.
 
 - **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap.
 - **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
-- **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin; ships with the RTK Gains plugin.
-- **RTK Gains plugin** — surfaces token savings from the [RTK](https://github.com/rtk) optimizer directly alongside your usage stats.
+- **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin. First-party plugins (incl. RTK Gains for [RTK](https://github.com/rtk) token-savings) are installed separately.
 - **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit.
 - **Tray-native** — uses [`ksni`](https://github.com/iovxw/ksni) on Linux for direct StatusNotifierItem (Plasma / GNOME / sway / etc.) and `tray-icon` on macOS / Windows for AppKit / Win32 menu-bar integration.
 
 ## Plugins
 
-Plugins live outside the core codebase and load at runtime. Aura ships with:
+Plugins are stand-alone executables that publish JSON panels into the
+modal. **None ship with the core install** — Aura itself stays minimal.
+Plugins are installed separately, either by `aura plugin add` or by
+dropping a binary into the user plugins dir
+(`~/.config/aura/plugins/` on Linux).
 
-| Plugin        | Description                                                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **RTK Gains** | Shows tokens saved by the Rust Token Killer (RTK) optimizer — how much you spent vs. how much you would have spent |
+First-party plugins (built from this repo's `plugins/` directory):
 
-Plugins expose a simple trait interface. Authors can package them as shared libraries and distribute them independently of Aura.
+| Plugin                                          | Description                                                                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **[RTK Gains](plugins/rtk-gains/README.md)**    | Shows tokens saved by the Rust Token Killer (RTK) optimizer — how much you spent vs. how much you would have spent |
+| **[Hello](plugins/hello/)** _(reference only)_  | Minimal example showing the JSON contract for plugin authors                                                       |
+
+Each plugin's README explains how to build and install it. The
+`aura plugin` CLI wraps the common workflows:
+
+```bash
+aura plugin add ./target/release/aura-plugin-rtk    # install a built plugin
+aura plugin list                                     # see what's wired up
+aura plugin remove "RTK Gains"                       # uninstall by display name
+```
+
+Anything in `~/.config/aura/plugins/` is auto-discovered at modal open —
+no `config.toml` edit required. To pin the order of the pill row, set
+`[display] plugin_order = ["Hello", "RTK Gains"]` in `config.toml`
+(see [`docs/configuration.md`](docs/configuration.md)). See
+[`docs/plugin-authoring.md`](docs/plugin-authoring.md) for the full wire
+contract and authoring checklist.
 
 ## Configuration
 
@@ -255,8 +275,9 @@ to populate the entry, then restart Aura.
 ### Install from GitHub Releases
 
 Published releases include tarballs (Linux/macOS) and a zip (Windows)
-containing the `aura` and `aura-plugin-rtk` binaries plus the platform
-autostart artifact:
+containing the `aura` binary plus the platform autostart artifact.
+Plugins (incl. RTK Gains) are shipped as separate downloads and
+installed with `aura plugin add`:
 
 - Linux x86_64 (gnu) — `x86_64-unknown-linux-gnu`
 - Linux x86_64 (musl) — `x86_64-unknown-linux-musl`
@@ -313,9 +334,8 @@ just install-windows         # build + install + autostart (Windows)
 #### Manual (Linux)
 
 ```bash
-cargo build --release --workspace
-install -Dm755 target/release/aura            ~/.local/bin/aura
-install -Dm755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
+cargo build --release -p aura
+install -Dm755 target/release/aura ~/.local/bin/aura
 
 # App-menu entry + icon (the tray icon itself is delivered inline by
 # Aura over D-Bus, but the .desktop file lets the app menu find Aura).
@@ -335,9 +355,8 @@ systemctl --user enable --now aura
 #### Manual (macOS)
 
 ```bash
-cargo build --release --workspace
-install -m 755 target/release/aura            ~/.local/bin/aura
-install -m 755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
+cargo build --release -p aura
+install -m 755 target/release/aura ~/.local/bin/aura
 
 ./scripts/build-macos-app.sh target/release/aura target/release
 cp -R target/release/Aura.app /Applications/Aura.app
@@ -352,12 +371,11 @@ launchctl bootstrap "gui/$(id -u)" \
 #### Manual (Windows)
 
 ```powershell
-cargo build --release --workspace
+cargo build --release -p aura
 
 $dst = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item -Force target\release\aura.exe            "$dst\aura.exe"
-Copy-Item -Force target\release\aura-plugin-rtk.exe "$dst\aura-plugin-rtk.exe"
+Copy-Item -Force target\release\aura.exe "$dst\aura.exe"
 
 # Startup-folder shortcut (autostart at sign-in, minimised to tray).
 $wsh = New-Object -ComObject WScript.Shell
@@ -513,7 +531,7 @@ Shipped
 - [x] Codex usage integration (`~/.codex` session scan)
 - [x] Gemini usage integration (`~/.gemini` session scan)
 - [x] Multi-profile config + persisted selection across sessions
-- [x] Plugin runner (subprocess + JSON IPC) and built-in RTK Gains plugin
+- [x] Plugin runner (subprocess + JSON IPC); RTK Gains shipped as opt-in plugin
 - [x] Linux support (systemd user service · ksni StatusNotifierItem · KDE / GNOME / sway compatible)
 - [x] macOS support (Apple Silicon + Intel; menu-bar `Aura.app` + launchd autostart)
 - [x] Windows support (x86_64 + aarch64; Shell_NotifyIcon tray + Startup-folder autostart)
@@ -521,8 +539,8 @@ Shipped
 
 Next up
 
-- [ ] Plugin authoring guide + example plugin (template repo)
-- [ ] Plugin discovery (local scan of `~/.config/aura/plugins/`)
+- [x] Plugin authoring guide + example plugin (see `docs/plugin-authoring.md` and `plugins/hello/`)
+- [x] Plugin discovery (local scan of `~/.config/aura/plugins/`) + `aura plugin add|list|remove`
 - [ ] Custom command agents (BYOA — Bring Your Own Agent via a shell command)
 - [ ] Cost alerts / budget warnings
 - [ ] Historical usage charts (daily / weekly trend in the modal)

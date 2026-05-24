@@ -165,9 +165,10 @@ else {
 Get-Process aura -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item -Force (Join-Path $StageDir 'aura.exe')            (Join-Path $InstallDir 'aura.exe')
-Copy-Item -Force (Join-Path $StageDir 'aura-plugin-rtk.exe') (Join-Path $InstallDir 'aura-plugin-rtk.exe')
-Write-Host "▸ Installed binaries to $InstallDir"
+Copy-Item -Force (Join-Path $StageDir 'aura.exe') (Join-Path $InstallDir 'aura.exe')
+Write-Host "▸ Installed aura.exe to $InstallDir"
+Write-Host "  Plugins (incl. RTK Gains) are installed separately — see"
+Write-Host "  docs/plugin-authoring.md and each plugin's README."
 
 # Brand icon for Start Menu / Startup shortcuts. Source mode picks it up from
 # the repo; release archives ship it alongside the .exe (see release.yml).

@@ -2,6 +2,7 @@
 members = [
     "crates/aura",
     "crates/aura-core",
+    "plugins/hello",
     "plugins/rtk-gains",
 ]
 resolver = "2"

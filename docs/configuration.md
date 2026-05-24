@@ -44,6 +44,11 @@ kind = "codex"
 config_path = "~/.codex"
 
 # ── Plugins ──────────────────────────────────────────────────────────────────
+#
+# Plugins are typically installed via `aura plugin add <path>`, which writes
+# the binary into ~/.config/aura/plugins/ and registers it via auto-discovery
+# — no [[plugins]] block needed. Use the inline form below only for plugins
+# that live outside the user plugins dir (e.g. system-wide binaries on $PATH).
 
 [[plugins]]
 name = "RTK Gains"
@@ -56,6 +61,13 @@ command = "aura-plugin-rtk"
 # Which usage period to show by default when opening the modal
 # Options: "today" | "this_month" | "all_time"
 default_period = "today"
+
+# Optional explicit ordering for the plugin pill row. Plugins named here
+# render in this order; anything not named keeps its natural order
+# (config-then-discovered-alphabetical) and appends afterwards. Match is
+# case-insensitive against each plugin's display `name`. Omit or set to
+# [] to keep the default ordering.
+plugin_order = ["Hello", "RTK Gains"]
 
 # Where to anchor the modal relative to the widget click position
 # Options: "auto" | "top" | "bottom" | "left" | "right"

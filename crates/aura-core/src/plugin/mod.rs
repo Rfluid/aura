@@ -1,5 +1,10 @@
+pub mod discovery;
 pub mod runner;
 
+pub use discovery::{
+    add_plugin, discover_plugins, plugins_dir_for_config, read_sidecar, remove_plugin,
+    sidecar_path_for, user_plugins_dir, AddOptions, AddOutcome, PluginSidecar, RemoveOutcome,
+};
 pub use runner::PluginRunner;
 
 use serde::{Deserialize, Serialize};

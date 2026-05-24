@@ -279,7 +279,10 @@ impl AuraView {
 /// success (e.g. quota OK but snapshot failed) still surfaces.
 fn do_refresh(config_path: PathBuf, active_profile: String, period: Period) -> RefreshResult {
     // Reload config so edits made via the settings button take effect.
-    let config = match AppConfig::load(&config_path) {
+    // `load_with_discovery` also picks up any binaries added to the user
+    // plugins dir since the last open (via `aura plugin add` or a manual
+    // drop-in), keeping the modal's plugin list in sync without a restart.
+    let config = match AppConfig::load_with_discovery(&config_path) {
         Ok(c) => c,
         Err(e) => {
             return RefreshResult {
