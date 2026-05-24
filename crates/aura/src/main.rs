@@ -2,6 +2,7 @@ mod app;
 mod assets;
 mod cli;
 mod format;
+mod platform;
 mod tray;
 mod work_area;
 
@@ -61,6 +62,12 @@ fn main() -> Result<()> {
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
+            // Switch to Accessory policy (no Dock icon / no Cmd+Tab) unless
+            // the user has explicitly opted in to regular app-switcher appearance.
+            // Must run after GPUI's did_finish_launching (which forces Regular)
+            // so this fires inside the run callback, not before it.
+            platform::apply_app_switcher_policy(config.display.show_in_app_switcher);
+
             // Hold the handle in the move-closure so it isn't dropped.
             let _keepalive = open_keepalive_window(cx);
 
