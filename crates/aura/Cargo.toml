@@ -10,13 +10,18 @@ license.workspace = true
 # before the #[ctor] registers the subclass. We vendor gpui and patch that
 # ivar out (see vendor/gpui and the [patch.crates-io] in the root Cargo.toml).
 [dependencies]
-aura-core.workspace = true
-anyhow.workspace    = true
-chrono.workspace    = true
-dirs.workspace      = true
-gpui                = { version = "0.2", features = ["runtime_shaders"] }
-resvg               = { version = "0.47", default-features = false }
-tiny-skia           = "0.12"
+aura-core.workspace     = true
+anyhow.workspace        = true
+chrono.workspace        = true
+clap.workspace          = true
+clap_complete.workspace = true
+dirs.workspace          = true
+gpui                    = { version = "0.2", features = ["runtime_shaders"] }
+resvg                   = { version = "0.47", default-features = false }
+serde.workspace         = true
+serde_json.workspace    = true
+tiny-skia               = "0.12"
+toml.workspace          = true
 
 # Tray backend split by OS:
 #
