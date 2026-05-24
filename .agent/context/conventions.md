@@ -1,10 +1,10 @@
 ---
 title: Conventions
 status: current
-version: 0.1.0
-last_updated: 2026-05-21
-last_verified: 2026-05-21
-source_refs: []
+version: 0.1.1
+last_updated: 2026-05-24
+last_verified: 2026-05-24
+source_refs: ["crates/aura/src/cli/"]
 owner: "@rfluid"
 tags: [context]
 ---
@@ -38,3 +38,7 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 ## Plugins
 
 Plugin authoring conventions live in `docs/plugin-system.md`. Never embed plugin logic in the core crate; plugins are dynamically loaded or configured as external binaries.
+
+## CLI surface
+
+Aura is both a tray app and a Clap-driven CLI. Every user-facing feature should be reachable from the shell, not just the modal. When adding or refactoring a feature, design the CLI surface alongside the UI — read commands take `--format text|json` from day one, mutating commands live under `aura <noun> <verb>`, and `aura-core` types that the UI reads must derive `Serialize`. Full contract: [`.agent/context/cli.md`](cli.md).
