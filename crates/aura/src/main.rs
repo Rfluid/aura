@@ -1,18 +1,15 @@
 mod app;
 mod assets;
+mod cli;
 mod format;
 mod tray;
 mod work_area;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use aura_core::{
-    config::{AgentStatus, AppConfig},
-    plugin::{self, AddOptions},
-    state::AppState,
-};
+use anyhow::Result;
+use aura_core::{config::AppConfig, state::AppState};
+use clap::Parser;
 use gpui::{
     div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
     WindowHandle, WindowKind, WindowOptions,
@@ -28,22 +25,11 @@ const MENU_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 fn main() -> Result<()> {
     // Subcommand dispatch — handled before GPUI init so headless commands
-    // don't spin up a window/event loop.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(cmd) = args.first() {
-        match cmd.as_str() {
-            "setup-config" => return run_setup_config(),
-            "plugin" => return run_plugin_subcommand(&args[1..]),
-            "--help" | "-h" | "help" => {
-                print_usage();
-                return Ok(());
-            }
-            other => {
-                eprintln!("aura: unknown command '{other}'");
-                print_usage();
-                std::process::exit(2);
-            }
-        }
+    // don't spin up a window/event loop. `aura` with no subcommand falls
+    // through to the tray entry point below.
+    let cli = cli::Cli::parse();
+    if let Some(command) = cli.command {
+        return cli::dispatch(command);
     }
 
     // ── Load config ───────────────────────────────────────────────────────────
@@ -344,220 +330,4 @@ fn toggle_window(
             None
         }
     }
-}
-
-fn print_usage() {
-    eprintln!("Usage: aura [COMMAND]");
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  setup-config   Detect installed agents and write/update the config file");
-    eprintln!("  plugin <cmd>   Manage user plugins (add/list/remove). Run `aura plugin help`.");
-    eprintln!("  help           Print this message");
-    eprintln!();
-    eprintln!("Run without arguments to launch the tray app.");
-}
-
-fn print_plugin_usage() {
-    eprintln!("Usage: aura plugin <SUBCOMMAND>");
-    eprintln!();
-    eprintln!("Subcommands:");
-    eprintln!("  add <path> [--as NAME] [--link]");
-    eprintln!("             [--name LABEL] [--color #HEX] [--icon PATH]");
-    eprintln!("      Copy (or symlink) a plugin binary into the user plugins dir and");
-    eprintln!("      optionally write a sidecar with display metadata. With --link the");
-    eprintln!("      destination is a symlink, so rebuilding the source updates aura's");
-    eprintln!("      copy in place — handy for `cargo build` dev loops on Unix.");
-    eprintln!();
-    eprintln!("  list");
-    eprintln!("      List configured + discovered plugins, with their source.");
-    eprintln!();
-    eprintln!("  remove <name>");
-    eprintln!("      Delete a discovered plugin (binary + sidecar) by display name.");
-    eprintln!();
-    eprintln!("User plugins dir: {}", plugin::user_plugins_dir().display());
-}
-
-/// Detect installed agents and reconcile the on-disk config. Invoked by the
-/// platform installers after copying binaries into place.
-fn run_setup_config() -> Result<()> {
-    let path = AppConfig::default_path();
-    let report = AppConfig::run_setup(&path)?;
-
-    if report.created {
-        println!("Created {}", path.display());
-    } else {
-        println!("Updated {}", path.display());
-    }
-
-    for (agent, status) in &report.agents {
-        let resolved = agent.resolved_config_path();
-        match status {
-            AgentStatus::Added => {
-                println!("  + {} ({})", agent.name, resolved.display());
-            }
-            AgentStatus::AlreadyConfigured => {
-                println!(
-                    "  · {} ({}) — already configured",
-                    agent.name,
-                    resolved.display()
-                );
-            }
-            AgentStatus::NotInstalled => {
-                println!(
-                    "  - {} ({}) — not installed, skipping",
-                    agent.name,
-                    resolved.display()
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// ── `aura plugin …` ──────────────────────────────────────────────────────────
-
-fn run_plugin_subcommand(args: &[String]) -> Result<()> {
-    match args.first().map(|s| s.as_str()) {
-        Some("list") => run_plugin_list(),
-        Some("add") => run_plugin_add(&args[1..]),
-        Some("remove") | Some("rm") => run_plugin_remove(&args[1..]),
-        Some("help") | Some("--help") | Some("-h") => {
-            print_plugin_usage();
-            Ok(())
-        }
-        Some(other) => {
-            eprintln!("aura: unknown plugin subcommand '{other}'");
-            print_plugin_usage();
-            std::process::exit(2);
-        }
-        None => {
-            print_plugin_usage();
-            Ok(())
-        }
-    }
-}
-
-fn run_plugin_list() -> Result<()> {
-    let config_path = AppConfig::default_path();
-    let config =
-        AppConfig::load(&config_path).with_context(|| format!("load {}", config_path.display()))?;
-    let plugins_dir = plugin::user_plugins_dir();
-    let discovered = plugin::discover_plugins(&plugins_dir);
-
-    if config.plugins.is_empty() && discovered.is_empty() {
-        println!("No plugins configured.");
-        println!(
-            "Drop a binary into {} or run `aura plugin add <path>`.",
-            plugins_dir.display()
-        );
-        return Ok(());
-    }
-
-    println!("{:<24} {:<12} COMMAND", "NAME", "SOURCE");
-    for p in &config.plugins {
-        println!("{:<24} {:<12} {}", p.name, "config", p.command);
-    }
-    for p in &discovered {
-        if config
-            .plugins
-            .iter()
-            .any(|c| c.name.eq_ignore_ascii_case(&p.name))
-        {
-            // Shadowed by a config entry; don't double-list.
-            continue;
-        }
-        println!("{:<24} {:<12} {}", p.name, "discovered", p.command);
-    }
-    Ok(())
-}
-
-fn run_plugin_add(args: &[String]) -> Result<()> {
-    let mut source: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut color: Option<String> = None;
-    let mut icon: Option<String> = None;
-    let mut dest_name: Option<String> = None;
-    let mut symlink = false;
-
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
-            "--name" => {
-                name = Some(take_value(args, &mut i, "--name")?);
-            }
-            "--color" => {
-                color = Some(take_value(args, &mut i, "--color")?);
-            }
-            "--icon" => {
-                icon = Some(take_value(args, &mut i, "--icon")?);
-            }
-            "--as" => {
-                dest_name = Some(take_value(args, &mut i, "--as")?);
-            }
-            "--link" | "--symlink" => {
-                symlink = true;
-            }
-            "--help" | "-h" => {
-                print_plugin_usage();
-                return Ok(());
-            }
-            s if s.starts_with("--") => {
-                return Err(anyhow!("unknown flag '{s}'"));
-            }
-            _ => {
-                if source.is_some() {
-                    return Err(anyhow!(
-                        "unexpected positional argument '{arg}' — only one source path is allowed"
-                    ));
-                }
-                source = Some(PathBuf::from(arg));
-            }
-        }
-        i += 1;
-    }
-
-    let source = source.ok_or_else(|| anyhow!("missing path to plugin binary"))?;
-    let plugins_dir = plugin::user_plugins_dir();
-    let outcome = plugin::add_plugin(
-        &plugins_dir,
-        AddOptions {
-            source,
-            dest_name,
-            symlink,
-            name,
-            color,
-            icon,
-        },
-    )?;
-
-    println!("Installed {}", outcome.installed.display());
-    if let Some(sidecar) = outcome.sidecar {
-        println!("  sidecar  {}", sidecar.display());
-    }
-    Ok(())
-}
-
-fn run_plugin_remove(args: &[String]) -> Result<()> {
-    let name = args
-        .first()
-        .ok_or_else(|| anyhow!("missing plugin name to remove"))?;
-    let plugins_dir = plugin::user_plugins_dir();
-    let outcome = plugin::remove_plugin(&plugins_dir, name)?;
-
-    println!("Removed {}", outcome.removed_binary.display());
-    if let Some(s) = outcome.removed_sidecar {
-        println!("  sidecar {}", s.display());
-    }
-    Ok(())
-}
-
-/// `--flag value` parser helper: advances `i` past the flag's value or
-/// fails with a clear message.
-fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String> {
-    *i += 1;
-    args.get(*i)
-        .cloned()
-        .ok_or_else(|| anyhow!("missing value for {flag}"))
 }
