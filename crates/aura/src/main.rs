@@ -43,10 +43,14 @@ fn main() -> Result<()> {
         }
     }
 
-    // ── Load config + state ───────────────────────────────────────────────────
+    // ── Load config ───────────────────────────────────────────────────────────
+    //
+    // `AppState` is *not* loaded here on purpose — `toggle_window` reloads it
+    // from disk each time the modal opens, so a profile change made in one
+    // session is visible the next time the user clicks the tray icon. Loading
+    // it once at startup would cache a stale snapshot in the closure below.
     let config_path = AppConfig::default_path();
     let config = AppConfig::load(&config_path)?;
-    let state = AppState::load()?;
 
     // ── Install tray icon (best-effort: warn on failure but keep going) ───────
     let _tray = match tray::install() {
@@ -73,7 +77,6 @@ fn main() -> Result<()> {
 
             let config = config.clone();
             let config_path = config_path.clone();
-            let state = state.clone();
 
             cx.spawn(async move |cx| {
                 // The currently-open window, if any. We toggle on each
@@ -112,7 +115,6 @@ fn main() -> Result<()> {
                                     current.take(),
                                     config.clone(),
                                     config_path.clone(),
-                                    state.clone(),
                                     hint,
                                 )
                                 .await;
@@ -221,10 +223,9 @@ async fn toggle(
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
-    state: AppState,
     hint: Option<(i32, i32)>,
 ) -> Option<WindowHandle<AuraView>> {
-    cx.update(move |cx| toggle_window(cx, existing, config, config_path, state, hint))
+    cx.update(move |cx| toggle_window(cx, existing, config, config_path, hint))
         .ok()
         .flatten()
 }
@@ -298,7 +299,6 @@ fn toggle_window(
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
-    state: AppState,
     hint: Option<(i32, i32)>,
 ) -> Option<WindowHandle<AuraView>> {
     if let Some(handle) = existing {
@@ -307,6 +307,15 @@ fn toggle_window(
         let _ = handle.update(cx, |_view, window, _cx| window.remove_window());
         return None;
     }
+
+    // Reload AppState from disk so the active profile reflects what the user
+    // picked in any prior modal session. The process keeps running between
+    // modal open/close cycles (see the keepalive window), so a snapshot
+    // loaded once at startup would go stale on the first profile change.
+    let state = AppState::load().unwrap_or_else(|e| {
+        eprintln!("aura: could not reload state, using defaults: {e}");
+        AppState::default()
+    });
 
     let bounds = compute_modal_bounds(cx, hint);
     let opts = WindowOptions {
