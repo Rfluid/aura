@@ -26,7 +26,7 @@ aura-plugin-rtk  = { path = "plugins/rtk-gains",  version = "0.1.0" }
 # External
 anyhow                = "1"
 chrono                = { version = "0.4", default-features = false, features = ["std", "clock", "serde", "unstable-locales"] }
-dirs                  = "5"
+dirs                  = "6"
 notify-debouncer-mini = "0.7"
 serde                 = { version = "1", features = ["derive"] }
 serde_json            = "1"
