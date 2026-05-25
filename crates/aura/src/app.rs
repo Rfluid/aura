@@ -570,6 +570,7 @@ impl Render for AuraView {
         // drag the edges — so suppress the content-fit auto-resize that would
         // otherwise snap the height back every layout pass.
         let auto_fit = !self.config.display.window_chrome;
+        let user_max_height = self.config.display.max_height;
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
@@ -638,6 +639,15 @@ impl Render for AuraView {
                     let max_h = (available_bottom - window_top).max(px(200.));
                     if measured > max_h {
                         measured = max_h;
+                    }
+                }
+
+                // User-configured ceiling: applied unconditionally so it
+                // still kicks in when the primary-display query above fails.
+                if let Some(user_max) = user_max_height {
+                    let user_max_px = px(user_max as f32);
+                    if measured > user_max_px {
+                        measured = user_max_px;
                     }
                 }
 
