@@ -192,7 +192,20 @@ kind = "codex"
 [[agents]]
 name = "Gemini"
 kind = "gemini"
+
+# Optional display tweaks. All keys are optional; defaults shown.
+[display]
+default_period         = "today"      # "today" | "this_month" | "all_time"
+anchor                 = "auto"       # "auto" | "top" | "bottom" | "left" | "right"
+dismiss_on_focus_loss  = true         # set false to make the modal sticky
+show_in_app_switcher   = false        # show Aura in Cmd+Tab / Alt+Tab / WM switcher
+# plugin_order         = ["Hello", "RTK Gains"]
 ```
+
+`config.toml` is hot-reloaded — left-clicking the tray icon and the
+modal's refresh button both re-read the file, so edits take effect
+without restarting Aura. See
+[`docs/configuration.md`](docs/configuration.md) for the full schema.
 
 ## Themes
 
@@ -502,11 +515,13 @@ on macOS / Windows). Delete those by hand if you want a full wipe.
 
 ## Compatibility
 
-The installer should work end-to-end on every reasonably modern desktop
-environment that supports StatusNotifierItem (Linux), AppKit (macOS), or
-Shell_NotifyIcon (Windows). Where the table says "untested" it means
-the code path is the same as a tested case — please open an issue if
-anything goes wrong, with the desktop env / compositor version.
+Aura ships and is verified end-to-end on Linux (KDE Plasma 6 / Wayland),
+macOS 12+, and Windows 10/11 — tray icon, modal, autostart, single-click
+activation, focus-loss dismiss, and the installer all work on each. The
+table below also lists Linux compositors that share the same
+StatusNotifierItem code path but haven't been explicitly verified —
+please open an issue if anything goes wrong, with the desktop env /
+compositor version.
 
 | Platform          | Desktop / Compositor          | Tray protocol                                                                                                     | Status                                                                                               |
 | ----------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -516,8 +531,8 @@ anything goes wrong, with the desktop env / compositor version.
 | Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear                                           |
 | Linux             | sway / Hyprland / wlroots     | StatusNotifierItem                                                                                                | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.)                                 |
 | Linux             | XFCE / Cinnamon / MATE        | StatusNotifierItem                                                                                                | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work                                  |
-| **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ⚠️ Untested in CI — uses `tray-icon`'s native AppKit backend, single-click activation works natively |
-| **Windows 10/11** | —                             | Shell_NotifyIcon                                                                                                  | ⚠️ Untested in CI — uses `tray-icon`'s native Win32 backend, single-click activation works natively  |
+| **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ✅ Tested — `tray-icon`'s native AppKit backend, single-click activation, launchd autostart          |
+| **Windows 10/11** | —                             | Shell_NotifyIcon                                                                                                  | ✅ Tested — `tray-icon`'s native Win32 backend, single-click activation, Startup-folder autostart    |
 
 Pull requests confirming or fixing any of the ⚠️ rows are welcome — see
 [Under the hood](#under-the-hood) for the relevant code paths.
