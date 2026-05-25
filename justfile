@@ -64,6 +64,18 @@ install-plugin-rtk: build-rtk
     install -m 755 target/release/aura-plugin-rtk ~/.local/bin/aura-plugin-rtk
     @echo "✔ Installed aura-plugin-rtk to ~/.local/bin/"
 
+# ── Update ────────────────────────────────────────────────────────────────────
+
+# Reinstall Aura on top of an existing install. Runs `uninstall` first so the
+# running tray is stopped, the autostart unit is torn down, and the previous
+# binary (+ Aura.app on macOS) is removed — nothing stale survives into the
+# new install. Then `install` lays down the fresh binary at the same path the
+# systemd unit / launchd agent points at, so the tray icon comes back bound
+# to the updated binary.
+update: uninstall install
+
+update-windows: uninstall-windows install-windows
+
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 
 uninstall:
