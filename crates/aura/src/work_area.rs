@@ -1,3 +1,7 @@
+// Same suppression as platform.rs — objc 0.2 macros emit an internal
+// `cargo-clippy` cfg that newer rustc/clippy flags as unexpected_cfgs.
+#![allow(unexpected_cfgs)]
+
 //! Available work-area detection — display rect minus reserved panels.
 //!
 //! Used in two places:
