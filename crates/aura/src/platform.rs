@@ -172,7 +172,6 @@ pub fn app_is_active() -> bool {
     }
 }
 
-
 // ── Open with system handler (file or URL) ──────────────────────────────────
 
 /// Open a filesystem path with the desktop's default handler, falling back to
