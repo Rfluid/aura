@@ -566,6 +566,10 @@ impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
+        // When window_chrome is on, the OS draws a title bar and the user can
+        // drag the edges — so suppress the content-fit auto-resize that would
+        // otherwise snap the height back every layout pass.
+        let auto_fit = !self.config.display.window_chrome;
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
@@ -594,6 +598,9 @@ impl Render for AuraView {
             // is allowed to shrink below its content (overflow_y_scroll), so
             // we add its scroll max-offset back to recover the natural total.
             .on_children_prepainted(move |bounds, window, app| {
+                if !auto_fit {
+                    return;
+                }
                 let Some(bottom) = bounds.iter().map(|b| b.origin.y + b.size.height).max() else {
                     return;
                 };

@@ -21,8 +21,8 @@ use anyhow::Result;
 use aura_core::{config::AppConfig, state::AppState};
 use clap::Parser;
 use gpui::{
-    div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions,
+    div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, TitlebarOptions,
+    WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 
 use crate::tray::TrayEvent;
@@ -470,6 +470,14 @@ fn toggle_window(
     //   - true  → WindowKind::Normal (xdg_toplevel / WS_EX_APPWINDOW).
     //   - false → WindowKind::PopUp  (no taskbar entry, WS_EX_TOOLWINDOW).
     //
+    // `WindowKind::PopUp` also strips chrome on every backend: Windows applies
+    // `WS_EX_TOOLWINDOW` + `WINDOW_STYLE(0x0)` (no caption, no resize frame),
+    // and X11 sets `_NET_WM_WINDOW_TYPE_NOTIFICATION` which tells the WM to
+    // drop decorations. So `window_chrome` has to override the kind too —
+    // otherwise the titlebar/is_resizable we set below are silently ignored.
+    // Side-effect: enabling chrome also puts the modal in the taskbar /
+    // alt-tab list, which is consistent with it being a "real" window.
+    //
     // macOS: ALWAYS Normal. GPUI maps WindowKind::PopUp to NSPanel with
     // NSWindowStyleMaskNonactivatingPanel, which deliberately prevents the
     // window from becoming key. We need the window to be key so
@@ -481,14 +489,33 @@ fn toggle_window(
     #[cfg(target_os = "macos")]
     let kind = WindowKind::Normal;
     #[cfg(not(target_os = "macos"))]
-    let kind = if config.display.show_in_app_switcher {
+    let kind = if config.display.show_in_app_switcher || config.display.window_chrome {
         WindowKind::Normal
     } else {
         WindowKind::PopUp
     };
+    // `display.window_chrome` swaps the modal between two modes:
+    //   false (default): chromeless tray-popup, fixed width, height auto-fits
+    //     content (see app.rs::on_children_prepainted). is_resizable is
+    //     forced false because there is no visible edge to grab anyway.
+    //   true: native OS chrome (title bar + min/max/close), user-resizable.
+    //     window_decorations: Server asks Wayland compositors to draw SSD;
+    //     the auto-fit callback in app.rs is suppressed so user-dragged
+    //     sizes stick.
+    let (titlebar, is_resizable, window_decorations) = if config.display.window_chrome {
+        (
+            Some(TitlebarOptions::default()),
+            true,
+            Some(WindowDecorations::Server),
+        )
+    } else {
+        (None, false, None)
+    };
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: None,
+        titlebar,
+        is_resizable,
+        window_decorations,
         // Set a stable Wayland app_id / X11 WM_CLASS so KWin window rules
         // (see README "Modal placement on Wayland") can match this surface.
         // Without this, KDE shows "Window class not available" when the
@@ -528,8 +555,15 @@ fn toggle_window(
                 // invisible. AuraView's on_children_prepainted uncloak fires
                 // on the second frame after the resize, showing the window at
                 // the correct size.
+                //
+                // Skipped when `window_chrome` is on: there is no auto-shrink
+                // step in that mode, so cloaking would leave the window
+                // invisible forever.
+                let cloak = !config.display.window_chrome;
                 let _ = handle.update(cx, |_, window, _| {
-                    win32_set_cloak(window, true);
+                    if cloak {
+                        win32_set_cloak(window, true);
+                    }
                     window.activate_window();
                 });
             }
