@@ -35,8 +35,17 @@
 
 $ErrorActionPreference = 'Stop'
 
+# PowerShell 5.1 defaults to TLS 1.0/1.1 on Windows 10 / Server 2016, which
+# GitHub refuses. Force TLS 1.2 so HTTPS calls below don't fail with an
+# opaque connection-closed error.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 # ---- Constants ---------------------------------------------------------------
 
+$ReleaseApiUrl     = 'https://api.github.com/repos/Rfluid/aura/releases/latest'
 $ReleaseBaseUrl    = 'https://github.com/Rfluid/aura/releases'
 $InstallDir        = Join-Path $env:LOCALAPPDATA 'Programs\Aura'
 $StartupDir        = [Environment]::GetFolderPath('Startup')
@@ -81,19 +90,26 @@ function Get-HostAssetName {
 }
 
 function Resolve-LatestVersion {
-    # GitHub's /releases/latest redirects to /releases/tag/<version>; the
-    # final URL segment is the tag. -MaximumRedirection 0 + catching the
-    # redirect target avoids depending on the API.
-    try {
-        $r = Invoke-WebRequest -Uri "$ReleaseBaseUrl/latest" `
-            -MaximumRedirection 0 -ErrorAction Stop
-    } catch {
-        $r = $_.Exception.Response
+    # Query the GitHub releases API for the latest tag. Earlier versions of
+    # this installer parsed the Location header from a 302 with
+    # `-MaximumRedirection 0`, but PowerShell 5.1 wraps the WebException for
+    # `-ErrorAction Stop` such that `$_.Exception.Response` is null in the
+    # catch block, leading to a "cannot index null array" failure. The API
+    # path is identical across PS 5.1 and 7+.
+    $headers = @{
+        'User-Agent' = 'aura-installer'   # required by api.github.com
+        'Accept'     = 'application/vnd.github+json'
     }
-    $loc = if ($r.Headers.Location) { $r.Headers.Location } else { $r.Headers['Location'] }
-    if (-not $loc) { throw "could not resolve latest release URL" }
-    $locStr = "$loc"
-    return ($locStr -split '/')[-1]
+    try {
+        $resp = Invoke-RestMethod -Uri $ReleaseApiUrl -Headers $headers `
+            -UseBasicParsing -ErrorAction Stop
+    } catch {
+        throw "could not query $ReleaseApiUrl ($($_.Exception.Message))"
+    }
+    if (-not $resp.tag_name) {
+        throw "GitHub API at $ReleaseApiUrl returned no tag_name"
+    }
+    return $resp.tag_name
 }
 
 function Test-Sha256 {
