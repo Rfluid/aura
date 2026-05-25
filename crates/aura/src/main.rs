@@ -162,6 +162,14 @@ fn main() -> Result<()> {
                         if just_opened > 0 {
                             just_opened -= 1;
                         } else {
+                            // On macOS, GPUI's cx.active_window() can lag after
+                            // activation-policy switches, producing false "no focus"
+                            // readings. Ask NSApp.isActive directly — it is the
+                            // authoritative OS answer and updates synchronously.
+                            // On other platforms cx.active_window() is reliable.
+                            #[cfg(target_os = "macos")]
+                            let lost_focus = !platform::app_is_active();
+                            #[cfg(not(target_os = "macos"))]
                             let lost_focus = cx
                                 .update(|cx| cx.active_window().is_none())
                                 .unwrap_or(false);
@@ -214,6 +222,23 @@ fn main() -> Result<()> {
                                 // before the OS has delivered foreground focus.
                                 if current.is_some() {
                                     just_opened = 4; // ~600 ms at 150 ms/poll
+
+                                    // macOS: window.activate_window() schedules
+                                    // makeKeyAndOrderFront: asynchronously via the
+                                    // executor, so activateIgnoringOtherApps: in
+                                    // toggle_window fires before the window is
+                                    // visible — macOS silently discards activation
+                                    // requests when there is no key window yet.
+                                    // Wait for the window to appear, then re-activate
+                                    // the application so NSApp.isActive becomes true
+                                    // and the focus-loss check works correctly.
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(50))
+                                            .await;
+                                        let _ = cx.update(|cx| cx.activate(true));
+                                    }
                                 }
                             }
                             TrayEvent::Quit => {
