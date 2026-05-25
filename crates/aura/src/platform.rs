@@ -159,6 +159,24 @@ pub fn apply_app_switcher_policy(show: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn apply_app_switcher_policy(_show: bool) {}
 
+/// Returns whether the macOS application is currently the active (frontmost) app.
+/// Uses `NSApp.isActive` — the authoritative OS answer — rather than GPUI's
+/// internal window tracking, which can lag after activation-policy switches.
+#[cfg(target_os = "macos")]
+pub fn app_is_active() -> bool {
+    use objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let app: cocoa::base::id = msg_send![class!(NSApplication), sharedApplication];
+        let active: cocoa::base::BOOL = msg_send![app, isActive];
+        active != cocoa::base::NO
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn app_is_active() -> bool {
+    unreachable!("app_is_active is macOS-only")
+}
+
 // ── Open with system handler (file or URL) ──────────────────────────────────
 
 /// Open a filesystem path with the desktop's default handler, falling back to
