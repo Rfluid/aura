@@ -172,10 +172,6 @@ pub fn app_is_active() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn app_is_active() -> bool {
-    unreachable!("app_is_active is macOS-only")
-}
 
 // ── Open with system handler (file or URL) ──────────────────────────────────
 
