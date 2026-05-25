@@ -137,20 +137,18 @@ fn main() -> Result<()> {
                 // "Show Aura" click: open if closed, close if open.
                 let mut current: Option<WindowHandle<AuraView>> = None;
 
-                // macOS: global NSEvent monitor that fires when the user
-                // clicks in any OTHER application. When it fires we set this
-                // flag; the poll loop checks it and closes the window.
-                // This avoids needing to steal focus — menu bar apps on
-                // modern macOS can't reliably do that programmatically.
+                // macOS: NSEvent global monitor flag. Accessory apps can't
+                // reliably set [NSApp mainWindow], which kills cx.active_window
+                // detection; the global monitor is the working alternative.
                 #[cfg(target_os = "macos")]
                 let outside_clicked = Arc::new(AtomicBool::new(false));
                 #[cfg(target_os = "macos")]
                 let mut click_monitor: Option<platform::ClickOutsideMonitor> = None;
 
-                // Grace-period counter for non-macOS platforms: skip
-                // focus-loss checks for this many poll intervals after
-                // opening the modal so Win32 / Wayland can deliver focus.
-                #[cfg(not(target_os = "macos"))]
+                // Grace-period counter: skip focus-loss checks for this many
+                // poll intervals after opening the modal so the platform
+                // can finish delivering focus / setting up the monitor before
+                // we start watching for losses.
                 let mut just_opened: u8 = 0;
 
                 loop {
@@ -159,24 +157,20 @@ fn main() -> Result<()> {
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
 
-                    // Auto-close when the user clicks outside the modal.
-                    // macOS: a global NSEvent monitor flags outside clicks
-                    //   without needing focus ownership (reliable on Sonoma+).
-                    // Other platforms: cx.active_window() goes None when
-                    //   another app takes focus.
-                    // Skipped entirely when dismiss_on_focus_loss=false.
                     if runtime::dismiss_on_focus_loss() && current.is_some() {
-                        #[cfg(target_os = "macos")]
-                        let lost_focus =
-                            outside_clicked.load(Ordering::Relaxed);
-
-                        #[cfg(not(target_os = "macos"))]
                         let lost_focus = if just_opened > 0 {
                             just_opened -= 1;
                             false
                         } else {
-                            cx.update(|cx| cx.active_window().is_none())
-                                .unwrap_or(false)
+                            #[cfg(target_os = "macos")]
+                            {
+                                outside_clicked.load(Ordering::Relaxed)
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                cx.update(|cx| cx.active_window().is_none())
+                                    .unwrap_or(false)
+                            }
                         };
 
                         if lost_focus {
@@ -220,8 +214,9 @@ fn main() -> Result<()> {
                                         });
                                 runtime::set_from_config(&fresh_config);
 
-                                // If a window was open, remove its monitor
-                                // before toggling (toggle closes it).
+                                // If a window was open, tear down its monitor
+                                // and demote the activation policy before the
+                                // toggle (which closes it).
                                 #[cfg(target_os = "macos")]
                                 if current.is_some() {
                                     if let Some(m) = click_monitor.take() {
@@ -241,22 +236,19 @@ fn main() -> Result<()> {
                                 )
                                 .await;
 
-                                // Window just opened: install the click-outside
-                                // monitor so we know when to close it.
-                                #[cfg(target_os = "macos")]
-                                if current.is_some() {
-                                    outside_clicked.store(false, Ordering::Relaxed);
-                                    click_monitor = Some(
-                                        platform::install_click_outside_monitor(
-                                            Arc::clone(&outside_clicked),
-                                        ),
-                                    );
-                                }
-
-                                // Non-macOS: arm the grace period.
-                                #[cfg(not(target_os = "macos"))]
                                 if current.is_some() {
                                     just_opened = 4; // ~600 ms at 150 ms/poll
+                                    // macOS: install the click-outside
+                                    // monitor for the new window.
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        outside_clicked.store(false, Ordering::Relaxed);
+                                        click_monitor = Some(
+                                            platform::install_click_outside_monitor(
+                                                Arc::clone(&outside_clicked),
+                                            ),
+                                        );
+                                    }
                                 }
                             }
                             TrayEvent::Quit => {
@@ -472,18 +464,23 @@ fn toggle_window(
     let bounds = compute_modal_bounds(cx, hint);
     // `display.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
-    // Alt+Tab + taskbar on Windows, panel + window switcher on Linux. The
-    // process-wide macOS NSApp policy is applied separately at startup and
-    // on each refresh (see `platform::apply_app_switcher_policy`).
+    // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.
     //
-    // - true  → WindowKind::Normal: regular app window (WS_EX_APPWINDOW on
-    //           Windows; default xdg_toplevel on Wayland). Visible in the
-    //           switcher.
-    // - false → WindowKind::PopUp: WS_EX_TOOLWINDOW on Windows, no taskbar
-    //           entry on most Linux DEs. The visible flash from the
-    //           taskbar animation goes away in this mode, which is the
-    //           reason we kept it the hard-coded default on Windows
-    //           historically.
+    // Linux / Windows:
+    //   - true  → WindowKind::Normal (xdg_toplevel / WS_EX_APPWINDOW).
+    //   - false → WindowKind::PopUp  (no taskbar entry, WS_EX_TOOLWINDOW).
+    //
+    // macOS: ALWAYS Normal. GPUI maps WindowKind::PopUp to NSPanel with
+    // NSWindowStyleMaskNonactivatingPanel, which deliberately prevents the
+    // window from becoming key. We need the window to be key so
+    // `cx.active_window()` can track focus (the focus-loss check below
+    // depends on this). What keeps Aura out of Cmd+Tab on macOS is the
+    // NSApplicationActivationPolicy — promoted to Regular only while the
+    // modal is open, demoted back to Accessory on close (see
+    // `platform::apply_app_switcher_policy` calls).
+    #[cfg(target_os = "macos")]
+    let kind = WindowKind::Normal;
+    #[cfg(not(target_os = "macos"))]
     let kind = if config.display.show_in_app_switcher {
         WindowKind::Normal
     } else {
@@ -498,6 +495,13 @@ fn toggle_window(
         // user tries to Detect Window Properties on the modal.
         app_id: Some("aura".into()),
         kind,
+        // On macOS, GPUI creates the window with NSTitled|NSFullSizeContentView
+        // even when titlebar:None. The native title-bar drag zone covers our
+        // header; with is_movable:true the OS handles drags there, which can
+        // route mouse events outside GPUI's queue. Disabling movability tells
+        // AppKit to forward those clicks to the content view instead, so the
+        // header buttons behave like normal content.
+        is_movable: false,
         ..Default::default()
     };
 
@@ -529,7 +533,17 @@ fn toggle_window(
                     window.activate_window();
                 });
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            {
+                let _ = handle.update(cx, |_, window, _| {
+                    // Raise above other apps' windows. GPUI's Normal kind sets
+                    // NSNormalWindowLevel, so without this the modal opens
+                    // behind whatever app the user was focused on.
+                    platform::raise_window_to_floating(window);
+                    window.activate_window();
+                });
+            }
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
             {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
             }

@@ -166,15 +166,19 @@ pub fn apply_app_switcher_policy(_show: bool) {}
 
 // ── macOS click-outside monitor ──────────────────────────────────────────────
 //
-// Menu bar apps don't own keyboard/mouse focus after showing a panel —
-// macOS restricts activation stealing since Sonoma. The reliable way to
-// detect "user clicked in another app" is a global NSEvent monitor, which
-// fires for mouse-down events that go to any application OTHER than ours.
-// When the monitor fires we set an AtomicBool; the GPUI poll loop checks
-// that flag and closes the window instead of relying on NSApp.isActive.
+// Accessory apps on macOS (LSUIElement/setActivationPolicy:.accessory) can't
+// reliably set the application's "main window" — `[NSApp mainWindow]` returns
+// nil even after we promote the policy to Regular and call activateIgnoringOtherApps.
+// That kills `cx.active_window()`-based focus-loss detection (it reads mainWindow).
+//
+// The reliable signal is an NSEvent global monitor, which fires only for
+// mouse-down events sent to OTHER applications. We pair it with
+// WindowKind::Normal (regular NSWindow rather than NonactivatingPanel) so
+// clicks delivered to our window aren't seen by the global monitor — that
+// avoids the false-positive on interactive elements we saw with the panel
+// kind.
 
-/// Opaque handle for a global NSEvent monitor. Returned by
-/// `install_click_outside_monitor` and must be passed to
+/// Opaque handle for a global NSEvent monitor. Pass it to
 /// `remove_click_outside_monitor` when the window closes.
 #[cfg(target_os = "macos")]
 pub struct ClickOutsideMonitor(cocoa::base::id);
@@ -184,8 +188,7 @@ pub struct ClickOutsideMonitor(cocoa::base::id);
 unsafe impl Send for ClickOutsideMonitor {}
 
 /// Register a global mouse-down monitor. The `clicked` flag is set to `true`
-/// whenever the user clicks in any application other than Aura. Only fires
-/// for events that are NOT delivered to our own windows.
+/// whenever the user clicks in any application other than Aura.
 #[cfg(target_os = "macos")]
 pub fn install_click_outside_monitor(
     clicked: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -208,7 +211,6 @@ pub fn install_click_outside_monitor(
             handler: &*block]
     };
 
-    // Keep the block alive for as long as the monitor is installed.
     std::mem::forget(block);
     ClickOutsideMonitor(monitor)
 }
@@ -219,6 +221,33 @@ pub fn remove_click_outside_monitor(monitor: ClickOutsideMonitor) {
     use objc::{class, msg_send, sel, sel_impl};
     unsafe {
         let _: () = msg_send![class!(NSEvent), removeMonitor: monitor.0];
+    }
+}
+
+/// Promote the given window above other applications' windows by raising its
+/// NSWindow level. Required for menu-bar popovers: GPUI's `WindowKind::Normal`
+/// uses `NSNormalWindowLevel`, which leaves the modal behind whatever app the
+/// user was using when they clicked the tray icon.
+#[cfg(target_os = "macos")]
+pub fn raise_window_to_floating(window: &mut gpui::Window) {
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    // NSFloatingWindowLevel = 3 — above normal windows but below menus/status.
+    const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
+
+    let Ok(wh) = <gpui::Window as HasWindowHandle>::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(h) = wh.as_raw() else {
+        return;
+    };
+    unsafe {
+        let ns_view = h.ns_view.as_ptr() as cocoa::base::id;
+        let ns_window: cocoa::base::id = msg_send![ns_view, window];
+        if !ns_window.is_null() {
+            let _: () = msg_send![ns_window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        }
     }
 }
 
