@@ -532,6 +532,9 @@ fn toggle_window(
         ..Default::default()
     };
 
+    #[cfg(target_os = "windows")]
+    let cloak = !config.display.window_chrome;
+
     match cx.open_window(opts, |_window, cx| {
         cx.new(|cx| AuraView::new(config, config_path, state, cx))
     }) {
@@ -559,7 +562,6 @@ fn toggle_window(
                 // Skipped when `window_chrome` is on: there is no auto-shrink
                 // step in that mode, so cloaking would leave the window
                 // invisible forever.
-                let cloak = !config.display.window_chrome;
                 let _ = handle.update(cx, |_, window, _| {
                     if cloak {
                         win32_set_cloak(window, true);
