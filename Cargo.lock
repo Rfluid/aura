@@ -486,6 +486,7 @@ version = "0.1.15"
 dependencies = [
  "anyhow",
  "aura-core",
+ "block",
  "chrono",
  "clap",
  "clap_complete",
