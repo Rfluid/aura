@@ -63,3 +63,8 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
 ] }
 
+[lints.rust]
+# objc 0.2 macros (msg_send!, class!, sel_impl!) emit #[cfg(cargo-clippy)]
+# internally. Register it as expected so the unexpected_cfgs lint stays quiet.
+unexpected_cfgs = "allow"
+

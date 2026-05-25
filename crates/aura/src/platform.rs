@@ -1,3 +1,8 @@
+// The `objc` 0.2 crate's macros (msg_send!, class!, sel_impl!) emit an
+// internal `cargo-clippy` cfg that newer rustc/clippy treats as unknown.
+// The macros are third-party; suppress the lint rather than forking objc.
+#![allow(unexpected_cfgs)]
+
 //! Thin per-OS façade for the things Aura asks of the host: tweaking the
 //! macOS activation policy and asking the desktop to open a file/URL with
 //! the user's default handler.
