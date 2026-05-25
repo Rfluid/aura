@@ -11,6 +11,10 @@ mod runtime;
 mod tray;
 mod work_area;
 
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -133,13 +137,20 @@ fn main() -> Result<()> {
                 // "Show Aura" click: open if closed, close if open.
                 let mut current: Option<WindowHandle<AuraView>> = None;
 
-                // Grace-period counter: skip focus-loss checks for this many
-                // poll intervals after opening the modal. On Windows,
-                // cx.activate() is a no-op and the new window needs a moment
-                // for Win32 to grant foreground focus; checking too soon makes
-                // the modal close itself immediately. The same race shows up
-                // on Wayland compositors that defer focus events until the
-                // surface has been mapped and committed.
+                // macOS: global NSEvent monitor that fires when the user
+                // clicks in any OTHER application. When it fires we set this
+                // flag; the poll loop checks it and closes the window.
+                // This avoids needing to steal focus — menu bar apps on
+                // modern macOS can't reliably do that programmatically.
+                #[cfg(target_os = "macos")]
+                let outside_clicked = Arc::new(AtomicBool::new(false));
+                #[cfg(target_os = "macos")]
+                let mut click_monitor: Option<platform::ClickOutsideMonitor> = None;
+
+                // Grace-period counter for non-macOS platforms: skip
+                // focus-loss checks for this many poll intervals after
+                // opening the modal so Win32 / Wayland can deliver focus.
+                #[cfg(not(target_os = "macos"))]
                 let mut just_opened: u8 = 0;
 
                 loop {
@@ -148,44 +159,43 @@ fn main() -> Result<()> {
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
 
-                    // Auto-close when the user clicks outside the modal:
-                    // cx.active_window() returns None once another app takes
-                    // focus; we treat that as "dismiss". The keepalive window
-                    // is hidden and never active, so it doesn't interfere.
-                    // Skip this check during the grace period after opening,
-                    // and skip it entirely when the user has opted out via
-                    // display.dismiss_on_focus_loss=false. The flag is read
-                    // from `runtime::dismiss_on_focus_loss()` on every poll
-                    // so a refresh-button click or a tray-click reload picks
-                    // up the new value without a service restart.
+                    // Auto-close when the user clicks outside the modal.
+                    // macOS: a global NSEvent monitor flags outside clicks
+                    //   without needing focus ownership (reliable on Sonoma+).
+                    // Other platforms: cx.active_window() goes None when
+                    //   another app takes focus.
+                    // Skipped entirely when dismiss_on_focus_loss=false.
                     if runtime::dismiss_on_focus_loss() && current.is_some() {
-                        if just_opened > 0 {
+                        #[cfg(target_os = "macos")]
+                        let lost_focus =
+                            outside_clicked.load(Ordering::Relaxed);
+
+                        #[cfg(not(target_os = "macos"))]
+                        let lost_focus = if just_opened > 0 {
                             just_opened -= 1;
+                            false
                         } else {
-                            // On macOS, GPUI's cx.active_window() can lag after
-                            // activation-policy switches, producing false "no focus"
-                            // readings. Ask NSApp.isActive directly — it is the
-                            // authoritative OS answer and updates synchronously.
-                            // On other platforms cx.active_window() is reliable.
+                            cx.update(|cx| cx.active_window().is_none())
+                                .unwrap_or(false)
+                        };
+
+                        if lost_focus {
                             #[cfg(target_os = "macos")]
-                            let lost_focus = !platform::app_is_active();
-                            #[cfg(not(target_os = "macos"))]
-                            let lost_focus = cx
-                                .update(|cx| cx.active_window().is_none())
-                                .unwrap_or(false);
-                            if lost_focus {
-                                if let Some(handle) = current.take() {
-                                    let _ = cx.update(|cx| {
-                                        let _ = handle.update(cx, |_view, window, _cx| {
-                                            window.remove_window()
-                                        });
-                                    });
-                                    // Demote back to Accessory now that no modal is open.
-                                    #[cfg(target_os = "macos")]
-                                    if !runtime::show_in_app_switcher() {
-                                        platform::apply_app_switcher_policy(false);
-                                    }
+                            {
+                                outside_clicked.store(false, Ordering::Relaxed);
+                                if let Some(m) = click_monitor.take() {
+                                    platform::remove_click_outside_monitor(m);
                                 }
+                                if !runtime::show_in_app_switcher() {
+                                    platform::apply_app_switcher_policy(false);
+                                }
+                            }
+                            if let Some(handle) = current.take() {
+                                let _ = cx.update(|cx| {
+                                    let _ = handle.update(cx, |_view, window, _cx| {
+                                        window.remove_window()
+                                    });
+                                });
                             }
                         }
                     }
@@ -209,6 +219,19 @@ fn main() -> Result<()> {
                                             config.clone()
                                         });
                                 runtime::set_from_config(&fresh_config);
+
+                                // If a window was open, remove its monitor
+                                // before toggling (toggle closes it).
+                                #[cfg(target_os = "macos")]
+                                if current.is_some() {
+                                    if let Some(m) = click_monitor.take() {
+                                        platform::remove_click_outside_monitor(m);
+                                    }
+                                    if !runtime::show_in_app_switcher() {
+                                        platform::apply_app_switcher_policy(false);
+                                    }
+                                }
+
                                 current = toggle(
                                     cx,
                                     current.take(),
@@ -217,28 +240,23 @@ fn main() -> Result<()> {
                                     hint,
                                 )
                                 .await;
-                                // If a window was just opened, arm the grace
-                                // period so the focus-loss check doesn't fire
-                                // before the OS has delivered foreground focus.
+
+                                // Window just opened: install the click-outside
+                                // monitor so we know when to close it.
+                                #[cfg(target_os = "macos")]
+                                if current.is_some() {
+                                    outside_clicked.store(false, Ordering::Relaxed);
+                                    click_monitor = Some(
+                                        platform::install_click_outside_monitor(
+                                            Arc::clone(&outside_clicked),
+                                        ),
+                                    );
+                                }
+
+                                // Non-macOS: arm the grace period.
+                                #[cfg(not(target_os = "macos"))]
                                 if current.is_some() {
                                     just_opened = 4; // ~600 ms at 150 ms/poll
-
-                                    // macOS: window.activate_window() schedules
-                                    // makeKeyAndOrderFront: asynchronously via the
-                                    // executor, so activateIgnoringOtherApps: in
-                                    // toggle_window fires before the window is
-                                    // visible — macOS silently discards activation
-                                    // requests when there is no key window yet.
-                                    // Wait for the window to appear, then re-activate
-                                    // the application so NSApp.isActive becomes true
-                                    // and the focus-loss check works correctly.
-                                    #[cfg(target_os = "macos")]
-                                    {
-                                        cx.background_executor()
-                                            .timer(Duration::from_millis(50))
-                                            .await;
-                                        let _ = cx.update(|cx| cx.activate(true));
-                                    }
                                 }
                             }
                             TrayEvent::Quit => {
@@ -439,11 +457,6 @@ fn toggle_window(
         // `update` returns Err if the window has already been removed;
         // either way we're done with this handle.
         let _ = handle.update(cx, |_view, window, _cx| window.remove_window());
-        // Demote back to Accessory now that no modal is open.
-        #[cfg(target_os = "macos")]
-        if !runtime::show_in_app_switcher() {
-            platform::apply_app_switcher_policy(false);
-        }
         return None;
     }
 
