@@ -18,7 +18,7 @@ ureq.workspace                  = true
 # Claude Code stores OAuth credentials in the macOS Keychain rather than
 # `.credentials.json`, so we need direct Keychain access on Darwin.
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "2"
+security-framework = "3"
 
 # On Windows Claude Code stores the same credential blob in the Windows
 # Credential Manager (service `Claude Code-credentials`) and likewise
