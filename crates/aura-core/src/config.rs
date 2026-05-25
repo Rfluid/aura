@@ -113,6 +113,31 @@ pub struct DisplayConfig {
     /// tray icon again (useful when copy-pasting from the modal into
     /// another window).
     pub dismiss_on_focus_loss: bool,
+    /// Show the OS-native window chrome (title bar + minimize / maximize /
+    /// close buttons) and let the user resize the modal by dragging its
+    /// edges. Default false: Aura behaves like a tray popup with a fixed
+    /// width that auto-fits its content vertically.
+    ///
+    /// Turning this on toggles three things together because they only make
+    /// sense as a set:
+    /// 1. `titlebar` is created instead of `None`, so the OS draws the
+    ///    standard chrome (and, on KDE / GNOME, the window menu items like
+    ///    "all desktops" / "always on top" come along for free — they're
+    ///    compositor-rendered, not drawn by Aura).
+    /// 2. `is_resizable` is set true and Wayland decorations are server-
+    ///    side so the compositor exposes resize edges.
+    /// 3. The content-fit auto-resize that runs on every layout pass is
+    ///    suppressed, otherwise it fights every drag.
+    pub window_chrome: bool,
+    /// Optional upper bound (in logical pixels) on the modal's auto-fit
+    /// height. The content-fit callback already caps growth at the screen's
+    /// available work area; this lets the user impose a tighter ceiling so
+    /// the modal never grows past, say, 500 px even on a tall display.
+    ///
+    /// `None` (default) means "only the work-area cap applies".
+    /// Ignored when [`Self::window_chrome`] is true (auto-fit is off then).
+    #[serde(default)]
+    pub max_height: Option<u32>,
 }
 
 impl Default for DisplayConfig {
@@ -123,6 +148,8 @@ impl Default for DisplayConfig {
             plugin_order: Vec::new(),
             show_in_app_switcher: false,
             dismiss_on_focus_loss: true,
+            window_chrome: false,
+            max_height: None,
         }
     }
 }
