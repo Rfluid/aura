@@ -159,16 +159,61 @@ pub fn apply_app_switcher_policy(show: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn apply_app_switcher_policy(_show: bool) {}
 
-/// Returns whether the macOS application is currently the active (frontmost) app.
-/// Uses `NSApp.isActive` — the authoritative OS answer — rather than GPUI's
-/// internal window tracking, which can lag after activation-policy switches.
+// ── macOS click-outside monitor ──────────────────────────────────────────────
+//
+// Menu bar apps don't own keyboard/mouse focus after showing a panel —
+// macOS restricts activation stealing since Sonoma. The reliable way to
+// detect "user clicked in another app" is a global NSEvent monitor, which
+// fires for mouse-down events that go to any application OTHER than ours.
+// When the monitor fires we set an AtomicBool; the GPUI poll loop checks
+// that flag and closes the window instead of relying on NSApp.isActive.
+
+/// Opaque handle for a global NSEvent monitor. Returned by
+/// `install_click_outside_monitor` and must be passed to
+/// `remove_click_outside_monitor` when the window closes.
 #[cfg(target_os = "macos")]
-pub fn app_is_active() -> bool {
+pub struct ClickOutsideMonitor(cocoa::base::id);
+
+// SAFETY: the monitor object is only ever touched from the GPUI main thread.
+#[cfg(target_os = "macos")]
+unsafe impl Send for ClickOutsideMonitor {}
+
+/// Register a global mouse-down monitor. The `clicked` flag is set to `true`
+/// whenever the user clicks in any application other than Aura. Only fires
+/// for events that are NOT delivered to our own windows.
+#[cfg(target_os = "macos")]
+pub fn install_click_outside_monitor(
+    clicked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> ClickOutsideMonitor {
+    use block::ConcreteBlock;
+    use cocoa::base::id;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    // NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown
+    let mask: u64 = (1 << 1) | (1 << 3) | (1 << 25);
+
+    let block = ConcreteBlock::new(move |_event: id| {
+        clicked.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let block = block.copy();
+
+    let monitor: id = unsafe {
+        msg_send![class!(NSEvent),
+            addGlobalMonitorForEventsMatchingMask: mask
+            handler: &*block]
+    };
+
+    // Keep the block alive for as long as the monitor is installed.
+    std::mem::forget(block);
+    ClickOutsideMonitor(monitor)
+}
+
+/// Unregister and release a previously installed global monitor.
+#[cfg(target_os = "macos")]
+pub fn remove_click_outside_monitor(monitor: ClickOutsideMonitor) {
     use objc::{class, msg_send, sel, sel_impl};
     unsafe {
-        let app: cocoa::base::id = msg_send![class!(NSApplication), sharedApplication];
-        let active: cocoa::base::BOOL = msg_send![app, isActive];
-        active != cocoa::base::NO
+        let _: () = msg_send![class!(NSEvent), removeMonitor: monitor.0];
     }
 }
 
