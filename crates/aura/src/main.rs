@@ -172,6 +172,11 @@ fn main() -> Result<()> {
                                             window.remove_window()
                                         });
                                     });
+                                    // Demote back to Accessory now that no modal is open.
+                                    #[cfg(target_os = "macos")]
+                                    if !runtime::show_in_app_switcher() {
+                                        platform::apply_app_switcher_policy(false);
+                                    }
                                 }
                             }
                         }
@@ -409,6 +414,11 @@ fn toggle_window(
         // `update` returns Err if the window has already been removed;
         // either way we're done with this handle.
         let _ = handle.update(cx, |_view, window, _cx| window.remove_window());
+        // Demote back to Accessory now that no modal is open.
+        #[cfg(target_os = "macos")]
+        if !runtime::show_in_app_switcher() {
+            platform::apply_app_switcher_policy(false);
+        }
         return None;
     }
 
@@ -457,6 +467,16 @@ fn toggle_window(
         cx.new(|cx| AuraView::new(config, config_path, state, cx))
     }) {
         Ok(handle) => {
+            // On macOS, if we are running as NSApplicationActivationPolicyAccessory
+            // (background-only mode), the OS won't grant foreground focus to the
+            // window. Promote to Regular while the modal is open so activate()
+            // and active_window() work normally. We demote back to Accessory
+            // when the window is closed (see the focus-loss / remove_window paths).
+            #[cfg(target_os = "macos")]
+            if !runtime::show_in_app_switcher() {
+                platform::apply_app_switcher_policy(true);
+            }
+
             cx.activate(true);
 
             #[cfg(target_os = "windows")]
