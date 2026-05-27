@@ -160,6 +160,24 @@ impl Default for DisplayConfig {
     }
 }
 
+// ── Update ───────────────────────────────────────────────────────────────────
+
+/// Controls the "Update available" header button. The button is gated on a
+/// background fetch of the latest GitHub release; both knobs here let the
+/// user mute that surface without disabling the rest of the app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// The last release version the user dismissed via the "x" on the
+    /// update button. Stored as the bare semver string ("0.1.18"). Any
+    /// newer release re-shows the button. `None` means "never dismissed".
+    pub dismissed_version: Option<String>,
+    /// Master switch. When true, the update button is never rendered and
+    /// the background check is skipped entirely (so no GitHub request
+    /// fires). Off by default.
+    pub dismiss_all: bool,
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -170,6 +188,8 @@ pub struct AppConfig {
     pub plugins: Vec<PluginConfig>,
     #[serde(default)]
     pub display: DisplayConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 impl AppConfig {
@@ -219,6 +239,7 @@ impl AppConfig {
             agents: known_agent_profiles(),
             plugins: Vec::new(),
             display: DisplayConfig::default(),
+            update: UpdateConfig::default(),
         }
     }
 
@@ -463,6 +484,7 @@ mod tests {
                 plugin_order: vec!["Gamma".into(), "Alpha".into()],
                 ..DisplayConfig::default()
             },
+            update: UpdateConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -479,6 +501,7 @@ mod tests {
                 plugin_order: vec!["hello".into(), "Nonexistent".into()],
                 ..DisplayConfig::default()
             },
+            update: UpdateConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -491,6 +514,7 @@ mod tests {
             agents: vec![],
             plugins: vec![plug("Alpha"), plug("Beta")],
             display: DisplayConfig::default(),
+            update: UpdateConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -507,6 +531,30 @@ mod tests {
         assert_eq!(parsed.agents[0].name, cfg.agents[0].name);
         assert_eq!(parsed.plugins.len(), cfg.plugins.len());
         assert_eq!(parsed.display, cfg.display);
+        assert_eq!(parsed.update, cfg.update);
+    }
+
+    #[test]
+    fn update_config_defaults_when_block_missing() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.update, UpdateConfig::default());
+        assert!(cfg.update.dismissed_version.is_none());
+        assert!(!cfg.update.dismiss_all);
+    }
+
+    #[test]
+    fn update_config_round_trips_populated_block() {
+        let toml_in = r#"
+[update]
+dismissed_version = "0.1.18"
+dismiss_all = true
+"#;
+        let cfg: AppConfig = toml::from_str(toml_in).unwrap();
+        assert_eq!(cfg.update.dismissed_version.as_deref(), Some("0.1.18"));
+        assert!(cfg.update.dismiss_all);
+        let round = toml::to_string_pretty(&cfg).unwrap();
+        let again: AppConfig = toml::from_str(&round).unwrap();
+        assert_eq!(again.update, cfg.update);
     }
 
     #[test]
@@ -539,6 +587,7 @@ mod tests {
             }],
             plugins: vec![],
             display: DisplayConfig::default(),
+            update: UpdateConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -576,6 +625,7 @@ mod tests {
             }],
             plugins: vec![],
             display: DisplayConfig::default(),
+            update: UpdateConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

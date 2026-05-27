@@ -19,6 +19,7 @@ use gpui::{
 };
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
+use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
 /// `on_children_prepainted` in `render`), so only the height is dynamic.
@@ -101,6 +102,14 @@ pub struct AuraView {
     /// Indexed by plugin name.
     plugin_panels: Vec<(String, PluginPanel)>,
 
+    /// Latest GitHub release info, populated by a background fetch at
+    /// startup. `None` means the check hasn't completed yet, failed, or the
+    /// remote version is not newer than the local build. Stays set after
+    /// success — dismissing only writes the version into config; the field
+    /// itself isn't cleared so re-opening the modal in the same session
+    /// honours the dismissal without a flicker.
+    update: Option<UpdateInfo>,
+
     show_more_modal: bool,
     show_settings_panel: bool,
     is_loading: bool,
@@ -182,6 +191,7 @@ impl AuraView {
             quota: None,
             forecast: None,
             plugin_panels: Vec::new(),
+            update: None,
             show_more_modal: false,
             show_settings_panel: false,
             is_loading: false,
@@ -194,7 +204,37 @@ impl AuraView {
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
         view.refresh(cx);
+        // Fire-and-forget release check. Skipped when the user disabled
+        // update prompts via `[update] dismiss_all = true` — that's the
+        // kill switch documented on `UpdateConfig::dismiss_all`.
+        if !view.config.update.dismiss_all {
+            view.spawn_update_check(cx);
+        }
         view
+    }
+
+    /// Spawn the GitHub release check on the background executor and push
+    /// the result back onto `AuraView.update` via `cx.notify()`. Errors are
+    /// logged to stderr and otherwise ignored — a failed check leaves the
+    /// header unchanged (see plan: degraded experience > noisy banner).
+    fn spawn_update_check(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { updater::fetch_latest() })
+                .await;
+            match result {
+                Ok(Some(info)) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.update = Some(info);
+                        cx.notify();
+                    });
+                }
+                Ok(None) => { /* already up-to-date */ }
+                Err(e) => eprintln!("aura: update check failed: {e}"),
+            }
+        })
+        .detach();
     }
 
     /// Kick off an async refresh. Returns immediately — the heavy work
@@ -502,6 +542,35 @@ impl AuraView {
         }
     }
 
+    /// Whether the "Update available" header chip should render. Pure
+    /// wrapper around [`should_show_update_button`] so the gating logic is
+    /// unit-testable without spinning up a full `AuraView`.
+    fn show_update_button(&self) -> bool {
+        should_show_update_button(self.update.as_ref(), &self.config.update)
+    }
+
+    /// Open the README's `### Updating` anchor — the two-curl / two-iex
+    /// flow lives there. We do not auto-download; see the plan's
+    /// "Non-goals" for why.
+    fn open_update_instructions(&mut self, _cx: &mut Context<Self>) {
+        open_url(updater::UPDATE_INSTRUCTIONS_URL);
+    }
+
+    /// Persist the dismissal so the button stays hidden across relaunches
+    /// for *this* version. A newer release than `info.latest` re-shows the
+    /// button automatically because `show_update_button` compares strings.
+    fn dismiss_update(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = &self.update else {
+            return;
+        };
+        let version = info.latest.to_string();
+        self.config.update.dismissed_version = Some(version);
+        if let Err(e) = self.config.save(&self.config_path) {
+            self.error = Some(format!("Could not save dismissal: {e}"));
+        }
+        cx.notify();
+    }
+
     fn toggle_more_modal(&mut self, cx: &mut Context<Self>) {
         self.show_more_modal = !self.show_more_modal;
         cx.notify();
@@ -786,12 +855,12 @@ impl AuraView {
                 )
             });
 
-        // Right: action buttons (refresh, config, more)
-        let actions = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
+        // Right: optional update chip, then action buttons (refresh, config, more).
+        let mut actions = div().flex().flex_row().items_center().gap_3();
+        if self.show_update_button() {
+            actions = actions.child(self.render_update_button(cx));
+        }
+        actions = actions
             .child(
                 icon_button("act-refresh", "icons/rotate_cw.svg", &self.theme).on_click(
                     cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -816,6 +885,59 @@ impl AuraView {
             );
 
         row.child(brand).child(actions).into_any_element()
+    }
+
+    /// The "Update available · vX.Y.Z" chip rendered in the header. Two
+    /// click targets: the label opens the README's updating section; the
+    /// trailing "×" persists a per-version dismissal so the chip vanishes
+    /// until the next release.
+    fn render_update_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(info) = &self.update else {
+            return div().into_any_element();
+        };
+        let accent = self.theme.colors.accent;
+        let text = self.theme.colors.text;
+        let text_dim = self.theme.colors.text_dim;
+        let surface_hi = self.theme.colors.surface_hi;
+        let label = format!("Update available · v{} →", info.latest);
+
+        let label_btn = div()
+            .id("update-open")
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .text_xs()
+            .text_color(rgb(text))
+            .bg(rgb(Theme::blend(accent, self.theme.colors.bg, 0.75)))
+            .hover(move |d| d.bg(rgb(surface_hi)))
+            .child(SharedString::from(label))
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_update_instructions(cx)));
+
+        let dismiss_btn = div()
+            .id("update-dismiss")
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(18.0))
+            .h(px(18.0))
+            .ml_1()
+            .rounded_md()
+            .text_xs()
+            .text_color(rgb(text_dim))
+            .hover(move |d| d.bg(rgb(surface_hi)).text_color(rgb(text)))
+            .child("×")
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.dismiss_update(cx)));
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(label_btn)
+            .child(dismiss_btn)
+            .into_any_element()
     }
 
     /// Pill row + agent/plugin mode toggle.
@@ -2061,29 +2183,32 @@ fn progress_bar(theme: &Theme, fraction: f64, accent: u32, height: f32) -> impl 
 
 impl AuraView {
     fn render_more_modal(&self, cx: &mut Context<Self>) -> AnyElement {
-        let items = [
+        // Append the running version so users can confirm the build they're
+        // on without trawling stderr or `aura --version`.
+        let updates_label = format!("Check updates · v{}", env!("CARGO_PKG_VERSION"));
+        let items: [(&'static str, &'static str, String, ModalAction); 4] = [
             (
                 "modal-updates",
                 "icons/download.svg",
-                "Check updates",
+                updates_label,
                 ModalAction::Updates,
             ),
             (
                 "modal-sponsor",
                 "icons/sparkle.svg",
-                "Sponsor",
+                "Sponsor".to_string(),
                 ModalAction::Sponsor,
             ),
             (
                 "modal-github",
                 "icons/github.svg",
-                "View on GitHub",
+                "View on GitHub".to_string(),
                 ModalAction::Github,
             ),
             (
                 "modal-issues",
                 "icons/circle_help.svg",
-                "Report issue",
+                "Report issue".to_string(),
                 ModalAction::Reports,
             ),
         ];
@@ -2131,7 +2256,7 @@ impl AuraView {
                     .text_color(rgb(self.theme.colors.text))
                     .hover(move |d| d.bg(rgb(surface_hi)))
                     .child(svg_icon(icon_path, self.theme.colors.text_dim, 14.0))
-                    .child(label)
+                    .child(SharedString::from(label))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.handle_modal_action(action, cx);
                     })),
@@ -2321,3 +2446,71 @@ fn rgba(value: u32) -> gpui::Rgba {
 
 // `work_area` lives at `crate::work_area`; both this module and `main.rs`
 // use it. See `work_area.rs` for the parsing rationale.
+
+/// Pure form of `AuraView::show_update_button`. Returns true when there
+/// is fetched update info, the user hasn't muted all update prompts, and
+/// they haven't already dismissed *this exact* version.
+fn should_show_update_button(
+    update: Option<&UpdateInfo>,
+    cfg: &aura_core::config::UpdateConfig,
+) -> bool {
+    let Some(info) = update else {
+        return false;
+    };
+    if cfg.dismiss_all {
+        return false;
+    }
+    !matches!(&cfg.dismissed_version, Some(v) if *v == info.latest.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aura_core::config::UpdateConfig;
+    use semver::Version;
+
+    fn info(v: &str) -> UpdateInfo {
+        UpdateInfo {
+            latest: Version::parse(v).unwrap(),
+        }
+    }
+
+    #[test]
+    fn hides_when_no_update_info() {
+        let cfg = UpdateConfig::default();
+        assert!(!should_show_update_button(None, &cfg));
+    }
+
+    #[test]
+    fn hides_when_dismiss_all_set() {
+        let cfg = UpdateConfig {
+            dismissed_version: None,
+            dismiss_all: true,
+        };
+        assert!(!should_show_update_button(Some(&info("0.1.18")), &cfg));
+    }
+
+    #[test]
+    fn hides_when_dismissed_version_matches_latest() {
+        let cfg = UpdateConfig {
+            dismissed_version: Some("0.1.18".into()),
+            dismiss_all: false,
+        };
+        assert!(!should_show_update_button(Some(&info("0.1.18")), &cfg));
+    }
+
+    #[test]
+    fn shows_when_dismissed_older_release_and_newer_is_out() {
+        let cfg = UpdateConfig {
+            dismissed_version: Some("0.1.18".into()),
+            dismiss_all: false,
+        };
+        assert!(should_show_update_button(Some(&info("0.1.19")), &cfg));
+    }
+
+    #[test]
+    fn shows_when_never_dismissed() {
+        let cfg = UpdateConfig::default();
+        assert!(should_show_update_button(Some(&info("0.1.18")), &cfg));
+    }
+}

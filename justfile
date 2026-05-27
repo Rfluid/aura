@@ -78,66 +78,19 @@ update-windows: uninstall-windows install-windows
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 
+# Linux + macOS uninstall — disables autostart, kills the running tray,
+# removes binaries / launchers / units, clears the KDE keepalive rule.
+# The actual logic lives in uninstall.sh so the README's "two-curl
+# update" instructions can fetch it directly without a checkout.
 uninstall:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "$(uname -s)" in
-        Linux)
-            # Disable autostart, stop the running tray, then clear the
-            # binaries + launcher + systemd unit.
-            systemctl --user disable --now aura 2>/dev/null || true
-            pkill -x aura 2>/dev/null || true
-            rm -f ~/.local/bin/aura
-            rm -f ~/.local/share/applications/aura.desktop
-            rm -f ~/.local/share/icons/hicolor/scalable/apps/aura.svg
-            rm -f ~/.config/systemd/user/aura.service
-            command -v update-desktop-database >/dev/null 2>&1 && \
-                update-desktop-database ~/.local/share/applications >/dev/null 2>&1 || true
-            command -v gtk-update-icon-cache >/dev/null 2>&1 && \
-                gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor >/dev/null 2>&1 || true
-            # KDE-only: remove the keepalive skip-taskbar rule installed by
-            # install.sh, then ask KWin to reload its rules.
-            if command -v kwriteconfig6 >/dev/null 2>&1 && command -v kreadconfig6 >/dev/null 2>&1; then
-                rule_id="aura-keepalive-skip-taskbar"
-                current=$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)
-                new=$(echo "$current" | tr ',' '\n' | grep -vFx "$rule_id" | paste -sd ',' -)
-                kwriteconfig6 --file kwinrulesrc --group General --key rules "$new"
-                kwriteconfig6 --file kwinrulesrc --group General --key count \
-                    "$(echo "$new" | tr ',' '\n' | grep -c . || echo 0)"
-                kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key Description --delete 2>/dev/null || true
-                command -v qdbus6 >/dev/null 2>&1 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
-            fi
-            ;;
-        Darwin)
-            # Unload the LaunchAgent (stops the menu-bar tray) then remove
-            # the agent plist + Aura.app + bare binaries.
-            launchctl bootout "gui/$(id -u)/com.aura.agent-usage" 2>/dev/null || true
-            rm -f ~/Library/LaunchAgents/com.aura.agent-usage.plist
-            rm -rf /Applications/Aura.app ~/Applications/Aura.app
-            rm -f ~/.local/bin/aura
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            echo "Run 'just uninstall-windows' from PowerShell on Windows." >&2
-            exit 1
-            ;;
-        *)
-            echo "warning: unknown OS, removing binaries only" >&2
-            rm -f ~/.local/bin/aura
-            ;;
-    esac
-    echo "✔ Removed binaries and launcher (config + state preserved)"
+    ./uninstall.sh
 
 # Windows-only uninstall: removes binaries + Start Menu shortcut. Also
-# cleans up the legacy Startup-folder shortcut from older installs.
+# cleans up the legacy Startup-folder shortcut from older installs. The
+# script lives in scripts/uninstall.ps1 so the README's `iex (irm ...)`
+# update instructions can fetch it directly.
 uninstall-windows:
-    powershell -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; \
-        $dir = Join-Path $env:LOCALAPPDATA 'Programs\\Aura'; \
-        $startMenu = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\\Aura.lnk'; \
-        $startup   = Join-Path ([Environment]::GetFolderPath('Startup')) 'Aura.lnk'; \
-        Get-Process aura -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
-        foreach ($p in @($startMenu, $startup)) { if (Test-Path $p) { Remove-Item $p } }; \
-        if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }; \
-        Write-Host '✔ Removed binaries and Start Menu shortcut (config + state preserved)'"
+    powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
 
 # ── Process control (convenience wrappers) ────────────────────────────────────
 #

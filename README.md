@@ -470,23 +470,57 @@ which install path you took.
 
 ### Updating
 
-Re-running `./install.sh` always writes the new binary, but the **running
-process** is only replaced automatically on macOS (`launchctl kickstart -k`)
-and Windows (`Stop-Process` before copy). On Linux the installer calls
-`systemctl --user enable --now aura`, which is a no-op when the unit is
-already running — so the tray keeps serving the old build until you restart
-it explicitly.
+When Aura notices a newer GitHub release on startup it shows an
+**Update available · vX.Y.Z** chip in the modal header. Clicking it
+opens this section. The simple, dependency-free path is **two curls /
+two `iex`s** — no `cargo`, no `just`, no checkout required:
 
 ```bash
-# Linux — after ./install.sh, swap the old binary in:
-systemctl --user restart aura
-
-# macOS / Windows — nothing extra; ./install.sh (or scripts/install.ps1)
-# already restarted the process for you.
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/Rfluid/aura/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Rfluid/aura/main/install.sh   | bash
 ```
 
-If you opted out of the systemd autostart (or `systemctl --user restart aura`
-reports "no such unit"), kill the stray tray process directly:
+```powershell
+# Windows (PowerShell)
+iex (irm https://raw.githubusercontent.com/Rfluid/aura/main/scripts/uninstall.ps1)
+iex (irm https://raw.githubusercontent.com/Rfluid/aura/main/scripts/install.ps1)
+```
+
+The uninstall script stops the running tray, removes the binary +
+autostart artifacts, and clears the KDE keepalive rule (see
+[Uninstall](#uninstall) for the full list). The install script then
+fetches the latest GitHub release archive, verifies its checksum, and
+puts the new binary back in place — autostart and all. **Your config
+and state are preserved** through both halves.
+
+The GitHub fetch behind the header chip sends a `User-Agent:
+aura/<version>` header (required by GitHub's API) and your source IP.
+No cookies, no auth, no body. To mute the chip without uninstalling,
+set `[update] dismiss_all = true` in `~/.config/aura/config.toml` —
+that skips the network call entirely.
+
+#### From a cloned checkout
+
+If you have the repo cloned and built from source, `just update` (or
+`just update-windows`) does the equivalent locally — it calls `just
+uninstall` then `just install`, which in turn shell out to the same
+`uninstall.sh` / `install.sh` scripts above.
+
+#### Updating only the running binary (advanced)
+
+The installer always restarts the tray on macOS (`launchctl kickstart
+-k`) and Windows (`Stop-Process` before copy). On Linux it calls
+`systemctl --user enable --now aura`, which is a no-op when the unit
+is already running — so if you skipped the two-curl flow and just
+swapped binaries you'll need to bounce the unit:
+
+```bash
+# Linux — after dropping a new binary in ~/.local/bin/aura:
+systemctl --user restart aura
+```
+
+Or, when you opted out of the systemd autostart entirely:
 
 ```bash
 pkill -x aura && ~/.local/bin/aura >/dev/null 2>&1 &
@@ -607,6 +641,7 @@ Shipped
 - [x] macOS support (Apple Silicon + Intel; menu-bar `Aura.app` + launchd autostart)
 - [x] Windows support (x86_64 + aarch64; Shell_NotifyIcon tray + Startup-folder autostart)
 - [x] Per-DE polish: auto-installed KWin rule on KDE to hide the keepalive surface
+- [x] **Update button** — header chip that surfaces a newer GitHub release on startup and links to the two-curl update flow. Design: [`docs/plans/update-button.md`](docs/plans/update-button.md)
 
 Next up
 

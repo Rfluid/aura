@@ -9,6 +9,7 @@ mod format;
 mod platform;
 mod runtime;
 mod tray;
+mod updater;
 mod work_area;
 
 #[cfg(target_os = "macos")]
