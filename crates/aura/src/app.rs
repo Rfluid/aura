@@ -895,11 +895,12 @@ impl AuraView {
         let Some(info) = &self.update else {
             return div().into_any_element();
         };
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         let accent = self.theme.colors.accent;
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;
         let surface_hi = self.theme.colors.surface_hi;
-        let label = format!("Update available · v{} →", info.latest);
+        let label = (lex.update_available_fmt)(&info.latest.to_string());
 
         let label_btn = div()
             .id("update-open")
@@ -2183,9 +2184,10 @@ fn progress_bar(theme: &Theme, fraction: f64, accent: u32, height: f32) -> impl 
 
 impl AuraView {
     fn render_more_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         // Append the running version so users can confirm the build they're
         // on without trawling stderr or `aura --version`.
-        let updates_label = format!("Check updates · v{}", env!("CARGO_PKG_VERSION"));
+        let updates_label = (lex.check_updates_fmt)(env!("CARGO_PKG_VERSION"));
         let items: [(&'static str, &'static str, String, ModalAction); 4] = [
             (
                 "modal-updates",
