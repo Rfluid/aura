@@ -44,7 +44,6 @@ _Goal: working widget for Claude Code usage with RTK Gains plugin_
 
 - Custom command agents (BYOA — Bring Your Own Agent via a shell command)
 - Plugin registry (`aura plugin install <name>`)
-- Cost alerts / budget warnings
 - Per-project usage breakdown (if agents expose project-scoped data)
 - Historical usage charts (daily/weekly trend in the modal)
 - **In-modal config editor page** — a settings page inside the modal that
