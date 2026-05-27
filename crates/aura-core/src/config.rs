@@ -138,6 +138,11 @@ pub struct DisplayConfig {
     /// Ignored when [`Self::window_chrome`] is true (auto-fit is off then).
     #[serde(default)]
     pub max_height: Option<u32>,
+    /// Swap the modal's user-facing copy for an aggressive / unhinged variant
+    /// ("Goblin Mode"). Default false. Toggling reloads on the next refresh —
+    /// no restart. See `docs/goblin-mode.md`.
+    #[serde(default)]
+    pub goblin_mode: bool,
 }
 
 impl Default for DisplayConfig {
@@ -150,6 +155,7 @@ impl Default for DisplayConfig {
             dismiss_on_focus_loss: true,
             window_chrome: false,
             max_height: None,
+            goblin_mode: false,
         }
     }
 }

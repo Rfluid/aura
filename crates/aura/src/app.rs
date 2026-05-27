@@ -2,6 +2,7 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
+    lexicon::{self, Lexicon},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{
         forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
@@ -46,12 +47,12 @@ enum AgentSection {
 }
 
 impl AgentSection {
-    fn label(self) -> &'static str {
+    fn label(self, lex: &Lexicon) -> &'static str {
         match self {
-            Self::Quota => "Quota",
-            Self::Forecast => "Forecast",
-            Self::Summary => "Summary",
-            Self::Models => "Models",
+            Self::Quota => lex.tab_quota,
+            Self::Forecast => lex.tab_forecast,
+            Self::Summary => lex.tab_summary,
+            Self::Models => lex.tab_models,
         }
     }
 
@@ -890,10 +891,11 @@ impl AuraView {
 
     fn render_plugin_pills(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.config.plugins.is_empty() {
+            let lex = lexicon::pick(self.config.display.goblin_mode);
             return div()
                 .text_xs()
                 .text_color(rgb(self.theme.colors.text_dim))
-                .child("No plugins configured")
+                .child(lex.no_plugins_configured)
                 .into_any_element();
         }
         let mut picker = div()
@@ -946,9 +948,10 @@ impl AuraView {
     }
 
     fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         let modes = [
             ("Agents", Mode::Agent, "mode-agent"),
-            ("Plugins", Mode::Plugin, "mode-plugin"),
+            (lex.tab_plugins, Mode::Plugin, "mode-plugin"),
         ];
         // `flex_shrink_0` keeps the toggle visible when the sibling pill row
         // overflows and scrolls.
@@ -980,10 +983,11 @@ impl AuraView {
     }
 
     fn render_period_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         let periods = [
-            ("All time", Period::AllTime, "period-all"),
-            ("Last 7 days", Period::Last7Days, "period-7"),
-            ("Last 30 days", Period::Last30Days, "period-30"),
+            (lex.period_all, Period::AllTime, "period-all"),
+            (lex.period_7d, Period::Last7Days, "period-7"),
+            (lex.period_30d, Period::Last30Days, "period-30"),
         ];
 
         // Selected filter background uses the active agent's (or plugin's)
@@ -1040,6 +1044,7 @@ impl AuraView {
             .border_color(rgb(self.theme.colors.border))
             .bg(rgb(self.theme.colors.surface));
 
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         match self.mode {
             Mode::Agent => {
                 let sections = [
@@ -1062,7 +1067,7 @@ impl AuraView {
                                     .border_color(rgb(accent))
                             })
                             .when(!active, |d| d.text_color(rgb(self.theme.colors.text_dim)))
-                            .child(s.label())
+                            .child(s.label(lex))
                             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 view.set_agent_section(s, cx);
                             })),
@@ -1101,6 +1106,7 @@ impl AuraView {
     }
 
     fn render_body(&self, _cx: &mut Context<Self>) -> AnyElement {
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         let inner: AnyElement = if let Some(err) = &self.error {
             div()
                 .flex()
@@ -1120,27 +1126,32 @@ impl AuraView {
             // agent/plugin/period produced and show a clean loading state.
             // Otherwise switching from Claude → Codex (etc.) flashes the
             // outgoing profile's numbers under the new tab.
-            render_loading(&self.theme, self.spinner_frame)
+            render_loading(&self.theme, lex, self.spinner_frame)
         } else {
             let accent = self.current_accent();
             match self.mode {
                 Mode::Agent => match self.active_agent_section {
-                    AgentSection::Quota => {
-                        render_quota(&self.theme, self.quota.as_ref(), accent, self.spinner_frame)
-                    }
+                    AgentSection::Quota => render_quota(
+                        &self.theme,
+                        lex,
+                        self.quota.as_ref(),
+                        accent,
+                        self.spinner_frame,
+                    ),
                     AgentSection::Forecast => render_forecast(
                         &self.theme,
+                        lex,
                         self.forecast.as_ref(),
                         accent,
                         self.spinner_frame,
                     ),
                     AgentSection::Summary => match self.snapshot.as_ref() {
                         Some(snap) => render_summary(&self.theme, snap),
-                        None => render_loading(&self.theme, self.spinner_frame),
+                        None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
                     AgentSection::Models => match self.snapshot.as_ref() {
                         Some(snap) => render_models(&self.theme, snap, accent),
-                        None => render_loading(&self.theme, self.spinner_frame),
+                        None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
                 },
                 Mode::Plugin => self.render_plugin_body(),
@@ -1163,6 +1174,7 @@ impl AuraView {
     }
 
     fn render_plugin_body(&self) -> AnyElement {
+        let lex = lexicon::pick(self.config.display.goblin_mode);
         let Some(panel) = self.current_plugin_panel() else {
             return div()
                 .flex()
@@ -1174,7 +1186,7 @@ impl AuraView {
                 .child(
                     div()
                         .text_color(rgb(self.theme.colors.text_dim))
-                        .child("No plugin selected"),
+                        .child(lex.no_plugin_selected),
                 )
                 .into_any_element();
         };
@@ -1199,7 +1211,7 @@ impl AuraView {
         let section = panel.section(section_id).or_else(|| panel.sections.first());
         match section {
             Some(s) => render_plugin_section(&self.theme, s, self.current_accent()),
-            None => render_loading(&self.theme, self.spinner_frame),
+            None => render_loading(&self.theme, lex, self.spinner_frame),
         }
     }
 }
@@ -1210,7 +1222,7 @@ impl AuraView {
 /// height of two quota windows (label + progress bar + resets row) so the
 /// modal barely resizes when the initial fetch completes — fewer visible
 /// jumps on first paint and on agent/plugin switches.
-fn render_loading(theme: &Theme, spinner_frame: usize) -> AnyElement {
+fn render_loading(theme: &Theme, lex: &Lexicon, spinner_frame: usize) -> AnyElement {
     let frame = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
     div()
         .flex()
@@ -1239,19 +1251,20 @@ fn render_loading(theme: &Theme, spinner_frame: usize) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child("Loading…"),
+                .child(lex.loading),
         )
         .into_any_element()
 }
 
 fn render_quota(
     theme: &Theme,
+    lex: &Lexicon,
     quota: Option<&QuotaSnapshot>,
     accent: u32,
     spinner_frame: usize,
 ) -> AnyElement {
     let Some(quota) = quota else {
-        return render_loading(theme, spinner_frame);
+        return render_loading(theme, lex, spinner_frame);
     };
 
     let mut col = div().flex().flex_col().px_4().py_3().gap_3();
@@ -1262,7 +1275,7 @@ fn render_quota(
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(SharedString::from(format!("Subscription: {sub}"))),
+                .child(SharedString::from((lex.subscription_fmt)(sub))),
         );
     }
 
@@ -1282,12 +1295,12 @@ fn render_quota(
                     .bg(rgb(theme.colors.surface))
                     .text_color(rgb(theme.colors.text_dim))
                     .text_xs()
-                    .child("No quota data available."),
+                    .child(lex.no_quota_data),
             );
         }
     } else {
         for w in &quota.windows {
-            col = col.child(render_quota_window(theme, w, accent));
+            col = col.child(render_quota_window(theme, lex, w, accent));
         }
     }
 
@@ -1354,7 +1367,12 @@ fn render_fallback_warning(theme: &Theme, quota: &QuotaSnapshot) -> AnyElement {
         .into_any_element()
 }
 
-fn render_quota_window(theme: &Theme, w: &QuotaWindow, accent: u32) -> impl IntoElement {
+fn render_quota_window(
+    theme: &Theme,
+    lex: &Lexicon,
+    w: &QuotaWindow,
+    accent: u32,
+) -> impl IntoElement {
     let pct_label = match w.used_percentage {
         Some(p) => format!("{:.0}% used", p),
         None => match w.used_tokens {
@@ -1426,7 +1444,7 @@ fn render_quota_window(theme: &Theme, w: &QuotaWindow, accent: u32) -> impl Into
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(SharedString::from(format!("Resets {}", label))),
+                .child(SharedString::from((lex.resets_fmt)(&label))),
         );
     }
 
@@ -1474,12 +1492,13 @@ fn format_reset(ts: DateTime<Utc>) -> String {
 
 fn render_forecast(
     theme: &Theme,
+    lex: &Lexicon,
     forecast: Option<&ForecastSnapshot>,
     accent: u32,
     spinner_frame: usize,
 ) -> AnyElement {
     let Some(forecast) = forecast else {
-        return render_loading(theme, spinner_frame);
+        return render_loading(theme, lex, spinner_frame);
     };
 
     let mut col = div().flex().flex_col().px_4().py_3().gap_3();
@@ -1501,19 +1520,24 @@ fn render_forecast(
         );
     } else {
         for w in &forecast.windows {
-            col = col.child(render_forecast_window(theme, w, accent));
+            col = col.child(render_forecast_window(theme, lex, w, accent));
         }
     }
 
     col.into_any_element()
 }
 
-fn render_forecast_window(theme: &Theme, w: &ForecastWindow, accent: u32) -> impl IntoElement {
+fn render_forecast_window(
+    theme: &Theme,
+    lex: &Lexicon,
+    w: &ForecastWindow,
+    accent: u32,
+) -> impl IntoElement {
     let (badge_text, badge_color) = match w.status {
-        ForecastStatus::Ok => ("On track", accent),
-        ForecastStatus::Watch => ("Watch", theme.colors.warning),
-        ForecastStatus::Overshoot => ("Overshoot", theme.colors.error),
-        ForecastStatus::Insufficient => ("—", theme.colors.text_dim),
+        ForecastStatus::Ok => (lex.forecast_ok, accent),
+        ForecastStatus::Watch => (lex.forecast_watch, theme.colors.warning),
+        ForecastStatus::Overshoot => (lex.forecast_overshoot, theme.colors.error),
+        ForecastStatus::Insufficient => (lex.forecast_insufficient, theme.colors.text_dim),
     };
 
     let header = div()
@@ -1555,7 +1579,7 @@ fn render_forecast_window(theme: &Theme, w: &ForecastWindow, accent: u32) -> imp
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child("warming up — check back in a few minutes"),
+                .child(lex.forecast_warming_up),
         );
         return card;
     }
@@ -1625,11 +1649,11 @@ fn render_forecast_window(theme: &Theme, w: &ForecastWindow, accent: u32) -> imp
     let subtext = match w.status {
         ForecastStatus::Overshoot => w
             .overshoot_at
-            .map(|t| format!("Will hit 100% at {}", format_reset(t)))
+            .map(|t| (lex.forecast_will_hit_100_fmt)(&format_reset(t)))
             .unwrap_or_else(|| "Projected to overshoot".to_string()),
         _ => match w.resets_at {
-            Some(t) => format!("Projected at reset {}", format_reset(t)),
-            None => "Projected at reset".to_string(),
+            Some(t) => format!("{} {}", lex.forecast_projected_at_reset, format_reset(t)),
+            None => lex.forecast_projected_at_reset.to_string(),
         },
     };
     card = card.child(
@@ -2145,6 +2169,7 @@ impl AuraView {
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;
         let surface_hi = self.theme.colors.surface_hi;
+        let lex = lexicon::pick(self.config.display.goblin_mode);
 
         // ── Open config file ─────────────────────────────────────────────────
         card = card.child(
@@ -2161,7 +2186,7 @@ impl AuraView {
                 .text_color(rgb(text))
                 .hover(move |d| d.bg(rgb(surface_hi)))
                 .child(svg_icon("icons/arrow_up_right.svg", text_dim, 14.0))
-                .child("Open config file")
+                .child(lex.menu_open_config)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.open_config(cx);
                     view.close_settings_panel(cx);
@@ -2183,7 +2208,7 @@ impl AuraView {
                 .text_color(rgb(text))
                 .hover(move |d| d.bg(rgb(surface_hi)))
                 .child(svg_icon("icons/sliders.svg", text_dim, 14.0))
-                .child("Themes")
+                .child(lex.menu_themes)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.open_theme(cx);
                     view.close_settings_panel(cx);
