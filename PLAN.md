@@ -196,5 +196,4 @@
 - Plugin authoring guide + example repo
 - Plugin registry (`aura plugin install <name>`)
 - Custom command agents (BYOA)
-- Cost alerts / budget warnings
 - macOS: Developer-ID codesign + notarization (needs Apple account)

@@ -612,8 +612,8 @@ Next up
 
 - [x] Plugin authoring guide + example plugin (see `docs/plugin-authoring.md` and `plugins/hello/`)
 - [x] Plugin discovery (local scan of `~/.config/aura/plugins/`) + `aura plugin add|list|remove`
+- [ ] **Forecast tab** — project end-of-window usage (session, weekly, …) from the current burn rate, shown alongside each quota bar; rolls out per agent: Claude Code → Codex → Gemini. Design: [`docs/forecast-tab.md`](docs/forecast-tab.md)
 - [ ] Custom command agents (BYOA — Bring Your Own Agent via a shell command)
-- [ ] Cost alerts / budget warnings
 - [ ] Historical usage charts (daily / weekly trend in the modal)
 - [ ] Per-project usage breakdown (where agents expose project-scoped data)
 
