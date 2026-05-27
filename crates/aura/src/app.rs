@@ -3,7 +3,10 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
-    quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
+    quota::{
+        forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
+        QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
+    },
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
     theme::Theme,
@@ -37,6 +40,7 @@ enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentSection {
     Quota,
+    Forecast,
     Summary,
     Models,
 }
@@ -45,6 +49,7 @@ impl AgentSection {
     fn label(self) -> &'static str {
         match self {
             Self::Quota => "Quota",
+            Self::Forecast => "Forecast",
             Self::Summary => "Summary",
             Self::Models => "Models",
         }
@@ -53,6 +58,7 @@ impl AgentSection {
     fn id(self) -> &'static str {
         match self {
             Self::Quota => "quota",
+            Self::Forecast => "forecast",
             Self::Summary => "summary",
             Self::Models => "models",
         }
@@ -63,7 +69,7 @@ impl AgentSection {
     /// the period pills don't apply.
     fn uses_period(self) -> bool {
         match self {
-            Self::Quota => false,
+            Self::Quota | Self::Forecast => false,
             Self::Summary | Self::Models => true,
         }
     }
@@ -90,6 +96,7 @@ pub struct AuraView {
 
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    forecast: Option<ForecastSnapshot>,
     /// Indexed by plugin name.
     plugin_panels: Vec<(String, PluginPanel)>,
 
@@ -128,6 +135,7 @@ struct RefreshResult {
     fallback_profile: Option<String>,
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    forecast: Option<ForecastSnapshot>,
     plugin_panels: Vec<(String, PluginPanel)>,
     error: Option<String>,
 }
@@ -171,6 +179,7 @@ impl AuraView {
             active_plugin_section: None,
             snapshot: None,
             quota: None,
+            forecast: None,
             plugin_panels: Vec::new(),
             show_more_modal: false,
             show_settings_panel: false,
@@ -237,6 +246,7 @@ impl AuraView {
         }
         self.snapshot = result.snapshot;
         self.quota = result.quota;
+        self.forecast = result.forecast;
         self.plugin_panels = result.plugin_panels;
         self.error = result.error;
 
@@ -321,6 +331,7 @@ fn do_refresh(
                 fallback_profile: None,
                 snapshot: None,
                 quota: None,
+                forecast: None,
                 plugin_panels: Vec::new(),
                 error: Some(format!("Could not reload config: {e}")),
             };
@@ -350,6 +361,7 @@ fn do_refresh(
             fallback_profile,
             snapshot: None,
             quota: None,
+            forecast: None,
             plugin_panels: Vec::new(),
             error: Some(format!("Profile `{resolved_profile}` not found in config")),
         };
@@ -373,6 +385,10 @@ fn do_refresh(
         AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
     });
 
+    // Forecast piggybacks on the just-loaded quota snapshot. Same refresh
+    // cadence, no extra I/O.
+    let forecast = quota.as_ref().map(|q| forecast::forecast(q, Utc::now()));
+
     // Plugins: each runs as a subprocess with `--period` passed through.
     let plugin_panels = config
         .plugins
@@ -386,6 +402,7 @@ fn do_refresh(
         fallback_profile,
         snapshot,
         quota,
+        forecast,
         plugin_panels,
         error,
     }
@@ -1027,6 +1044,7 @@ impl AuraView {
             Mode::Agent => {
                 let sections = [
                     AgentSection::Quota,
+                    AgentSection::Forecast,
                     AgentSection::Summary,
                     AgentSection::Models,
                 ];
@@ -1110,6 +1128,12 @@ impl AuraView {
                     AgentSection::Quota => {
                         render_quota(&self.theme, self.quota.as_ref(), accent, self.spinner_frame)
                     }
+                    AgentSection::Forecast => render_forecast(
+                        &self.theme,
+                        self.forecast.as_ref(),
+                        accent,
+                        self.spinner_frame,
+                    ),
                     AgentSection::Summary => match self.snapshot.as_ref() {
                         Some(snap) => render_summary(&self.theme, snap),
                         None => render_loading(&self.theme, self.spinner_frame),
@@ -1444,6 +1468,178 @@ fn format_reset(ts: DateTime<Utc>) -> String {
         let date = local.format_localized("%b %-d", locale).to_string();
         format!("{date}, {time}")
     }
+}
+
+// ── Forecast (projected end-of-window usage at current burn rate) ───────────
+
+fn render_forecast(
+    theme: &Theme,
+    forecast: Option<&ForecastSnapshot>,
+    accent: u32,
+    spinner_frame: usize,
+) -> AnyElement {
+    let Some(forecast) = forecast else {
+        return render_loading(theme, spinner_frame);
+    };
+
+    let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+    if forecast.windows.is_empty() {
+        col = col.child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(theme.colors.border))
+                .bg(rgb(theme.colors.surface))
+                .text_color(rgb(theme.colors.text_dim))
+                .text_xs()
+                .child(
+                    "No forecast available — quota source did not report any projectable windows.",
+                ),
+        );
+    } else {
+        for w in &forecast.windows {
+            col = col.child(render_forecast_window(theme, w, accent));
+        }
+    }
+
+    col.into_any_element()
+}
+
+fn render_forecast_window(theme: &Theme, w: &ForecastWindow, accent: u32) -> impl IntoElement {
+    let (badge_text, badge_color) = match w.status {
+        ForecastStatus::Ok => ("On track", accent),
+        ForecastStatus::Watch => ("Watch", theme.colors.warning),
+        ForecastStatus::Overshoot => ("Overshoot", theme.colors.error),
+        ForecastStatus::Insufficient => ("—", theme.colors.text_dim),
+    };
+
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(w.label.clone())),
+        )
+        .child(
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(badge_color))
+                .text_xs()
+                .text_color(rgb(badge_color))
+                .child(SharedString::from(badge_text)),
+        );
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(header);
+
+    if w.status == ForecastStatus::Insufficient {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child("warming up — check back in a few minutes"),
+        );
+        return card;
+    }
+
+    // Two-segment bar: solid `used_now` + translucent `projected delta`.
+    // Cap both at 100%; overshoot gets a separate marker on the right.
+    let used_now = w.used_percentage_now.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
+    let projected = w
+        .projected_percentage
+        .unwrap_or(used_now as f64)
+        .clamp(0.0, 100.0) as f32;
+    let used_frac = used_now / 100.0;
+    let projected_extra_frac = ((projected - used_now).max(0.0)) / 100.0;
+    let overflowed = w.projected_percentage.map(|p| p > 100.0).unwrap_or(false);
+
+    // Show "current / projected" so the user sees both the live value and
+    // where the bar is heading.
+    let projected_label = match (w.used_percentage_now, w.projected_percentage) {
+        (Some(now_pct), Some(proj_pct)) => format!("{:.0}% / {:.0}%", now_pct, proj_pct),
+        (Some(now_pct), None) => format!("{:.0}% / —", now_pct),
+        (None, Some(proj_pct)) => format!("— / {:.0}%", proj_pct),
+        (None, None) => "—".to_string(),
+    };
+
+    // Build the bar: a track, then a flex row of two filled segments.
+    let bar = div()
+        .h(px(8.0))
+        .flex_1()
+        .bg(rgb(theme.colors.surface_hi))
+        .rounded_md()
+        .flex()
+        .flex_row()
+        .child(
+            div()
+                .h(px(8.0))
+                .w(gpui::relative(used_frac))
+                .bg(rgb(accent))
+                .rounded_md(),
+        )
+        .child(
+            div()
+                .h(px(8.0))
+                .w(gpui::relative(projected_extra_frac))
+                .bg(rgba((accent << 8) | 0x66))
+                .rounded_md(),
+        );
+
+    let mut bar_row = div().flex().flex_row().items_center().gap_2().child(bar);
+
+    if overflowed {
+        bar_row = bar_row.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.error))
+                .child("↗"),
+        );
+    }
+
+    bar_row = bar_row.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(projected_label)),
+    );
+    card = card.child(bar_row);
+
+    let subtext = match w.status {
+        ForecastStatus::Overshoot => w
+            .overshoot_at
+            .map(|t| format!("Will hit 100% at {}", format_reset(t)))
+            .unwrap_or_else(|| "Projected to overshoot".to_string()),
+        _ => match w.resets_at {
+            Some(t) => format!("Projected at reset {}", format_reset(t)),
+            None => "Projected at reset".to_string(),
+        },
+    };
+    card = card.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text_dim))
+            .child(SharedString::from(subtext)),
+    );
+
+    card
 }
 
 // ── Summary (the old "Overview" — stat-card grid) ────────────────────────────

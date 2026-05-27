@@ -219,6 +219,7 @@ fn window_from(default_label: &str, w: &RawWindow) -> QuotaWindow {
         used_percentage: w.used_percent,
         used_tokens: None,
         resets_at: w.resets_at.and_then(unix_to_datetime),
+        length_minutes: w.window_minutes.and_then(|m| u32::try_from(m).ok()),
     }
 }
 
