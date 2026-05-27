@@ -42,6 +42,15 @@ pub struct Lexicon {
     // ── More menu ───────────────────────────────────────────────────────────
     pub menu_open_config: &'static str,
     pub menu_themes: &'static str,
+    /// Modal-row label for "Check updates", with the running version
+    /// appended (e.g. "Check updates · v0.1.17"). Goblin gets to roast
+    /// the user's current build.
+    pub check_updates_fmt: fn(current_version: &str) -> String,
+
+    // ── Update button ───────────────────────────────────────────────────────
+    /// Header chip label when a newer release exists. The arrow at the
+    /// end is part of the persona — keep or replace as you see fit.
+    pub update_available_fmt: fn(latest_version: &str) -> String,
 
     // ── Period pills ────────────────────────────────────────────────────────
     pub period_all: &'static str,
@@ -58,6 +67,12 @@ fn polite_resets(when: &str) -> String {
 fn polite_will_hit_100(time: &str) -> String {
     format!("Will hit 100% at {time}")
 }
+fn polite_check_updates(current: &str) -> String {
+    format!("Check updates · v{current}")
+}
+fn polite_update_available(latest: &str) -> String {
+    format!("Update available · v{latest} →")
+}
 
 fn goblin_subscription(sub: &str) -> String {
     format!("Paying for: {sub}")
@@ -67,6 +82,12 @@ fn goblin_resets(when: &str) -> String {
 }
 fn goblin_will_hit_100(time: &str) -> String {
     format!("Goose is cooked at {time}")
+}
+fn goblin_check_updates(current: &str) -> String {
+    format!("Running ancient · v{current}")
+}
+fn goblin_update_available(latest: &str) -> String {
+    format!("New build dropped · v{latest} →")
 }
 
 /// Default voice. Verbatim copy of what the modal renders today — flipping
@@ -96,6 +117,9 @@ pub const POLITE: Lexicon = Lexicon {
 
     menu_open_config: "Open config file",
     menu_themes: "Themes",
+    check_updates_fmt: polite_check_updates,
+
+    update_available_fmt: polite_update_available,
 
     period_all: "All time",
     period_7d: "Last 7 days",
@@ -129,6 +153,9 @@ pub const GOBLIN: Lexicon = Lexicon {
 
     menu_open_config: "Crack open the config",
     menu_themes: "Paint job",
+    check_updates_fmt: goblin_check_updates,
+
+    update_available_fmt: goblin_update_available,
 
     period_all: "the whole damn time",
     period_7d: "last week",
@@ -265,6 +292,14 @@ mod tests {
             (POLITE.forecast_will_hit_100_fmt)("5pm"),
             "Will hit 100% at 5pm",
         );
+        assert_eq!(
+            (POLITE.check_updates_fmt)("0.1.17"),
+            "Check updates · v0.1.17",
+        );
+        assert_eq!(
+            (POLITE.update_available_fmt)("0.1.18"),
+            "Update available · v0.1.18 →",
+        );
     }
 
     #[test]
@@ -274,6 +309,14 @@ mod tests {
         assert_eq!(
             (GOBLIN.forecast_will_hit_100_fmt)("5pm"),
             "Goose is cooked at 5pm",
+        );
+        assert_eq!(
+            (GOBLIN.check_updates_fmt)("0.1.17"),
+            "Running ancient · v0.1.17",
+        );
+        assert_eq!(
+            (GOBLIN.update_available_fmt)("0.1.18"),
+            "New build dropped · v0.1.18 →",
         );
     }
 }
