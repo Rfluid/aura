@@ -5,10 +5,10 @@ version: 0.1.0
 last_updated: 2026-05-27
 last_verified: 2026-05-27
 source_refs:
-  - crates/aura-core/src/config.rs
-  - crates/aura/src/app.rs
-  - crates/aura/src/format.rs
-  - docs/forecast-tab.md
+    - crates/aura-core/src/config.rs
+    - crates/aura/src/app.rs
+    - crates/aura/src/format.rs
+    - docs/forecast-tab.md
 owner: "@rfluid"
 tags: [easter-egg, ui, lexicon, design]
 ---
@@ -48,13 +48,13 @@ In scope:
   (`Ok` / `Watch` / `Overshoot` / `Insufficient`), `Subscription:`,
   `Resets <when>`, period pills (`all` / `7d` / `30d`).
 - **Empty / loading / error states**: `Loading…`, `No quota data
-  available.`, `No plugins configured`, `No plugin selected`,
+available.`, `No plugins configured`, `No plugin selected`,
   `warming up — check back in a few minutes` (forecast),
   generic error banner copy.
 - **More-menu entries**: `Open config file`, `Themes`, future
   Settings/Refresh labels.
 - **Forecast-tab subtext**: `Projected at reset`, `Will hit 100%
-  at HH:MM`.
+at HH:MM`.
 
 Out of scope for v1:
 
@@ -192,31 +192,31 @@ Voice rules for `GOBLIN`:
 Working drafts (final pass during impl; treat these as direction, not
 spec):
 
-| Field | Polite | Goblin |
-|---|---|---|
-| `tab_quota` | Quota | Damage |
-| `tab_summary` | Summary | The Bill |
-| `tab_models` | Models | Slop Vendors |
-| `tab_plugins` | Plugins | Hangers-on |
-| `tab_forecast` | Forecast | Doom |
-| `forecast_ok` | OK | Fine, whatever |
-| `forecast_watch` | Watch | Bruh |
-| `forecast_overshoot` | Overshoot | Cooked |
-| `forecast_insufficient` | Insufficient | Idk yet |
-| `forecast_projected_at_reset` | Projected at reset | What you'll burn |
-| `forecast_will_hit_100_fmt(t)` | Will hit 100% at {t} | Goose is cooked at {t} |
-| `forecast_warming_up` | warming up — check back in a few minutes | give it a minute, jeez |
-| `loading` | Loading… | hold on damn |
-| `no_quota_data` | No quota data available. | Nothing. Empty. Dry. |
-| `no_plugins_configured` | No plugins configured | No hangers-on |
-| `no_plugin_selected` | No plugin selected | Pick one, coward |
-| `subscription_fmt(s)` | Subscription: {s} | Paying for: {s} |
-| `resets_fmt(w)` | Resets {w} | Wipes {w} |
-| `menu_open_config` | Open config file | Crack open the config |
-| `menu_themes` | Themes | Paint job |
-| `period_all` | all | the whole damn time |
-| `period_7d` | 7d | last week |
-| `period_30d` | 30d | this month-ish |
+| Field                          | Polite                                   | Goblin                 |
+| ------------------------------ | ---------------------------------------- | ---------------------- |
+| `tab_quota`                    | Quota                                    | Damage                 |
+| `tab_summary`                  | Summary                                  | The Bill               |
+| `tab_models`                   | Models                                   | Slop Vendors           |
+| `tab_plugins`                  | Plugins                                  | Hangers-on             |
+| `tab_forecast`                 | Forecast                                 | Doom                   |
+| `forecast_ok`                  | OK                                       | Fine, whatever         |
+| `forecast_watch`               | Watch                                    | Bruh                   |
+| `forecast_overshoot`           | Overshoot                                | Cooked                 |
+| `forecast_insufficient`        | Insufficient                             | Idk yet                |
+| `forecast_projected_at_reset`  | Projected at reset                       | What you'll burn       |
+| `forecast_will_hit_100_fmt(t)` | Will hit 100% at {t}                     | Goose is cooked at {t} |
+| `forecast_warming_up`          | warming up — check back in a few minutes | give it a minute, jeez |
+| `loading`                      | Loading…                                 | hold on damn           |
+| `no_quota_data`                | No quota data available.                 | Nothing. Empty. Dry.   |
+| `no_plugins_configured`        | No plugins configured                    | No hangers-on          |
+| `no_plugin_selected`           | No plugin selected                       | Pick one, coward       |
+| `subscription_fmt(s)`          | Subscription: {s}                        | Paying for: {s}        |
+| `resets_fmt(w)`                | Resets {w}                               | Wipes {w}              |
+| `menu_open_config`             | Open config file                         | Crack open the config  |
+| `menu_themes`                  | Themes                                   | Paint job              |
+| `period_all`                   | all                                      | the whole damn time    |
+| `period_7d`                    | 7d                                       | last week              |
+| `period_30d`                   | 30d                                      | this month-ish         |
 
 Period pills are tight on width; if `the whole damn time` overflows
 in practice, fall back to `forever` / `week` / `month` — verify in
