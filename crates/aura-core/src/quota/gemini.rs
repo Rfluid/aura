@@ -126,12 +126,14 @@ impl GeminiQuota {
                 used_percentage: None,
                 used_tokens: Some(session_tokens),
                 resets_at: None,
+                length_minutes: None,
             },
             QuotaWindow {
                 label: "Last 7 days".to_string(),
                 used_percentage: None,
                 used_tokens: Some(seven_day_tokens),
                 resets_at: None,
+                length_minutes: None,
             },
         ];
 

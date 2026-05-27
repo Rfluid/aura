@@ -277,6 +277,7 @@ impl QuotaApi {
                 used_percentage: None,
                 used_tokens: Some(five_hour),
                 resets_at: Some(next_five_hour_reset(now)),
+                length_minutes: None,
             });
         }
         windows.push(QuotaWindow {
@@ -284,6 +285,7 @@ impl QuotaApi {
             used_percentage: None,
             used_tokens: Some(seven_day),
             resets_at: Some(next_weekly_reset(now)),
+            length_minutes: None,
         });
 
         Ok(QuotaSnapshot {
@@ -298,11 +300,21 @@ impl QuotaApi {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn api_window(label: &str, w: &RawWindow) -> QuotaWindow {
+    // Claude Code's `/api/oauth/usage` doesn't expose window lengths, so we
+    // hardcode the closed set of windows the API actually returns.
+    let length_minutes = match label {
+        "Current session" => Some(5 * 60),
+        "Current week (all models)" | "Current week (Opus only)" | "Current week (Sonnet only)" => {
+            Some(7 * 24 * 60)
+        }
+        _ => None,
+    };
     QuotaWindow {
         label: label.to_string(),
         used_percentage: w.percentage(),
         used_tokens: None,
         resets_at: w.resets_at().and_then(parse_ts),
+        length_minutes,
     }
 }
 

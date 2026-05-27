@@ -7,11 +7,13 @@
 
 mod api;
 mod codex;
+pub mod forecast;
 mod gemini;
 mod oauth;
 
 pub use api::{QuotaApi, QuotaSource};
 pub use codex::CodexQuota;
+pub use forecast::{forecast, ForecastSnapshot, ForecastStatus, ForecastWindow};
 pub use gemini::GeminiQuota;
 
 use chrono::{DateTime, Utc};
@@ -26,6 +28,12 @@ pub struct QuotaWindow {
     /// Absolute input+output tokens used in the window (may be approximate).
     pub used_tokens: Option<u64>,
     pub resets_at: Option<DateTime<Utc>>,
+    /// Total length of this window. Forecasts use it to derive `started_at`
+    /// from `resets_at`. `None` for backends that don't expose it (e.g. the
+    /// local-fallback estimator); such windows are skipped by the Forecast
+    /// tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<u32>,
 }
 
 /// A snapshot of the user's current quota state.
