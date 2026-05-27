@@ -887,10 +887,11 @@ impl AuraView {
         row.child(brand).child(actions).into_any_element()
     }
 
-    /// The "Update available · vX.Y.Z" chip rendered in the header. Two
-    /// click targets: the label opens the README's updating section; the
-    /// trailing "×" persists a per-version dismissal so the chip vanishes
-    /// until the next release.
+    /// The "Update available · vX.Y.Z | ×" chip rendered in the header. A
+    /// single rounded container holds two click targets separated by a
+    /// vertical divider: the label opens the README's updating section,
+    /// and the trailing "×" persists a per-version dismissal so the chip
+    /// vanishes until the next release.
     fn render_update_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(info) = &self.update else {
             return div().into_any_element();
@@ -900,6 +901,7 @@ impl AuraView {
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;
         let surface_hi = self.theme.colors.surface_hi;
+        let border = self.theme.colors.border;
         let label = (lex.update_available_fmt)(&info.latest.to_string());
 
         let label_btn = div()
@@ -909,23 +911,23 @@ impl AuraView {
             .items_center()
             .px_2()
             .py_0p5()
-            .rounded_md()
+            .rounded_l_md()
             .text_xs()
             .text_color(rgb(text))
-            .bg(rgb(Theme::blend(accent, self.theme.colors.bg, 0.75)))
             .hover(move |d| d.bg(rgb(surface_hi)))
             .child(SharedString::from(label))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_update_instructions(cx)));
+
+        let divider = div().w(px(1.0)).h(px(14.0)).bg(rgb(border));
 
         let dismiss_btn = div()
             .id("update-dismiss")
             .flex()
             .items_center()
             .justify_center()
-            .w(px(18.0))
-            .h(px(18.0))
-            .ml_1()
-            .rounded_md()
+            .h_full()
+            .w(px(20.0))
+            .rounded_r_md()
             .text_xs()
             .text_color(rgb(text_dim))
             .hover(move |d| d.bg(rgb(surface_hi)).text_color(rgb(text)))
@@ -936,7 +938,10 @@ impl AuraView {
             .flex()
             .flex_row()
             .items_center()
+            .rounded_md()
+            .bg(rgb(Theme::blend(accent, self.theme.colors.bg, 0.75)))
             .child(label_btn)
+            .child(divider)
             .child(dismiss_btn)
             .into_any_element()
     }
