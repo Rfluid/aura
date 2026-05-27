@@ -5,10 +5,10 @@ version: 0.1.0
 last_updated: 2026-05-27
 last_verified: 2026-05-27
 source_refs:
-  - crates/aura-core/src/quota/mod.rs
-  - crates/aura-core/src/quota/api.rs
-  - crates/aura-core/src/reader/mod.rs
-  - crates/aura/src/app.rs
+    - crates/aura-core/src/quota/mod.rs
+    - crates/aura-core/src/quota/api.rs
+    - crates/aura-core/src/reader/mod.rs
+    - crates/aura/src/app.rs
 owner: "@rfluid"
 tags: [forecast, quota, roadmap, design]
 ---
@@ -217,10 +217,10 @@ can add a 60s tick later.
 - Wire up `Forecast` tab and `render_forecast()`.
 - Hook into `RefreshResult` / `do_refresh()`.
 - Tests in `crates/aura-core/src/quota/forecast.rs`:
-  - linear extrapolation at 25%, 50%, 75% elapsed
-  - `Insufficient` when elapsed < 5%
-  - `Overshoot` + `overshoot_at` correctness
-  - empty `QuotaSnapshot` → empty `ForecastSnapshot` (no panic)
+    - linear extrapolation at 25%, 50%, 75% elapsed
+    - `Insufficient` when elapsed < 5%
+    - `Overshoot` + `overshoot_at` correctness
+    - empty `QuotaSnapshot` → empty `ForecastSnapshot` (no panic)
 
 ### Phase 2 — Codex
 
