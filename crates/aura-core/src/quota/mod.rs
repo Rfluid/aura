@@ -7,6 +7,7 @@
 
 mod api;
 mod codex;
+mod codex_oauth;
 pub mod forecast;
 mod gemini;
 mod oauth;
