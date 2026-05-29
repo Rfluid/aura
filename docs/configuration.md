@@ -143,16 +143,21 @@ so most people never need to set this. Change it if your taskbar/panel is
 somewhere other than your platform's default (e.g. a Linux desktop with a
 **top** panel → `anchor = "top"`).
 
-**Linux note:** on **X11**, `anchor = "bottom"` repositions live — Aura issues
-an X11 `ConfigureWindow` against its own window after each resize, which KWin
-honours, so the modal hugs the bottom taskbar as it shrinks. On **Wayland**
-the protocol forbids clients from positioning their own toplevels, so `bottom`
-only applies at *open*; as the modal shrinks it grows downward from there
-rather than hugging the taskbar. For exact placement on KDE Plasma / Wayland,
-use a KWin window rule (see
+**Linux note:** on **X11**, `anchor = "bottom"` repositions live — after each
+resize Aura asks the window manager to move the modal via an EWMH
+`_NET_MOVERESIZE_WINDOW` request (a plain `ConfigureWindow` is ignored by KWin
+for a managed top-level), so the modal hugs the bottom taskbar as it
+grows/shrinks. On **Wayland** the protocol forbids clients from positioning
+their own toplevels, so `bottom` only applies at *open*; as the modal shrinks
+it grows downward from there rather than hugging the taskbar. For exact
+placement on KDE Plasma / Wayland, use a KWin window rule (see
 [Modal placement on Wayland](../README.md#modal-placement-on-wayland) in the
 README). We currently detect only *bottom* panel reservations, so `top` on a
 Linux top-panel setup approximates by sitting at the very top of the display.
+
+> **KDE Plasma:** if the modal *visibly stretches/animates* over ~0.5s as it
+> resizes, that is KWin's Morphing Popups effect, not Aura — see
+> [Troubleshooting: modal stretches on resize](troubleshooting/modal-stretches-on-resize-kde.md).
 
 ## Agent kinds
 
