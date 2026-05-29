@@ -88,7 +88,20 @@ pub struct PluginConfig {
 pub struct DisplayConfig {
     /// Which period to show by default: `"all"`, `"7d"`, or `"30d"`.
     pub default_period: String,
-    /// Modal anchor relative to the tray icon: `"auto"`, `"top"`, `"bottom"`.
+    /// How the modal anchors as it auto-fits its content height:
+    ///
+    /// - `"none"`   — open at the platform's natural tray corner and let the
+    ///   window grow downward from there; never reposition after a resize.
+    ///   Safe on Wayland, where the compositor owns window placement.
+    /// - `"bottom"` — pin the modal's bottom edge above a bottom taskbar so it
+    ///   grows *upward* (the tray-popup feel next to a bottom tray). Needs an
+    ///   active post-resize move (see `placement::Anchor`).
+    /// - `"top"`    — pin the top edge just below a top panel / menu bar and
+    ///   grow downward.
+    ///
+    /// The default is OS-specific (see [`default_anchor`]): `"bottom"` on
+    /// Windows (bottom taskbar), `"none"` on macOS and Linux. Unrecognised
+    /// values (including the legacy `"auto"`) fall back to the per-OS default.
     pub anchor: String,
     /// Display order for plugin pills. Plugins whose display `name`
     /// appears here render in the listed order; anything not named
@@ -145,11 +158,32 @@ pub struct DisplayConfig {
     pub goblin_mode: bool,
 }
 
+/// Per-OS default for [`DisplayConfig::anchor`]. Windows ships with a bottom
+/// taskbar, so the modal grows upward off the tray (`"bottom"`); macOS (menu
+/// bar at the top) and Linux (compositor owns placement) open at their natural
+/// corner without an active reposition (`"none"`).
+///
+/// Evaluated at compile time for the target this binary is built for, so the
+/// value baked into `default_config()` — and thus written to disk by the
+/// installer's `aura setup-config` and on first launch — is already correct
+/// for the platform. No install-time OS detection is needed in the shell
+/// scripts.
+fn default_anchor() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        "bottom".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "none".to_string()
+    }
+}
+
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             default_period: "all".to_string(),
-            anchor: "auto".to_string(),
+            anchor: default_anchor(),
             plugin_order: Vec::new(),
             show_in_app_switcher: false,
             dismiss_on_focus_loss: true,
@@ -798,7 +832,8 @@ kind = "claude-code"
     fn display_config_defaults_on_missing_fields() {
         let cfg: AppConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.display.default_period, "all");
-        assert_eq!(cfg.display.anchor, "auto");
+        // `anchor` defaults per-OS (see `default_anchor`).
+        assert_eq!(cfg.display.anchor, default_anchor());
     }
 
     #[test]

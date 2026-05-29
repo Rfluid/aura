@@ -81,10 +81,35 @@ default_period = "today"
 # [] to keep the default ordering.
 plugin_order = ["Hello", "RTK Gains"]
 
-# Where to anchor the modal relative to the widget click position
-# Options: "auto" | "top" | "bottom" | "left" | "right"
-# "auto" lets Aura pick based on available screen space
-anchor = "auto"
+# How the modal anchors as it auto-fits its content height.
+# Options:
+#   "none"   — open at the platform's natural tray corner and grow downward
+#              from there; never reposition after a resize. Safe on Wayland,
+#              where the compositor owns window placement.
+#   "bottom" — pin the bottom edge above a bottom taskbar so the modal grows
+#              *upward* (the tray-popup feel next to a bottom tray). Needs an
+#              active window move after each resize: supported on Windows,
+#              macOS, and Linux/X11. On Linux/Wayland it only applies at open
+#              (the compositor owns placement — see note below).
+#   "top"    — pin the top edge just below a top panel / menu bar and grow
+#              downward.
+# Default is OS-specific and written for you at install: "bottom" on Windows
+# (bottom taskbar), "none" on macOS and Linux. Unrecognised values (including
+# the legacy "auto") fall back to the per-OS default.
+anchor = "bottom"
+
+# Show OS-native window chrome (title bar + min/max/close) and let the user
+# resize the modal by dragging its edges. Default false — Aura behaves like a
+# fixed-width tray popup that auto-fits its height. Turning this on also
+# disables the auto-fit (so a dragged size sticks) and puts the modal in the
+# taskbar / alt-tab list.
+window_chrome = false
+
+# Optional upper bound (logical px) on the auto-fit height. The modal is
+# already capped at the screen's available work area; this imposes a tighter
+# ceiling. Omit (or leave unset) for "only the work-area cap applies".
+# Ignored when window_chrome = true (auto-fit is off then).
+# max_height = 500
 
 # Auto-close the modal when it loses focus (click outside, switch app).
 # Default true — matches typical menu-bar / tray-popup behaviour. Set
@@ -101,6 +126,33 @@ dismiss_on_focus_loss = true
 # takes effect without restarting the service.
 show_in_app_switcher = false
 ```
+
+### Modal anchoring (`anchor`)
+
+`anchor` controls which edge of the modal stays put as it auto-fits its
+content height:
+
+| Value | Behavior | Default on |
+|---|---|---|
+| `none` | Opens at the platform's natural tray corner and grows downward; never repositioned. | macOS, Linux |
+| `bottom` | Bottom edge pinned above a bottom taskbar; grows upward. | Windows |
+| `top` | Top edge pinned just below a top panel / menu bar; grows downward. | — |
+
+The right default is written to your config at install time based on your OS,
+so most people never need to set this. Change it if your taskbar/panel is
+somewhere other than your platform's default (e.g. a Linux desktop with a
+**top** panel → `anchor = "top"`).
+
+**Linux note:** on **X11**, `anchor = "bottom"` repositions live — Aura issues
+an X11 `ConfigureWindow` against its own window after each resize, which KWin
+honours, so the modal hugs the bottom taskbar as it shrinks. On **Wayland**
+the protocol forbids clients from positioning their own toplevels, so `bottom`
+only applies at *open*; as the modal shrinks it grows downward from there
+rather than hugging the taskbar. For exact placement on KDE Plasma / Wayland,
+use a KWin window rule (see
+[Modal placement on Wayland](../README.md#modal-placement-on-wayland) in the
+README). We currently detect only *bottom* panel reservations, so `top` on a
+Linux top-panel setup approximates by sitting at the very top of the display.
 
 ## Agent kinds
 

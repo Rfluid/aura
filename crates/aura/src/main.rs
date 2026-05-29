@@ -403,7 +403,8 @@ fn toggle_window(
         AppState::default()
     });
 
-    let bounds = placement::modal_bounds(cx, hint);
+    let anchor = placement::Anchor::from_config(&config.display.anchor);
+    let bounds = placement::modal_bounds(cx, hint, anchor);
     // `display.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
     // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.
