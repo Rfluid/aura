@@ -43,6 +43,11 @@ toml.workspace          = true
 # point; `async-io` is the smol-style backend it uses under the hood
 # (lighter than the default `tokio` feature).
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+# Reposition the modal after the auto-fit resize on X11 (`anchor = "bottom"`).
+# GPUI exposes no move API, so we issue a ConfigureWindow ourselves against the
+# XCB window id (see platform::set_window_origin). Already in the tree via gpui.
+# No-op on Wayland, where the compositor owns surface placement.
+x11rb = "0.13"
 
 [target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }

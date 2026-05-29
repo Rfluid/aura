@@ -252,26 +252,32 @@ pub fn raise_window_to_floating(window: &mut gpui::Window) {
 }
 
 // ── Window repositioning after auto-fit resize ──────────────────────────────
+//
+// GPUI 0.2's `Window::resize` issues `SetWindowPos(.., SWP_NOMOVE)`, which
+// keeps the window's top-left fixed and grows/shrinks the bottom. For an
+// `Anchor::Bottom` modal we want the opposite — the bottom edge should stay
+// flush with the taskbar — so after the resize we move the top-left to the
+// freshly computed `placement::modal_origin`.
+//
+// `desired_origin` MUST be computed absolutely from the work area, never read
+// back from the window's current position: that absoluteness is what keeps
+// repeated calls idempotent instead of letting the window walk across the
+// screen (issue #27).
+//
+// Two entry points, picked by the caller's `#[cfg]`:
+//   - Windows: `reposition_after_resize` — also carries the open-time DWM
+//     uncloak, which must fire after the resize in *every* anchor mode.
+//   - macOS / Linux: `set_window_origin` — a plain move, called only when
+//     there's a target (`Anchor::Bottom`).
 
-/// Move the modal so it stays anchored after the auto-fit `Window::resize`
-/// shrinks it to the measured content height, and lift the open-time DWM
-/// cloak once it's in place.
+/// Windows: move the modal to `desired_origin` (when `Some`) and lift the
+/// open-time DWM cloak, both after the auto-fit resize.
 ///
-/// GPUI 0.2's `Window::resize` issues `SetWindowPos(.., SWP_NOMOVE)`, which
-/// keeps the window's top-left fixed and grows/shrinks the bottom. For a
-/// bottom-anchored tray popup we want the opposite — the bottom edge should
-/// stay flush with the taskbar — so we reposition the top-left to
-/// `desired_origin` after the resize.
-///
-/// `desired_origin` MUST be computed absolutely from the work area
-/// ([`crate::placement::modal_origin`]), never read back from the window's
-/// current position: a `None` means "no display info, skip the move". This
-/// absoluteness is what keeps repeated calls idempotent instead of letting
-/// the window walk across the screen (issue #27).
-///
-/// Ordering: `resize` (the caller) and the `SetWindowPos` + uncloak here both
-/// run on the `ForegroundExecutor` (FIFO), so DWM only ever composites the
-/// final state — the user never sees the intermediate size or position.
+/// `desired_origin` is `None` for non-repositioning anchors (`none`/`top`) or
+/// when no display info is available; in that case the window keeps the
+/// top-left GPUI's resize left it and we only uncloak. `resize` (the caller)
+/// and the `SetWindowPos` + uncloak here all run on the `ForegroundExecutor`
+/// (FIFO), so DWM only ever composites the final state — no flash, no jump.
 #[cfg(target_os = "windows")]
 pub(crate) fn reposition_after_resize(
     window: &mut gpui::Window,
@@ -280,36 +286,36 @@ pub(crate) fn reposition_after_resize(
     uncloak: &std::rc::Rc<std::cell::Cell<bool>>,
 ) {
     let scale = window.scale_factor();
-    let Some(origin) = desired_origin else {
-        // No display info — there's nothing to anchor against, so just lift
-        // the cloak synchronously and bail (the window stays where GPUI's
-        // resize left it).
-        if uncloak.replace(false) {
-            crate::win32_set_cloak(window, false);
-        }
-        return;
-    };
-    let x_phys = (f32::from(origin.x) * scale).round() as i32;
-    let y_phys = (f32::from(origin.y) * scale).round() as i32;
-    let hwnd_val = window.hwnd();
+    let move_to = desired_origin.map(|origin| {
+        (
+            (f32::from(origin.x) * scale).round() as i32,
+            (f32::from(origin.y) * scale).round() as i32,
+        )
+    });
     let do_uncloak = uncloak.replace(false);
+    if move_to.is_none() && !do_uncloak {
+        return;
+    }
+    let hwnd_val = window.hwnd();
 
     cx.spawn(async move |_cx| {
         use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-        };
         let hwnd = HWND(hwnd_val as *mut _);
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                x_phys,
-                y_phys,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+        if let Some((x_phys, y_phys)) = move_to {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    x_phys,
+                    y_phys,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
         }
         if do_uncloak {
             use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
@@ -325,6 +331,137 @@ pub(crate) fn reposition_after_resize(
         }
     })
     .detach();
+}
+
+/// macOS: move the modal's top-left to `origin` (logical points, top-left
+/// origin, Y down — the space `placement` works in). Used for
+/// `Anchor::Bottom`, which on macOS is an explicit non-default choice (the
+/// tray lives in the menu bar up top).
+///
+/// AppKit uses a bottom-left screen origin with Y measured upward, so we flip
+/// against the main screen's height and call `setFrameTopLeftPoint:`.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_window_origin(
+    window: &mut gpui::Window,
+    _cx: &mut gpui::App,
+    origin: gpui::Point<gpui::Pixels>,
+) {
+    use cocoa::foundation::{NSPoint, NSRect};
+    use objc::{class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(wh) = <gpui::Window as HasWindowHandle>::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(h) = wh.as_raw() else {
+        return;
+    };
+    unsafe {
+        let ns_view = h.ns_view.as_ptr() as cocoa::base::id;
+        let ns_window: cocoa::base::id = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let screen: cocoa::base::id = msg_send![class!(NSScreen), mainScreen];
+        if screen.is_null() {
+            return;
+        }
+        let frame: NSRect = msg_send![screen, frame];
+        // Flip GPUI's top-down Y into AppKit's bottom-up screen Y.
+        let top_left = NSPoint::new(
+            f64::from(f32::from(origin.x)),
+            frame.size.height - f64::from(f32::from(origin.y)),
+        );
+        let _: () = msg_send![ns_window, setFrameTopLeftPoint: top_left];
+    }
+}
+
+/// Linux: move the modal's top-left to `origin` (logical points). GPUI 0.2
+/// exposes no move API, so we issue an X11 `ConfigureWindow` ourselves against
+/// the XCB window id.
+///
+/// This works on **X11** (KWin honours position requests for our notification-
+/// type popup, the same way it honours GPUI's open position). On **Wayland**
+/// the window handle is a Wayland surface, not an XCB id — the match below
+/// falls through and we log the limitation once, because the Wayland protocol
+/// forbids clients from positioning their own toplevels (use a KWin window
+/// rule instead; see docs/configuration.md).
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+pub(crate) fn set_window_origin(
+    window: &mut gpui::Window,
+    _cx: &mut gpui::App,
+    origin: gpui::Point<gpui::Pixels>,
+) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let scale = window.scale_factor();
+    let Ok(wh) = <gpui::Window as HasWindowHandle>::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Xcb(h) = wh.as_raw() else {
+        // Wayland (or some other backend) — can't reposition. Warn once.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "aura: display.anchor = \"bottom\" has no live reposition on \
+                 Wayland (the compositor owns window placement); the modal \
+                 opens bottom-anchored but grows downward. See \
+                 docs/configuration.md."
+            );
+        });
+        return;
+    };
+
+    // X11 window coordinates are physical, root-relative pixels; GPUI gives us
+    // logical points, so scale up (scale is 1.0 on most X11/KDE setups).
+    let x = (f32::from(origin.x) * scale).round() as i32;
+    let y = (f32::from(origin.y) * scale).round() as i32;
+    let xid = h.window.get();
+
+    // Fresh short-lived connection: repositioning only fires when the content
+    // height changes (tab switch / refresh), so the handshake cost is
+    // negligible and we avoid caching a connection that could go stale. The
+    // XID is server-global, so our own connection can address it.
+    let Ok((conn, screen_num)) = x11rb::connect(None) else {
+        return;
+    };
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask,
+    };
+
+    // A plain ConfigureWindow moves *override-redirect* / unmanaged windows
+    // (and is honoured by some minimal WMs), but a full window manager like
+    // KWin owns the geometry of managed top-levels and silently ignores a
+    // client's attempt to move itself this way after the window is mapped.
+    // It still honours it for the unmanaged case, so issue it regardless.
+    let _ = conn.configure_window(xid, &ConfigureWindowAux::new().x(x).y(y));
+
+    // The EWMH-blessed way for a client to move its *own managed* window:
+    // post a `_NET_MOVERESIZE_WINDOW` ClientMessage to the root with
+    // SubstructureRedirect set, which the WM (KWin, Mutter, …) processes and
+    // applies. This is what actually makes `anchor = "bottom"` hug the
+    // taskbar under KWin. data = [flags, x, y, w, h]; the flags carry the
+    // gravity (0 = use the window's win-gravity), which axes are present
+    // (bits 8/9 = x/y), and the source indication (bit 12 = normal app).
+    if let Ok(cookie) = conn.intern_atom(false, b"_NET_MOVERESIZE_WINDOW") {
+        if let Ok(reply) = cookie.reply() {
+            const X_PRESENT: u32 = 1 << 8;
+            const Y_PRESENT: u32 = 1 << 9;
+            const SOURCE_APP: u32 = 1 << 12;
+            let flags = X_PRESENT | Y_PRESENT | SOURCE_APP;
+            let root = conn.setup().roots[screen_num].root;
+            let event =
+                ClientMessageEvent::new(32, xid, reply.atom, [flags, x as u32, y as u32, 0, 0]);
+            let _ = conn.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            );
+        }
+    }
+    let _ = conn.flush();
 }
 
 // ── Open with system handler (file or URL) ──────────────────────────────────

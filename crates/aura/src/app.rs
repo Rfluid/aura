@@ -660,6 +660,9 @@ impl Render for AuraView {
         // otherwise snap the height back every layout pass.
         let auto_fit = !self.config.display.window_chrome;
         let user_max_height = self.config.display.max_height;
+        // How the modal re-anchors after the auto-fit resize (see
+        // `placement::Anchor`). Only `Bottom` triggers an active move.
+        let anchor = crate::placement::Anchor::from_config(&self.config.display.anchor);
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
@@ -750,30 +753,36 @@ impl Render for AuraView {
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
                     window.resize(new_size);
-                    // GPUI's resize() uses SWP_NOMOVE: it keeps the window's
-                    // top-left fixed and moves the bottom. A bottom-anchored
-                    // tray popup wants the opposite, so on Windows we move the
-                    // window back so its bottom hugs the taskbar (and lift the
-                    // open-time cloak). See platform::reposition_after_resize.
-                    #[cfg(target_os = "windows")]
-                    {
-                        // Desired top-left, computed *absolutely* from the work
-                        // area for the new content height — never read back from
-                        // the window's current position, which is what stops the
-                        // modal walking across the screen (issue #27).
-                        let desired = _cx.primary_display().map(|display| {
-                            let from_work = crate::placement::modal_origin(
+                    // GPUI's resize() keeps the window's top-left fixed and
+                    // moves the bottom. For a bottom-anchored modal we want the
+                    // opposite — the bottom edge should stay pinned to the
+                    // taskbar — so compute the desired top-left *absolutely*
+                    // from the work area (never read back from the live origin,
+                    // which is what made the window walk across the screen,
+                    // issue #27) and move there. `None`/`top` anchors don't
+                    // reposition: GPUI's grow-downward is already what they want.
+                    let desired = if anchor.needs_reposition() {
+                        _cx.primary_display().map(|display| {
+                            crate::placement::modal_origin(
                                 display.bounds(),
                                 None,
                                 f32::from(new_size.height),
-                            );
-                            // NOTE(#27): X is still taken from the live origin
-                            // here, which is the drift bug. The behavioural fix
-                            // is to use `from_work.x` instead — kept separate so
-                            // this refactor stays behaviour-preserving.
-                            gpui::point(window.bounds().origin.x, from_work.y)
-                        });
-                        crate::platform::reposition_after_resize(window, _cx, desired, &uncloak);
+                                anchor,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+
+                    // On Windows the move also carries the open-time DWM
+                    // uncloak, which must fire after the resize regardless of
+                    // anchor (the window is cloaked on open in every anchor
+                    // mode). Elsewhere we just move when there's a target.
+                    #[cfg(target_os = "windows")]
+                    crate::platform::reposition_after_resize(window, _cx, desired, &uncloak);
+                    #[cfg(not(target_os = "windows"))]
+                    if let Some(origin) = desired {
+                        crate::platform::set_window_origin(window, _cx, origin);
                     }
                 });
             });

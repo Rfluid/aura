@@ -506,6 +506,7 @@ dependencies = [
  "tray-icon",
  "ureq",
  "windows 0.61.3",
+ "x11rb",
 ]
 
 [[package]]
