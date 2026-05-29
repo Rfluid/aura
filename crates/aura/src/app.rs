@@ -23,7 +23,9 @@ use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
 /// `on_children_prepainted` in `render`), so only the height is dynamic.
-const WINDOW_WIDTH: f32 = 520.0;
+/// Aliased to the single source of truth in `placement` so the open-time
+/// bounds and the auto-fit resize can never disagree on width.
+const WINDOW_WIDTH: f32 = crate::placement::MODAL_W;
 
 /// Braille spinner frames. Matches the `cli-spinners` "dots" preset
 /// (see `.design/loading.md`). 10 frames, advanced every 80ms while
@@ -748,67 +750,30 @@ impl Render for AuraView {
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
                     window.resize(new_size);
-                    // On Windows: GPUI's resize() uses SWP_NOMOVE, which keeps
-                    // the window's top-left origin fixed and moves the bottom.
-                    // We want the bottom to stay flush with the taskbar, so we
-                    // reposition to `work_bottom - content_h - gap` after the
-                    // resize.  Both ops are spawned on the ForegroundExecutor
-                    // (FIFO): resize task runs first, then reposition+uncloak,
-                    // so DWM sees only the final state at the next vsync.
+                    // GPUI's resize() uses SWP_NOMOVE: it keeps the window's
+                    // top-left fixed and moves the bottom. A bottom-anchored
+                    // tray popup wants the opposite, so on Windows we move the
+                    // window back so its bottom hugs the taskbar (and lift the
+                    // open-time cloak). See platform::reposition_after_resize.
                     #[cfg(target_os = "windows")]
                     {
-                        let scale = window.scale_factor();
-                        let cur_x_phys =
-                            (f32::from(window.bounds().origin.x) * scale).round() as i32;
-                        let target_y_phys = if let Some(display) = _cx.primary_display() {
-                            let db = display.bounds();
-                            let full_bottom = f32::from(db.origin.y + db.size.height);
-                            let work_bottom = crate::work_area::available_bottom(db)
-                                .unwrap_or(full_bottom - 120.0);
-                            let y = work_bottom - f32::from(new_size.height) - 8.0;
-                            (y * scale).round() as i32
-                        } else {
-                            // No display info — fall back to sync uncloak only.
-                            if uncloak.replace(false) {
-                                crate::win32_set_cloak(window, false);
-                            }
-                            return;
-                        };
-                        let hwnd_val = window.hwnd();
-                        let do_uncloak = uncloak.replace(false);
-                        _cx.spawn(async move |_cx| {
-                            use windows::Win32::Foundation::HWND;
-                            use windows::Win32::UI::WindowsAndMessaging::{
-                                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-                            };
-                            let hwnd = HWND(hwnd_val as *mut _);
-                            unsafe {
-                                let _ = SetWindowPos(
-                                    hwnd,
-                                    None,
-                                    cur_x_phys,
-                                    target_y_phys,
-                                    0,
-                                    0,
-                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                                );
-                            }
-                            if do_uncloak {
-                                use windows::Win32::Graphics::Dwm::{
-                                    DwmSetWindowAttribute, DWMWA_CLOAK,
-                                };
-                                let val: i32 = 0;
-                                unsafe {
-                                    let _ = DwmSetWindowAttribute(
-                                        hwnd,
-                                        DWMWA_CLOAK,
-                                        std::ptr::addr_of!(val).cast(),
-                                        std::mem::size_of::<i32>() as u32,
-                                    );
-                                }
-                            }
-                        })
-                        .detach();
+                        // Desired top-left, computed *absolutely* from the work
+                        // area for the new content height — never read back from
+                        // the window's current position, which is what stops the
+                        // modal walking across the screen (issue #27).
+                        let desired = _cx.primary_display().map(|display| {
+                            let from_work = crate::placement::modal_origin(
+                                display.bounds(),
+                                None,
+                                f32::from(new_size.height),
+                            );
+                            // NOTE(#27): X is still taken from the live origin
+                            // here, which is the drift bug. The behavioural fix
+                            // is to use `from_work.x` instead — kept separate so
+                            // this refactor stays behaviour-preserving.
+                            gpui::point(window.bounds().origin.x, from_work.y)
+                        });
+                        crate::platform::reposition_after_resize(window, _cx, desired, &uncloak);
                     }
                 });
             });
