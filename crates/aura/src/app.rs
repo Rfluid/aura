@@ -749,18 +749,20 @@ impl Render for AuraView {
                 }
                 last_height.set(measured);
                 let new_size = size(px(WINDOW_WIDTH), measured);
+                // Captured for the direction-aware resize/move ordering below
+                // (only the non-Windows bottom-anchor path uses it).
+                #[cfg(not(target_os = "windows"))]
+                let prev_height = last;
                 #[cfg(target_os = "windows")]
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
-                    window.resize(new_size);
-                    // GPUI's resize() keeps the window's top-left fixed and
-                    // moves the bottom. For a bottom-anchored modal we want the
-                    // opposite — the bottom edge should stay pinned to the
-                    // taskbar — so compute the desired top-left *absolutely*
-                    // from the work area (never read back from the live origin,
-                    // which is what made the window walk across the screen,
-                    // issue #27) and move there. `None`/`top` anchors don't
-                    // reposition: GPUI's grow-downward is already what they want.
+                    // For a bottom-anchored modal we want the *bottom* edge
+                    // pinned to the taskbar, so compute the desired top-left
+                    // *absolutely* from the work area (never read back from the
+                    // live origin, which is what made the window walk across the
+                    // screen, issue #27). `None`/`top` anchors don't reposition:
+                    // GPUI's grow-downward-from-a-fixed-top is already what they
+                    // want.
                     let desired = if anchor.needs_reposition() {
                         _cx.primary_display().map(|display| {
                             crate::placement::modal_origin(
@@ -774,15 +776,38 @@ impl Render for AuraView {
                         None
                     };
 
-                    // On Windows the move also carries the open-time DWM
-                    // uncloak, which must fire after the resize regardless of
-                    // anchor (the window is cloaked on open in every anchor
-                    // mode). Elsewhere we just move when there's a target.
+                    // On Windows GPUI's resize() keeps the top-left fixed; we
+                    // then move + lift the open-time DWM cloak, which must fire
+                    // after the resize regardless of anchor (the window is
+                    // cloaked on open in every anchor mode).
                     #[cfg(target_os = "windows")]
-                    crate::platform::reposition_after_resize(window, _cx, desired, &uncloak);
+                    {
+                        window.resize(new_size);
+                        crate::platform::reposition_after_resize(window, _cx, desired, &uncloak);
+                    }
+                    // Elsewhere, the resize and the bottom-anchor move are two
+                    // separate primitives (GPUI's resize() keeps the top fixed
+                    // and grows the bottom; an X11/EWMH move repositions the
+                    // top-left). We order them by direction so the window never
+                    // leaves the screen mid-transition — that off-screen
+                    // excursion is what looked like a slow, stretchy grow:
+                    //   • growing  → move the top *up* first, then grow the
+                    //                bottom down to meet the taskbar (never
+                    //                bulges past it).
+                    //   • shrinking → shrink the bottom up first (lifts off the
+                    //                taskbar), then slide down to re-pin.
+                    // `None`/`top` anchors just resize (grow downward).
                     #[cfg(not(target_os = "windows"))]
-                    if let Some(origin) = desired {
-                        crate::platform::set_window_origin(window, _cx, origin);
+                    match desired {
+                        Some(origin) if new_size.height > prev_height => {
+                            crate::platform::set_window_origin(window, _cx, origin);
+                            window.resize(new_size);
+                        }
+                        Some(origin) => {
+                            window.resize(new_size);
+                            crate::platform::set_window_origin(window, _cx, origin);
+                        }
+                        None => window.resize(new_size),
                     }
                 });
             });

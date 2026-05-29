@@ -377,8 +377,8 @@ pub(crate) fn set_window_origin(
 }
 
 /// Linux: move the modal's top-left to `origin` (logical points). GPUI 0.2
-/// exposes no move API, so we issue an X11 `ConfigureWindow` ourselves against
-/// the XCB window id.
+/// exposes no move API, so we issue an X11 move ourselves against the XCB
+/// window id.
 ///
 /// This works on **X11** (KWin honours position requests for our notification-
 /// type popup, the same way it honours GPUI's open position). On **Wayland**
@@ -386,6 +386,13 @@ pub(crate) fn set_window_origin(
 /// falls through and we log the limitation once, because the Wayland protocol
 /// forbids clients from positioning their own toplevels (use a KWin window
 /// rule instead; see docs/configuration.md).
+///
+/// This only *moves* the window; the caller is responsible for the resize
+/// (GPUI's `window.resize()`). The two are sequenced by the caller so that the
+/// window never crosses the taskbar mid-transition (see the call site in
+/// `app.rs`): a combined move+resize via `_NET_MOVERESIZE_WINDOW` was tried and
+/// reverted because KWin honours that message's *move* bits but silently drops
+/// its *size* bits, leaving the modal stuck at its initial height.
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub(crate) fn set_window_origin(
     window: &mut gpui::Window,
