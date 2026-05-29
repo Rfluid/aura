@@ -10,8 +10,9 @@
                    release zip for the host, verify its checksum, install.
 
     Auto-detects the mode (source when run from a checkout with cargo on
-    PATH, release otherwise). Override with $env:AURA_INSTALL_MODE.
-    Pin a version with $env:AURA_VERSION = 'v1.2.3'.
+    PATH, release otherwise). Override with -Mode or $env:AURA_INSTALL_MODE.
+    Build a source checkout from a branch with -Branch or $env:AURA_BRANCH.
+    Pin a version with -Version or $env:AURA_VERSION = 'v1.2.3'.
 
     Source mode automatically installs missing build prerequisites via winget:
       - Visual Studio 2022 Build Tools (MSVC linker + headers)
@@ -32,6 +33,14 @@
     Keep in sync with install.sh.
     ASCII-only source: avoids PowerShell 5.1 UTF-8-without-BOM parse errors.
 #>
+
+param(
+    [string]$Mode,
+
+    [string]$Branch,
+
+    [string]$Version
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -68,7 +77,27 @@ if ($ScriptPath) {
     $RepoRoot  = $null
 }
 
-$Mode = $env:AURA_INSTALL_MODE
+if (-not $Mode) { $Mode = $env:AURA_INSTALL_MODE }
+if (-not $Branch) { $Branch = $env:AURA_BRANCH }
+if (-not $Version) { $Version = $env:AURA_VERSION }
+if ($Mode -and $Mode -notin @('source', 'release')) {
+    throw "-Mode must be 'source' or 'release'"
+}
+if (-not $Mode) {
+    if ($Branch -and $Version) {
+        throw "-Branch is for source installs and -Version is for release installs; pass -Mode to disambiguate"
+    } elseif ($Branch) {
+        $Mode = 'source'
+    } elseif ($Version) {
+        $Mode = 'release'
+    }
+}
+if ($Mode -eq 'release' -and $Branch) {
+    throw "-Branch is only supported with -Mode source"
+}
+if ($Mode -eq 'source' -and $Version) {
+    throw "-Version is only supported with -Mode release"
+}
 if (-not $Mode) {
     if ($RepoRoot -and (Test-Path (Join-Path $RepoRoot 'Cargo.toml')) -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
         $Mode = 'source'
@@ -120,6 +149,42 @@ function Test-Sha256 {
     $actual   = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLower()
     if ($expected -ne $actual) {
         throw "SHA256 mismatch for $Asset.zip (expected $expected, got $actual)"
+    }
+}
+
+function Set-SourceBranch {
+    if (-not $Branch) { return }
+    if (-not $RepoRoot -or -not (Test-Path (Join-Path $RepoRoot '.git'))) {
+        throw "-Branch requires source mode from a git checkout"
+    }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "git not found; required by -Branch"
+    }
+
+    Write-Host "> Switching source checkout to $Branch..."
+    Push-Location $RepoRoot
+    try {
+        & git fetch --prune origin $Branch 2>$null
+        $localExists = (& git rev-parse --verify --quiet $Branch) -ne $null
+        if ($localExists) {
+            & git switch $Branch
+        } else {
+            $remoteExists = (& git rev-parse --verify --quiet "origin/$Branch") -ne $null
+            if ($remoteExists) {
+                & git switch --track "origin/$Branch"
+            } else {
+                throw "branch '$Branch' was not found locally or on origin"
+            }
+        }
+        if ($LASTEXITCODE -ne 0) { throw "git switch failed" }
+
+        & git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & git pull --ff-only
+            if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only failed" }
+        }
+    } finally {
+        Pop-Location
     }
 }
 
@@ -288,6 +353,7 @@ if ($Mode -eq 'source') {
     }
 
     Invoke-BuildPrerequisites
+    Set-SourceBranch
 
     Write-Host "> Building Aura (release)..."
     Push-Location $RepoRoot
@@ -300,7 +366,6 @@ if ($Mode -eq 'source') {
     $StageDir = Join-Path $RepoRoot 'target\release'
 }
 else {
-    $Version = $env:AURA_VERSION
     if (-not $Version) {
         Write-Host "> Resolving latest release..."
         $Version = Resolve-LatestVersion
