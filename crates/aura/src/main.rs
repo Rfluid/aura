@@ -6,6 +6,7 @@ mod app;
 mod assets;
 mod cli;
 mod format;
+mod placement;
 mod platform;
 mod runtime;
 mod tray;
@@ -22,7 +23,7 @@ use anyhow::Result;
 use aura_core::{config::AppConfig, state::AppState};
 use clap::Parser;
 use gpui::{
-    div, point, prelude::*, px, size, Application, Bounds, IntoElement, Render, TitlebarOptions,
+    div, prelude::*, px, size, Application, Bounds, IntoElement, Render, TitlebarOptions,
     WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 
@@ -375,69 +376,9 @@ async fn toggle(
         .flatten()
 }
 
-/// Modal dimensions and the gap we leave between its edges and the
-/// screen / panel. Width/height are intentionally fixed — the
-/// `app.rs::on_children_prepainted` resize callback shrinks the window
-/// vertically to fit content (capped at the available work area), so the
-/// initial 640 is just a sensible starting size that lets the first
-/// paint render without thrashing.
-const MODAL_W: f32 = 520.;
-const MODAL_H: f32 = 640.;
-const SCREEN_GAP: f32 = 8.;
-/// Defensive blind reserve for the bottom edge when
-/// [`crate::work_area::available_bottom`] returns `None` (non-KDE,
-/// non-Linux, or parse failure). Matches Strategy A's value so corner
-/// anchoring degrades to "Strategy A + bottom-right placement" instead
-/// of dumping the modal into a taskbar.
-#[cfg(not(target_os = "macos"))]
-const BLIND_BOTTOM_RESERVE: f32 = 120.;
-
-/// Compute where to place the modal window.
-///
-/// **macOS**: the tray icon lives in the menu bar at the top. We anchor the
-/// modal just below the bar, horizontally centred on the icon's X coord
-/// (from `hint`). Falls back to top-right if `hint` is absent.
-///
-/// **Linux / Windows**: anchors to the bottom-right of the available work
-/// area (above the taskbar/panel). Wayland compositors may ignore the
-/// requested origin and centre the window instead; users can override via a
-/// KWin window rule.
-fn compute_modal_bounds(cx: &mut gpui::App, _hint: Option<(i32, i32)>) -> Bounds<gpui::Pixels> {
-    let modal_size = size(px(MODAL_W), px(MODAL_H));
-
-    let Some(display) = cx.primary_display() else {
-        return Bounds::centered(None, modal_size, cx);
-    };
-    let display_bounds = display.bounds();
-
-    let screen_left = f32::from(display_bounds.origin.x);
-    let screen_top = f32::from(display_bounds.origin.y);
-    let screen_right = f32::from(display_bounds.origin.x + display_bounds.size.width);
-
-    #[cfg(target_os = "macos")]
-    {
-        // On macOS the tray sits in the menu bar (~25 pt tall). Place the
-        // modal just below it, horizontally centred on the click position.
-        // GPUI uses top-left origin with Y increasing downward on macOS.
-        const MENU_BAR_H: f32 = 25.0;
-        let icon_x = _hint
-            .map(|(x, _)| x as f32)
-            .unwrap_or(screen_right - MODAL_W / 2.0);
-        let x = (icon_x - MODAL_W / 2.0).clamp(screen_left, screen_right - MODAL_W);
-        let y = screen_top + MENU_BAR_H + SCREEN_GAP;
-        Bounds::new(point(px(x), px(y)), modal_size)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let screen_bottom_full = f32::from(display_bounds.origin.y + display_bounds.size.height);
-        let work_bottom = crate::work_area::available_bottom(display_bounds)
-            .unwrap_or(screen_bottom_full - BLIND_BOTTOM_RESERVE);
-        let x = (screen_right - MODAL_W - SCREEN_GAP).max(screen_left);
-        let y = (work_bottom - MODAL_H - SCREEN_GAP).max(screen_top);
-        Bounds::new(point(px(x), px(y)), modal_size)
-    }
-}
+// Modal geometry (size + anchor math) lives in `placement.rs` — the single
+// source of truth shared by `toggle_window` (open) and `app.rs`'s auto-fit
+// reposition. See that module for the per-OS anchoring rules.
 
 fn toggle_window(
     cx: &mut gpui::App,
@@ -462,7 +403,7 @@ fn toggle_window(
         AppState::default()
     });
 
-    let bounds = compute_modal_bounds(cx, hint);
+    let bounds = placement::modal_bounds(cx, hint);
     // `display.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
     // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.

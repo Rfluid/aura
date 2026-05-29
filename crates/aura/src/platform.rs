@@ -251,6 +251,82 @@ pub fn raise_window_to_floating(window: &mut gpui::Window) {
     }
 }
 
+// ── Window repositioning after auto-fit resize ──────────────────────────────
+
+/// Move the modal so it stays anchored after the auto-fit `Window::resize`
+/// shrinks it to the measured content height, and lift the open-time DWM
+/// cloak once it's in place.
+///
+/// GPUI 0.2's `Window::resize` issues `SetWindowPos(.., SWP_NOMOVE)`, which
+/// keeps the window's top-left fixed and grows/shrinks the bottom. For a
+/// bottom-anchored tray popup we want the opposite — the bottom edge should
+/// stay flush with the taskbar — so we reposition the top-left to
+/// `desired_origin` after the resize.
+///
+/// `desired_origin` MUST be computed absolutely from the work area
+/// ([`crate::placement::modal_origin`]), never read back from the window's
+/// current position: a `None` means "no display info, skip the move". This
+/// absoluteness is what keeps repeated calls idempotent instead of letting
+/// the window walk across the screen (issue #27).
+///
+/// Ordering: `resize` (the caller) and the `SetWindowPos` + uncloak here both
+/// run on the `ForegroundExecutor` (FIFO), so DWM only ever composites the
+/// final state — the user never sees the intermediate size or position.
+#[cfg(target_os = "windows")]
+pub(crate) fn reposition_after_resize(
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+    desired_origin: Option<gpui::Point<gpui::Pixels>>,
+    uncloak: &std::rc::Rc<std::cell::Cell<bool>>,
+) {
+    let scale = window.scale_factor();
+    let Some(origin) = desired_origin else {
+        // No display info — there's nothing to anchor against, so just lift
+        // the cloak synchronously and bail (the window stays where GPUI's
+        // resize left it).
+        if uncloak.replace(false) {
+            crate::win32_set_cloak(window, false);
+        }
+        return;
+    };
+    let x_phys = (f32::from(origin.x) * scale).round() as i32;
+    let y_phys = (f32::from(origin.y) * scale).round() as i32;
+    let hwnd_val = window.hwnd();
+    let do_uncloak = uncloak.replace(false);
+
+    cx.spawn(async move |_cx| {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        };
+        let hwnd = HWND(hwnd_val as *mut _);
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x_phys,
+                y_phys,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        if do_uncloak {
+            use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+            let val: i32 = 0;
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_CLOAK,
+                    std::ptr::addr_of!(val).cast(),
+                    std::mem::size_of::<i32>() as u32,
+                );
+            }
+        }
+    })
+    .detach();
+}
+
 // ── Open with system handler (file or URL) ──────────────────────────────────
 
 /// Open a filesystem path with the desktop's default handler, falling back to
