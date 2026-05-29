@@ -45,7 +45,12 @@ fix:
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-# Install Aura — tray-indicator-style (autostart by default). Dispatches
+# Install Aura — tray-indicator-style (autostart by default). Optional
+# params pass through to the installer:
+#   just install --branch main
+#   just install --version v1.2.3 --mode release
+#
+# Dispatches
 # by host:
 # Linux:   binaries → ~/.local/bin + systemd user unit (enable --now) +
 #          XDG .desktop entry (app-menu discoverability)
@@ -53,11 +58,12 @@ fix:
 #          LaunchAgent (loaded now + at every login)
 # Windows: use `just install-windows` from PowerShell — installs aura.exe
 #          + a Startup-folder shortcut (autostart) + a Start Menu shortcut.
-install:
-    ./install.sh
+# Pass installer flags after the recipe name.
+install *args:
+    ./install.sh {{args}}
 
-install-windows:
-    powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+install-windows *args:
+    powershell -ExecutionPolicy Bypass -File scripts/install.ps1 {{args}}
 
 # Install only the RTK plugin binary (useful when iterating on plugin code)
 install-plugin-rtk: build-rtk
@@ -72,9 +78,14 @@ install-plugin-rtk: build-rtk
 # new install. Then `install` lays down the fresh binary at the same path the
 # systemd unit / launchd agent points at, so the tray icon comes back bound
 # to the updated binary.
-update: uninstall install
+# Reinstall Aura, forwarding installer flags to the install step.
+update *args:
+    just uninstall
+    just install {{args}}
 
-update-windows: uninstall-windows install-windows
+update-windows *args:
+    just uninstall-windows
+    just install-windows {{args}}
 
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 

@@ -16,8 +16,9 @@
 #   Windows (see scripts/install.ps1): aura.exe + Startup-folder shortcut
 #           (runs at sign-in) + Start Menu shortcut
 #
-# Override detection with AURA_INSTALL_MODE=source|release.
-# Pin a specific release with AURA_VERSION=v1.2.3.
+# Override detection with AURA_INSTALL_MODE=source|release or --mode.
+# Build a source checkout from a branch with AURA_BRANCH=name or --branch name.
+# Pin a specific release with AURA_VERSION=v1.2.3 or --version v1.2.3.
 
 set -euo pipefail
 
@@ -57,7 +58,83 @@ else
 fi
 
 INSTALL_MODE="${AURA_INSTALL_MODE:-}"
+AURA_BRANCH="${AURA_BRANCH:-}"
 AURA_VERSION="${AURA_VERSION:-}"
+
+usage() {
+    cat <<'EOF'
+Usage: install.sh [options]
+
+Options:
+  --mode source|release   Override install mode detection.
+  --branch <name>         In source mode, switch to and update this git branch.
+  --version <tag>         In release mode, install this release tag (e.g. v1.2.3).
+  -h, --help              Show this help.
+
+Environment equivalents:
+  AURA_INSTALL_MODE=source|release
+  AURA_BRANCH=<name>
+  AURA_VERSION=v1.2.3
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode)
+            [ "$#" -ge 2 ] || { echo "error: --mode requires a value" >&2; exit 1; }
+            INSTALL_MODE="$2"
+            shift 2
+            ;;
+        --branch)
+            [ "$#" -ge 2 ] || { echo "error: --branch requires a value" >&2; exit 1; }
+            AURA_BRANCH="$2"
+            shift 2
+            ;;
+        --version|-v)
+            [ "$#" -ge 2 ] || { echo "error: $1 requires a value" >&2; exit 1; }
+            AURA_VERSION="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+case "$INSTALL_MODE" in
+    ""|source|release) ;;
+    *)
+        echo "error: --mode must be 'source' or 'release'" >&2
+        exit 1
+        ;;
+esac
+
+if [ -z "$INSTALL_MODE" ]; then
+    if [ -n "$AURA_BRANCH" ] && [ -n "$AURA_VERSION" ]; then
+        echo "error: --branch is for source installs and --version is for release installs; pass --mode to disambiguate" >&2
+        exit 1
+    elif [ -n "$AURA_BRANCH" ]; then
+        INSTALL_MODE="source"
+    elif [ -n "$AURA_VERSION" ]; then
+        INSTALL_MODE="release"
+    fi
+fi
+
+if [ "$INSTALL_MODE" = "release" ] && [ -n "$AURA_BRANCH" ]; then
+    echo "error: --branch is only supported with --mode source" >&2
+    exit 1
+fi
+
+if [ "$INSTALL_MODE" = "source" ] && [ -n "$AURA_VERSION" ]; then
+    echo "error: --version is only supported with --mode release" >&2
+    exit 1
+fi
 
 if [ -z "$INSTALL_MODE" ]; then
     if [ -n "$ROOT" ] && [ -f "$ROOT/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
@@ -94,6 +171,33 @@ verify_checksum() {
     fi
 }
 
+prepare_source_branch() {
+    [ -n "$AURA_BRANCH" ] || return 0
+    [ -n "$ROOT" ] && [ -d "$ROOT/.git" ] || {
+        echo "error: --branch requires source mode from a git checkout" >&2
+        exit 1
+    }
+    command -v git >/dev/null 2>&1 || {
+        echo "error: git not found — required by --branch" >&2
+        exit 1
+    }
+
+    echo "▸ Switching source checkout to ${AURA_BRANCH}…"
+    git -C "$ROOT" fetch --prune origin "$AURA_BRANCH" >/dev/null 2>&1 || true
+    if git -C "$ROOT" rev-parse --verify --quiet "$AURA_BRANCH" >/dev/null; then
+        git -C "$ROOT" switch "$AURA_BRANCH"
+    elif git -C "$ROOT" rev-parse --verify --quiet "origin/$AURA_BRANCH" >/dev/null; then
+        git -C "$ROOT" switch --track "origin/$AURA_BRANCH"
+    else
+        echo "error: branch '$AURA_BRANCH' was not found locally or on origin" >&2
+        exit 1
+    fi
+
+    if git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+        git -C "$ROOT" pull --ff-only
+    fi
+}
+
 # ── Stage binaries + launcher assets ─────────────────────────────────────────
 #
 # After this block STAGING_DIR holds the binaries (and Aura.app on macOS), and
@@ -104,6 +208,8 @@ if [ "$INSTALL_MODE" = "source" ]; then
         echo "error: cargo not found. Install Rust from https://rustup.rs" >&2
         exit 1
     }
+
+    prepare_source_branch
 
     echo "▸ Building Aura (release)…"
     (cd "$ROOT" && cargo build --release --workspace)
