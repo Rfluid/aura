@@ -42,7 +42,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Manage the on-disk config (`~/.config/aura/config.toml`).
+    /// Manage the on-disk config (`~/.config/aura/config.toml`): describe,
+    /// get/set, wizard, edit (`~/.config/aura/config.toml`).
     Config(config::ConfigCli),
 
     /// Inspect and modify state (`~/.local/share/aura/state.json`).

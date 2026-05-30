@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_schema;
 pub mod lexicon;
 pub mod plugin;
 pub mod quota;

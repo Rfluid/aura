@@ -241,7 +241,7 @@ impl AppConfig {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create config dir {}", parent.display()))?;
         }
-        let toml = toml::to_string_pretty(self).context("serialize config")?;
+        let toml = crate::config_schema::render_commented(self).context("serialize config")?;
         fs::write(path, toml).with_context(|| format!("write config to {}", path.display()))
     }
 
@@ -254,7 +254,8 @@ impl AppConfig {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("create config dir {}", parent.display()))?;
             }
-            let toml = toml::to_string_pretty(&cfg).context("serialize default config")?;
+            let toml =
+                crate::config_schema::render_commented(&cfg).context("serialize default config")?;
             fs::write(path, toml)
                 .with_context(|| format!("write default config to {}", path.display()))?;
             return Ok(cfg);
@@ -403,7 +404,7 @@ impl AppConfig {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create config dir {}", parent.display()))?;
         }
-        let toml = toml::to_string_pretty(&config).context("serialize config")?;
+        let toml = crate::config_schema::render_commented(&config).context("serialize config")?;
         fs::write(path, toml).with_context(|| format!("write config to {}", path.display()))?;
 
         Ok(SetupReport {

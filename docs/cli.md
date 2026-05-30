@@ -59,12 +59,28 @@ If none of those resolve, the command exits with an error suggesting
 ## `aura config`
 
 ```text
-aura config setup       # detect installed agents, write/update config.toml
-aura config path        # print resolved config path
-aura config show        # print loaded config (--format text|json)
-aura config edit        # open in $EDITOR (creates defaults if missing)
-aura config validate    # parse-check
+aura config setup              # detect installed agents, write/update config.toml
+aura config path               # print resolved config path
+aura config show               # print loaded config (--format text|json)
+aura config describe [<key>]   # list every field (type/default/docs), or explain one
+                               #   (--format json emits the full schema)
+aura config get <key>          # print a single field's current value
+aura config set <key> <value>  # validate and set one field (e.g. set display.anchor top)
+aura config wizard             # walk every field interactively; blank keeps current
+aura config init [--force]     # write a fresh, fully-commented config.toml
+aura config document           # rewrite the existing config in place with inline
+                               #   docs, keeping every current value
+aura config edit               # open in $EDITOR (creates defaults if missing)
+aura config validate           # parse-check
 ```
+
+Keys are dotted paths into the `[display]` / `[update]` tables, e.g.
+`display.anchor`, `display.max_height`, `update.dismiss_all`. `set` validates
+the value (rejecting bad enums/booleans and suggesting near-miss keys); pass
+`none` to clear an optional field. The on-disk `config.toml` is written with a
+`#` comment above each key, so the file documents itself. The repeatable
+`[[agents]]` / `[[plugins]]` tables are documented by `describe` but edited via
+`aura config edit`, `aura agents`, or `aura plugin`.
 
 ## `aura state`
 
