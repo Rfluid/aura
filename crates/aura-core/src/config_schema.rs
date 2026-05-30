@@ -292,7 +292,10 @@ impl std::fmt::Display for SchemaError {
                 key,
                 expected,
                 value,
-            } => write!(f, "invalid value `{value}` for `{key}`: expected {expected}"),
+            } => write!(
+                f,
+                "invalid value `{value}` for `{key}`: expected {expected}"
+            ),
         }
     }
 }
@@ -350,12 +353,12 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.default_period" => {
             cfg.display.default_period = parse_enum(key, raw, &["all", "7d", "30d"])?
         }
-        "display.anchor" => {
-            cfg.display.anchor = parse_enum(key, raw, &["none", "bottom", "top"])?
-        }
+        "display.anchor" => cfg.display.anchor = parse_enum(key, raw, &["none", "bottom", "top"])?,
         "display.plugin_order" => cfg.display.plugin_order = parse_list(raw),
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher = parse_bool(key, raw)?,
-        "display.dismiss_on_focus_loss" => cfg.display.dismiss_on_focus_loss = parse_bool(key, raw)?,
+        "display.dismiss_on_focus_loss" => {
+            cfg.display.dismiss_on_focus_loss = parse_bool(key, raw)?
+        }
         "display.window_chrome" => cfg.display.window_chrome = parse_bool(key, raw)?,
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
@@ -366,7 +369,11 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
     Ok(())
 }
 
-fn parse_enum(key: &str, raw: &str, allowed: &'static [&'static str]) -> Result<String, SchemaError> {
+fn parse_enum(
+    key: &str,
+    raw: &str,
+    allowed: &'static [&'static str],
+) -> Result<String, SchemaError> {
     match allowed.iter().find(|a| a.eq_ignore_ascii_case(raw)) {
         Some(canonical) => Ok((*canonical).to_string()),
         None => Err(SchemaError::InvalidValue {
@@ -390,18 +397,23 @@ fn parse_bool(key: &str, raw: &str) -> Result<bool, SchemaError> {
 }
 
 fn is_clear(raw: &str) -> bool {
-    matches!(raw.to_ascii_lowercase().as_str(), "" | "none" | "null" | "unset")
+    matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "" | "none" | "null" | "unset"
+    )
 }
 
 fn parse_opt_u32(key: &str, raw: &str) -> Result<Option<u32>, SchemaError> {
     if is_clear(raw) {
         return Ok(None);
     }
-    raw.parse::<u32>().map(Some).map_err(|_| SchemaError::InvalidType {
-        key: key.to_string(),
-        expected: "a non-negative integer or `none`",
-        value: raw.to_string(),
-    })
+    raw.parse::<u32>()
+        .map(Some)
+        .map_err(|_| SchemaError::InvalidType {
+            key: key.to_string(),
+            expected: "a non-negative integer or `none`",
+            value: raw.to_string(),
+        })
 }
 
 fn parse_opt_string(raw: &str) -> Option<String> {
@@ -525,7 +537,11 @@ fn quote(s: &str) -> String {
 }
 
 fn str_array(items: &[String]) -> String {
-    let inner = items.iter().map(|s| quote(s)).collect::<Vec<_>>().join(", ");
+    let inner = items
+        .iter()
+        .map(|s| quote(s))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("[{inner}]")
 }
 

@@ -244,7 +244,10 @@ fn print_section(header: &str, fields: &[SectionField]) {
         } else {
             format!(" [{}]", f.allowed.join(" | "))
         };
-        println!("  {:<14} ({}){allowed} — {}", f.key, f.type_label, f.summary);
+        println!(
+            "  {:<14} ({}){allowed} — {}",
+            f.key, f.type_label, f.summary
+        );
     }
     println!();
 }
