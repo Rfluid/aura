@@ -123,13 +123,26 @@ pub fn fields() -> &'static [FieldDescriptor] {
             type_label: "bool",
             allowed: &["true", "false"],
             default: "false",
-            summary: "Show native window chrome (title bar + drag-to-resize).",
+            summary: "Show the native window title bar.",
             description: "Show the OS-native window chrome (title bar + minimize / maximize / \
-                close buttons) and let the user resize the modal by dragging its edges. \
-                Default false: Aura behaves like a tray popup with a fixed width that \
-                auto-fits its content vertically. Turning this on also enables resizing and \
-                suppresses the content-fit auto-resize (which would otherwise fight the drag).",
+                close buttons). Default false: Aura behaves like a tray popup with no title \
+                bar. This only controls the title bar — whether the modal auto-resizes to fit \
+                its content is the separate display.auto_resize knob.",
             example: "false",
+        },
+        FieldDescriptor {
+            key: "display.auto_resize",
+            type_label: "bool?",
+            allowed: &["true", "false"],
+            default: "unset (auto-fit)",
+            summary: "Auto-resize the modal to fit its content height.",
+            description: "Whether the modal auto-resizes to fit its content height. On every \
+                layout pass a content-fit callback grows / shrinks the window to match (capped \
+                at the screen work area and display.max_height). Unset (default) means auto-fit \
+                is on. Set false for a fixed-size window. This is not user drag-to-resize (the \
+                window manager owns that) — only Aura's content-fit. Independent of \
+                window_chrome, so the auto-fit works the same with or without the title bar.",
+            example: "true",
         },
         FieldDescriptor {
             key: "display.max_height",
@@ -328,6 +341,11 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher.to_string(),
         "display.dismiss_on_focus_loss" => cfg.display.dismiss_on_focus_loss.to_string(),
         "display.window_chrome" => cfg.display.window_chrome.to_string(),
+        "display.auto_resize" => cfg
+            .display
+            .auto_resize
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "(unset)".to_string()),
         "display.max_height" => cfg
             .display
             .max_height
@@ -360,6 +378,7 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
             cfg.display.dismiss_on_focus_loss = parse_bool(key, raw)?
         }
         "display.window_chrome" => cfg.display.window_chrome = parse_bool(key, raw)?,
+        "display.auto_resize" => cfg.display.auto_resize = parse_opt_bool(key, raw)?,
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
@@ -401,6 +420,13 @@ fn is_clear(raw: &str) -> bool {
         raw.to_ascii_lowercase().as_str(),
         "" | "none" | "null" | "unset"
     )
+}
+
+fn parse_opt_bool(key: &str, raw: &str) -> Result<Option<bool>, SchemaError> {
+    if is_clear(raw) {
+        return Ok(None);
+    }
+    parse_bool(key, raw).map(Some)
 }
 
 fn parse_opt_u32(key: &str, raw: &str) -> Result<Option<u32>, SchemaError> {
@@ -508,6 +534,7 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher.to_string(),
         "display.dismiss_on_focus_loss" => cfg.display.dismiss_on_focus_loss.to_string(),
         "display.window_chrome" => cfg.display.window_chrome.to_string(),
+        "display.auto_resize" => return cfg.display.auto_resize.map(|b| b.to_string()),
         "display.max_height" => return cfg.display.max_height.map(|n| n.to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
@@ -580,6 +607,7 @@ mod tests {
     /// (which serde omits from TOML) still appear when checking coverage.
     fn fully_populated() -> AppConfig {
         let mut cfg = AppConfig::default_config();
+        cfg.display.auto_resize = Some(false);
         cfg.display.max_height = Some(500);
         cfg.update.dismissed_version = Some("0.0.0".to_string());
         cfg
@@ -719,6 +747,7 @@ mod tests {
                 show_in_app_switcher: true,
                 dismiss_on_focus_loss: false,
                 window_chrome: true,
+                auto_resize: Some(false),
                 max_height: Some(500),
                 goblin_mode: true,
             },

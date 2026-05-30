@@ -655,10 +655,11 @@ impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
-        // When window_chrome is on, the OS draws a title bar and the user can
-        // drag the edges — so suppress the content-fit auto-resize that would
-        // otherwise snap the height back every layout pass.
-        let auto_fit = !self.config.display.window_chrome;
+        // `display.auto_resize` governs the content-fit auto-resize that grows /
+        // shrinks the window to fit its content on every layout pass. It is
+        // independent of `window_chrome`, so the auto-fit works the same with
+        // or without native chrome. Default on (see `DisplayConfig::auto_resize`).
+        let auto_fit = self.config.display.auto_resize();
         let user_max_height = self.config.display.max_height;
         // How the modal re-anchors after the auto-fit resize (see
         // `placement::Anchor`). Only `Bottom` triggers an active move.

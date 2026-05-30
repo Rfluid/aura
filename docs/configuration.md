@@ -144,8 +144,9 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 | `plugin_order` | string[] | — | `[]` | Display order for plugin pills (comma-separated names on `set`). |
 | `show_in_app_switcher` | bool | `true` \| `false` | `false` | Show the modal in Alt+Tab / Cmd+Tab / dock surfaces. |
 | `dismiss_on_focus_loss` | bool | `true` \| `false` | `true` | Auto-close the modal when it loses focus. |
-| `window_chrome` | bool | `true` \| `false` | `false` | Native window chrome + drag-to-resize (disables auto-fit). |
-| `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `window_chrome = true`. |
+| `window_chrome` | bool | `true` \| `false` | `false` | Show the native window title bar (independent of `auto_resize`). |
+| `auto_resize` | bool? | `true` \| `false` | unset (auto-fit) | Auto-resize the modal to fit its content height. `false` = fixed-size. Works with or without chrome. |
+| `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `auto_resize` is false. |
 | `goblin_mode` | bool | `true` \| `false` | `false` | Swap UI copy for the aggressive "Goblin Mode" variant. |
 
 ### `[update]`
@@ -227,13 +228,18 @@ plugin_order = ["Hello", "RTK Gains"]
 # Default is per-OS and written at install (see "Modal anchoring" below).
 anchor = "bottom"
 
-# Native window chrome (title bar + drag-to-resize). Default false — Aura is a
-# fixed-width tray popup that auto-fits its height. Turning this on disables the
-# auto-fit and puts the modal in the taskbar / alt-tab list.
+# Show the native window title bar. Default false — Aura is a chromeless tray
+# popup. Turning this on also puts the modal in the taskbar / alt-tab list.
+# Independent of `auto_resize`.
 window_chrome = false
 
+# Auto-resize the modal to fit its content height. Unset (default) = auto-fit on.
+# Set false for a fixed-size modal. Works the same with or without window_chrome.
+# (This is not user drag-to-resize — the window manager owns that.)
+# auto_resize = false
+
 # Optional upper bound (logical px) on auto-fit height. Already capped at the
-# screen work area; this is a tighter ceiling. Ignored when window_chrome = true.
+# screen work area; this is a tighter ceiling. Ignored when auto_resize = false.
 # max_height = 500
 
 # Auto-close the modal when it loses focus. Default true (tray-popup behaviour);
