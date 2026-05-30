@@ -437,14 +437,13 @@ fn toggle_window(
     } else {
         WindowKind::PopUp
     };
-    // `display.window_chrome` swaps the modal between two modes:
-    //   false (default): chromeless tray-popup, fixed width, height auto-fits
-    //     content (see app.rs::on_children_prepainted). is_resizable is
-    //     forced false because there is no visible edge to grab anyway.
-    //   true: native OS chrome (title bar + min/max/close), user-resizable.
-    //     window_decorations: Server asks Wayland compositors to draw SSD;
-    //     the auto-fit callback in app.rs is suppressed so user-dragged
-    //     sizes stick.
+    // `display.window_chrome` controls only the native title bar:
+    //   false (default): chromeless tray-popup, fixed width.
+    //   true: native OS chrome (title bar + min/max/close). window_decorations:
+    //     Server asks Wayland compositors to draw SSD.
+    // Whether the modal auto-fits its content height is a separate axis,
+    // governed by `display.auto_resize` in app.rs (see on_children_prepainted) —
+    // independent of chrome, so the auto-fit works in both modes.
     let (titlebar, is_resizable, window_decorations) = if config.display.window_chrome {
         (
             Some(TitlebarOptions::default()),
@@ -475,8 +474,14 @@ fn toggle_window(
         ..Default::default()
     };
 
+    // Cloak (Windows) hides the first-frame flash that only happens when the
+    // auto-fit step shrinks the window from its open-time MODAL_H to the
+    // content height. So it must track `auto_resize` (the same flag that gates
+    // the auto-fit callback / uncloak in app.rs) — NOT `window_chrome`. Tying
+    // it to chrome would leave a chromeless + fixed-size window (auto_resize =
+    // false) cloaked forever, since no uncloak step ever runs.
     #[cfg(target_os = "windows")]
-    let cloak = !config.display.window_chrome;
+    let cloak = config.display.auto_resize();
 
     match cx.open_window(opts, |_window, cx| {
         cx.new(|cx| AuraView::new(config, config_path, state, cx))
@@ -502,9 +507,9 @@ fn toggle_window(
                 // on the second frame after the resize, showing the window at
                 // the correct size.
                 //
-                // Skipped when `window_chrome` is on: there is no auto-shrink
-                // step in that mode, so cloaking would leave the window
-                // invisible forever.
+                // Skipped when `auto_resize` is off (`cloak` is false): there
+                // is no auto-shrink step then, so cloaking would leave the
+                // window invisible forever.
                 let _ = handle.update(cx, |_, window, _| {
                     if cloak {
                         win32_set_cloak(window, true);

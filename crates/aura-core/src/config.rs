@@ -131,24 +131,33 @@ pub struct DisplayConfig {
     /// edges. Default false: Aura behaves like a tray popup with a fixed
     /// width that auto-fits its content vertically.
     ///
-    /// Turning this on toggles three things together because they only make
-    /// sense as a set:
-    /// 1. `titlebar` is created instead of `None`, so the OS draws the
-    ///    standard chrome (and, on KDE / GNOME, the window menu items like
-    ///    "all desktops" / "always on top" come along for free — they're
-    ///    compositor-rendered, not drawn by Aura).
-    /// 2. `is_resizable` is set true and Wayland decorations are server-
-    ///    side so the compositor exposes resize edges.
-    /// 3. The content-fit auto-resize that runs on every layout pass is
-    ///    suppressed, otherwise it fights every drag.
+    /// Turning this on draws the OS title bar and its window-menu items (on
+    /// KDE / GNOME the "all desktops" / "always on top" entries come along for
+    /// free — they're compositor-rendered, not drawn by Aura).
+    ///
+    /// Chrome only controls the *title bar*. Whether the modal auto-resizes to
+    /// fit its content is a separate axis, see [`Self::auto_resize`].
     pub window_chrome: bool,
+    /// Whether the modal auto-resizes to fit its content height.
+    ///
+    /// On every layout pass a content-fit callback measures the rendered
+    /// content and grows / shrinks the window to match (capped at the screen
+    /// work area and [`Self::max_height`]). `None` (default) means "yes" — the
+    /// modal auto-fits. Set `false` for a fixed-size window.
+    ///
+    /// This is *not* about user drag-to-resize (the window manager owns that);
+    /// it only toggles Aura's own content-fit. Independent of
+    /// [`Self::window_chrome`]: the auto-fit behaves the same with or without
+    /// the native title bar.
+    #[serde(default)]
+    pub auto_resize: Option<bool>,
     /// Optional upper bound (in logical pixels) on the modal's auto-fit
     /// height. The content-fit callback already caps growth at the screen's
     /// available work area; this lets the user impose a tighter ceiling so
     /// the modal never grows past, say, 500 px even on a tall display.
     ///
     /// `None` (default) means "only the work-area cap applies".
-    /// Ignored when [`Self::window_chrome`] is true (auto-fit is off then).
+    /// Ignored when [`Self::auto_resize`] is false (no auto-fit to cap).
     #[serde(default)]
     pub max_height: Option<u32>,
     /// Swap the modal's user-facing copy for an aggressive / unhinged variant
@@ -179,6 +188,15 @@ fn default_anchor() -> String {
     }
 }
 
+impl DisplayConfig {
+    /// Effective auto-fit behaviour: `auto_resize` unset (`None`) means the
+    /// modal auto-resizes to fit its content height. `false` makes it a
+    /// fixed-size window. Applies whether or not [`Self::window_chrome`] is on.
+    pub fn auto_resize(&self) -> bool {
+        self.auto_resize.unwrap_or(true)
+    }
+}
+
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
@@ -188,6 +206,7 @@ impl Default for DisplayConfig {
             show_in_app_switcher: false,
             dismiss_on_focus_loss: true,
             window_chrome: false,
+            auto_resize: None,
             max_height: None,
             goblin_mode: false,
         }
