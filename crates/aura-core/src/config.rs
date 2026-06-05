@@ -231,6 +231,55 @@ pub struct UpdateConfig {
     pub dismiss_all: bool,
 }
 
+// ── Fleet ─────────────────────────────────────────────────────────────────────
+
+/// The `[fleet]` section — cross-machine usage comparison over an
+/// end-to-end-encrypted ntfy.sh pub/sub channel. Off by default: when
+/// [`Self::enabled`] is false the background sync task is never spawned, so
+/// non-users pay zero cost. See `docs/fleet.md` and `aura-core::net`.
+///
+/// The shared `pairing_secret` is deliberately **not** a field here — it lives
+/// in the OS keychain (service `"aura-fleet-secret"`), never on disk in
+/// `config.toml`. This struct only carries non-sensitive operational knobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct FleetConfig {
+    /// Master switch. When false (default), the Fleet tab is hidden and the
+    /// background publish/subscribe task is never started — no network, no
+    /// keychain access, no cost.
+    pub enabled: bool,
+    /// Base URL of the ntfy pub/sub broker. Defaults to the free public
+    /// server `https://ntfy.sh`. Point this at a self-hosted ntfy instance
+    /// for full privacy / heavier setups. No trailing slash.
+    pub broker_url: String,
+    /// Human-friendly label for *this* machine in peer rows. Empty means
+    /// "use the system hostname". Two machines with the same hostname are
+    /// still disambiguated by a random per-install `machine_id` (not stored
+    /// here — it lives in `AppState`).
+    pub machine_label: String,
+    /// How often (seconds) this machine publishes an encrypted heartbeat.
+    /// The public broker's rate limit is far above this; the default keeps
+    /// well under it. Minimum enforced at the call site.
+    pub heartbeat_secs: u64,
+    /// A peer with no fresh heartbeat for this many seconds is treated as
+    /// stale: its row dims and it's excluded from the share math. Also bounds
+    /// the replay window (messages older than `2 × heartbeat_secs` are
+    /// dropped regardless of this value).
+    pub stale_secs: u64,
+}
+
+impl Default for FleetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            broker_url: "https://ntfy.sh".to_string(),
+            machine_label: String::new(),
+            heartbeat_secs: 45,
+            stale_secs: 120,
+        }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -243,6 +292,8 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub fleet: FleetConfig,
 }
 
 impl AppConfig {
@@ -294,6 +345,7 @@ impl AppConfig {
             plugins: Vec::new(),
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         }
     }
 
@@ -539,6 +591,7 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -556,6 +609,7 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -569,6 +623,7 @@ mod tests {
             plugins: vec![plug("Alpha"), plug("Beta")],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -642,6 +697,7 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -680,6 +736,7 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            fleet: FleetConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

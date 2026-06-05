@@ -15,17 +15,44 @@ thiserror.workspace             = true
 toml.workspace                  = true
 ureq.workspace                  = true
 
+# ── Fleet (cross-machine usage sync) ────────────────────────────────────────
+# Pure-Rust crypto so the workspace stays C-dependency-free and
+# cross-compilable to the Linux target. Versions chosen to reuse the
+# transitive deps already pinned in Cargo.lock (cipher 0.4, crypto-common 0.1,
+# hmac 0.12, sha2 0.10, base64 0.22, rand 0.8 / rand_core 0.6) so no
+# duplicate-version bloat is introduced.
+chacha20poly1305 = "0.10" # XChaCha20-Poly1305 AEAD (RustCrypto), pure Rust
+hkdf             = "0.12"  # HKDF-SHA256 key derivation
+hmac             = "0.12"  # HMAC-SHA256 for the topic derivation
+sha2             = "0.10"  # SHA-256 backing hash for HKDF + HMAC
+base64           = "0.22"  # wire encoding of the sealed heartbeat blob
+rand             = "0.8"   # CSPRNG for secret + nonce generation
+zeroize          = "1"     # wipe the pairing secret from memory on drop
+uuid             = { version = "1", features = ["v4"] } # per-install machine id
+
 # Claude Code stores OAuth credentials in the macOS Keychain rather than
-# `.credentials.json`, so we need direct Keychain access on Darwin.
+# `.credentials.json`, so we need direct Keychain access on Darwin. The Fleet
+# secret reuses the same `security-framework` API (dedicated service name
+# `aura-fleet-secret`), so no extra macOS dependency is needed.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 
 # On Windows Claude Code stores the same credential blob in the Windows
 # Credential Manager (service `Claude Code-credentials`) and likewise
 # removes the on-disk file. Use the `windows-native` keyring backend so
-# we don't pull dbus/secret-service deps on other platforms.
+# we don't pull dbus/secret-service deps on other platforms. The Fleet secret
+# reuses this same keyring backend (dedicated target `aura-fleet-secret`).
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+# On Linux the Fleet secret lives in the Secret Service (libsecret / GNOME
+# Keyring / KWallet) via the `keyring` crate. `crypto-rust` keeps the DBus
+# session encryption pure-Rust (no OpenSSL C dep); `sync-secret-service` is
+# the blocking backend so we don't drag in an async runtime. When no secret
+# service is present (headless boxes) `secret_store` falls back to a 0600 file
+# under the data dir, mirroring how `quota/oauth.rs` falls back to disk.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"
