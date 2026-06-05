@@ -150,6 +150,7 @@ impl GeminiQuota {
             windows,
             source: QuotaSource::Fallback,
             note,
+            pacing_pattern: None,
         }))
     }
 }

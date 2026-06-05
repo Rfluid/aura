@@ -11,11 +11,15 @@ mod codex_oauth;
 pub mod forecast;
 mod gemini;
 mod oauth;
+pub mod pacing;
 
 pub use api::{QuotaApi, QuotaSource};
 pub use codex::CodexQuota;
 pub use forecast::{forecast, ForecastSnapshot, ForecastStatus, ForecastWindow};
 pub use gemini::GeminiQuota;
+pub use pacing::{
+    session_budget, ActivityPattern, PacingStatus, SessionBudget, SessionTokens,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -47,6 +51,12 @@ pub struct QuotaSnapshot {
     pub source: QuotaSource,
     /// Set when source is `Fallback` and we want to explain why.
     pub note: Option<String>,
+    /// Learned active-session pattern for budget pacing (F2). Populated by the
+    /// app's refresh from a local JSONL scan when the source is `Api`; `None`
+    /// otherwise. Skipped from the wire format when absent so existing
+    /// consumers are unaffected. See [`pacing`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pacing_pattern: Option<ActivityPattern>,
 }
 
 impl QuotaSnapshot {
