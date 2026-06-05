@@ -19,6 +19,7 @@ pub struct Lexicon {
     pub tab_models: &'static str,
     pub tab_plugins: &'static str,
     pub tab_forecast: &'static str,
+    pub tab_insights: &'static str,
 
     // ── Forecast status badges & subtext ───────────────────────────────────
     pub forecast_ok: &'static str,
@@ -98,6 +99,7 @@ pub const POLITE: Lexicon = Lexicon {
     tab_models: "Models",
     tab_plugins: "Plugins",
     tab_forecast: "Forecast",
+    tab_insights: "Insights",
 
     forecast_ok: "On track",
     forecast_watch: "Watch",
@@ -134,6 +136,7 @@ pub const GOBLIN: Lexicon = Lexicon {
     tab_models: "Slop Vendors",
     tab_plugins: "Hangers-on",
     tab_forecast: "Doom",
+    tab_insights: "Receipts",
 
     forecast_ok: "Fine, whatever",
     forecast_watch: "Bruh",
@@ -185,6 +188,7 @@ mod tests {
             ("tab_models", POLITE.tab_models, GOBLIN.tab_models),
             ("tab_plugins", POLITE.tab_plugins, GOBLIN.tab_plugins),
             ("tab_forecast", POLITE.tab_forecast, GOBLIN.tab_forecast),
+            ("tab_insights", POLITE.tab_insights, GOBLIN.tab_insights),
             ("forecast_ok", POLITE.forecast_ok, GOBLIN.forecast_ok),
             (
                 "forecast_watch",

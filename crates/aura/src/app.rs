@@ -8,7 +8,7 @@ use aura_core::{
         forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
         QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
     },
-    reader::{make_reader, Period, UsageSnapshot},
+    reader::{make_reader, InsightsSnapshot, Period, ProjectStat, SessionInsight, UsageSnapshot},
     state::AppState,
     theme::Theme,
 };
@@ -18,7 +18,9 @@ use gpui::{
     SharedString, Window,
 };
 
-use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
+use crate::format::{
+    compact_tokens, duration, hour_of_day, locale_uses_12h, system_locale, thousands,
+};
 use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
@@ -47,6 +49,7 @@ enum AgentSection {
     Forecast,
     Summary,
     Models,
+    Insights,
 }
 
 impl AgentSection {
@@ -56,6 +59,7 @@ impl AgentSection {
             Self::Forecast => lex.tab_forecast,
             Self::Summary => lex.tab_summary,
             Self::Models => lex.tab_models,
+            Self::Insights => lex.tab_insights,
         }
     }
 
@@ -65,6 +69,7 @@ impl AgentSection {
             Self::Forecast => "forecast",
             Self::Summary => "summary",
             Self::Models => "models",
+            Self::Insights => "insights",
         }
     }
 
@@ -74,7 +79,7 @@ impl AgentSection {
     fn uses_period(self) -> bool {
         match self {
             Self::Quota | Self::Forecast => false,
-            Self::Summary | Self::Models => true,
+            Self::Summary | Self::Models | Self::Insights => true,
         }
     }
 }
@@ -1175,12 +1180,17 @@ impl AuraView {
         let lex = lexicon::pick(self.config.display.goblin_mode);
         match self.mode {
             Mode::Agent => {
-                let sections = [
+                let mut sections = vec![
                     AgentSection::Quota,
                     AgentSection::Forecast,
                     AgentSection::Summary,
                     AgentSection::Models,
                 ];
+                // Insights is opt-in (`[insights] enabled`), so the tab only
+                // appears when the user has turned it on.
+                if self.config.insights.enabled {
+                    sections.push(AgentSection::Insights);
+                }
                 for s in sections {
                     let active = self.active_agent_section == s;
                     row = row.child(
@@ -1279,6 +1289,15 @@ impl AuraView {
                     },
                     AgentSection::Models => match self.snapshot.as_ref() {
                         Some(snap) => render_models(&self.theme, snap, accent),
+                        None => render_loading(&self.theme, lex, self.spinner_frame),
+                    },
+                    AgentSection::Insights => match self.snapshot.as_ref() {
+                        Some(snap) => render_insights(
+                            &self.theme,
+                            snap,
+                            accent,
+                            self.config.insights.top_n,
+                        ),
                         None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
                 },
@@ -1992,6 +2011,278 @@ fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl 
                 .child("Tokens per day"),
         )
         .child(bars)
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+/// Render the Insights tab: top projects, top sessions (with mode badges), and
+/// mode distribution. `top_n` slices the already-ranked lists from the snapshot.
+fn render_insights(
+    theme: &Theme,
+    snap: &UsageSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> AnyElement {
+    let ins = &snap.insights;
+    let mut col = div().flex().flex_col().px_4().py_3().gap_4();
+
+    col = col.child(render_insights_projects(theme, ins, accent, top_n));
+    col = col.child(render_insights_sessions(theme, ins, accent, top_n));
+    col = col.child(render_mode_distribution(theme, ins, accent));
+
+    // Heuristic footnote — mode (ultracode) is inferred from session content.
+    col = col.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text_dim))
+            .child("ⓘ mode is inferred from session content"),
+    );
+
+    col.into_any_element()
+}
+
+/// Section heading shared by the Insights cards.
+fn insights_heading(theme: &Theme, text: &str) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(rgb(theme.colors.text_dim))
+        .child(SharedString::from(text.to_string()))
+}
+
+/// Wrapper card matching the Models tab's surface/border styling.
+fn insights_card(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+}
+
+fn empty_hint(theme: &Theme, text: &str) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(rgb(theme.colors.text_dim))
+        .child(SharedString::from(text.to_string()))
+}
+
+fn render_insights_projects(
+    theme: &Theme,
+    ins: &InsightsSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> impl IntoElement {
+    let mut card = insights_card(theme).child(insights_heading(theme, "TOP PROJECTS"));
+
+    let projects: &[ProjectStat] = slice_top(&ins.top_projects, top_n);
+    if projects.is_empty() {
+        return card.child(empty_hint(theme, "No project activity in this period."));
+    }
+
+    let max = projects.iter().map(|p| p.tokens).max().unwrap_or(0);
+    for p in projects {
+        card = card.child(render_project_row(theme, p, max, accent));
+    }
+    card
+}
+
+fn render_project_row(
+    theme: &Theme,
+    project: &ProjectStat,
+    max: u64,
+    accent: u32,
+) -> impl IntoElement {
+    let bar_pct = if max > 0 {
+        (project.tokens as f64 / max as f64 * 100.0).clamp(2.0, 100.0)
+    } else {
+        2.0
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .text_color(rgb(theme.colors.text))
+                        .child(SharedString::from(project.name.clone())),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(compact_tokens(project.tokens))),
+                ),
+        )
+        .child(
+            div()
+                .h(px(4.0))
+                .w_full()
+                .bg(rgb(theme.colors.surface_hi))
+                .rounded_md()
+                .child(
+                    div()
+                        .h(px(4.0))
+                        .w(gpui::relative(bar_pct as f32 / 100.0))
+                        .bg(rgb(accent))
+                        .rounded_md(),
+                ),
+        )
+}
+
+fn render_insights_sessions(
+    theme: &Theme,
+    ins: &InsightsSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> impl IntoElement {
+    let mut card = insights_card(theme).child(insights_heading(theme, "TOP SESSIONS"));
+
+    let sessions: &[SessionInsight] = slice_top(&ins.top_sessions, top_n);
+    if sessions.is_empty() {
+        return card.child(empty_hint(theme, "No sessions in this period."));
+    }
+
+    for s in sessions {
+        card = card.child(render_session_row(theme, s, accent));
+    }
+    card
+}
+
+fn render_session_row(theme: &Theme, s: &SessionInsight, accent: u32) -> impl IntoElement {
+    // Left: "18.2M · 2h14m · project". Right: mode badges.
+    let summary = format!(
+        "{} · {} · {}",
+        compact_tokens(s.tokens),
+        duration(s.duration_secs),
+        s.project,
+    );
+
+    let mut badges = div().flex().flex_row().flex_shrink_0().gap_1();
+    badges = badges.child(mode_badge(theme, s.tier.label(), accent, false));
+    if s.is_ultracode {
+        badges = badges.child(mode_badge(theme, "ultracode", accent, true));
+    }
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_sm()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(summary)),
+        )
+        .child(badges)
+}
+
+/// A small mode badge. The tier badge uses the dim surface; the ultracode chip
+/// uses the accent fill so it stands out. Colors come from theme tokens only.
+fn mode_badge(theme: &Theme, label: &str, accent: u32, filled: bool) -> impl IntoElement {
+    let (bg, fg) = if filled {
+        (accent, theme.on_accent_text(accent))
+    } else {
+        (theme.colors.surface_hi, theme.colors.text_dim)
+    };
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .text_xs()
+        .rounded_md()
+        .bg(rgb(bg))
+        .text_color(rgb(fg))
+        .child(SharedString::from(label.to_string()))
+}
+
+fn render_mode_distribution(
+    theme: &Theme,
+    ins: &InsightsSnapshot,
+    accent: u32,
+) -> impl IntoElement {
+    let dist = &ins.mode_distribution;
+    let mut card = insights_card(theme).child(insights_heading(theme, "MODE DISTRIBUTION"));
+
+    if dist.by_tier.is_empty() {
+        return card.child(empty_hint(theme, "No token activity in this period."));
+    }
+
+    // Tier share row: "opus 92%  sonnet 6%  haiku 2%".
+    let mut tiers = div().flex().flex_row().flex_wrap().gap_3();
+    for (label, _) in &dist.by_tier {
+        let pct = dist.tier_pct(label);
+        tiers = tiers.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_1()
+                .child(
+                    div()
+                        .text_color(rgb(theme.colors.text))
+                        .child(SharedString::from(label.clone())),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(format!("{pct:.0}%"))),
+                ),
+        );
+    }
+    card = card.child(tiers);
+
+    // Stacked share bar, segmented by tier (accent fades per tier via blend).
+    let total = dist.total_tokens();
+    if total > 0 {
+        let mut bar = div().flex().flex_row().h(px(6.0)).w_full().rounded_md();
+        for (i, (_, tokens)) in dist.by_tier.iter().enumerate() {
+            let frac = *tokens as f32 / total as f32;
+            // Fade successive segments toward the surface for visual separation.
+            let t = (i as f64 / dist.by_tier.len().max(1) as f64) * 0.5;
+            let seg_color = Theme::blend(accent, theme.colors.surface_hi, t);
+            bar = bar.child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(frac))
+                    .bg(rgb(seg_color)),
+            );
+        }
+        card = card.child(bar);
+    }
+
+    // ultracode vs normal counts.
+    card = card.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text_dim))
+            .child(SharedString::from(format!(
+                "ultracode: {} sessions · normal: {}",
+                dist.ultracode_sessions, dist.normal_sessions
+            ))),
+    );
+
+    card
+}
+
+/// Take the first `top_n` of an already-ranked slice (treats `0` as "all").
+fn slice_top<T>(items: &[T], top_n: usize) -> &[T] {
+    let n = if top_n == 0 { items.len() } else { top_n };
+    &items[..n.min(items.len())]
 }
 
 // ── Plugin section rendering ─────────────────────────────────────────────────

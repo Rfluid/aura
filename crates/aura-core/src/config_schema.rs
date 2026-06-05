@@ -190,6 +190,29 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 default.",
             example: "false",
         },
+        FieldDescriptor {
+            key: "insights.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the Insights tab (top projects / sessions / mode mix).",
+            description: "Show the Insights tab, which surfaces the top projects and sessions \
+                by token spend plus a model-tier / ultracode mode distribution. Off by default \
+                — the tab is hidden until you opt in. Mode (ultracode) is inferred from session \
+                content and is a heuristic.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "insights.top_n",
+            type_label: "usize",
+            allowed: &[],
+            default: "5",
+            summary: "How many rows each Insights ranked list shows.",
+            description: "How many rows the Insights tab's top-projects and top-sessions lists \
+                render. Default 5. Capped by the number of projects/sessions actually scanned in \
+                the active period.",
+            example: "5",
+        },
     ]
 }
 
@@ -358,6 +381,8 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .clone()
             .unwrap_or_else(|| "(unset)".to_string()),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "insights.enabled" => cfg.insights.enabled.to_string(),
+        "insights.top_n" => cfg.insights.top_n.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -383,9 +408,19 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
+        "insights.enabled" => cfg.insights.enabled = parse_bool(key, raw)?,
+        "insights.top_n" => cfg.insights.top_n = parse_usize(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
+}
+
+fn parse_usize(key: &str, raw: &str) -> Result<usize, SchemaError> {
+    raw.parse::<usize>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
 }
 
 fn parse_enum(
@@ -486,6 +521,8 @@ pub fn render_commented(cfg: &AppConfig) -> Result<String> {
     push_scalar_table(&mut out, cfg, "display");
     out.push('\n');
     push_scalar_table(&mut out, cfg, "update");
+    out.push('\n');
+    push_scalar_table(&mut out, cfg, "insights");
 
     Ok(out)
 }
@@ -539,6 +576,8 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "insights.enabled" => cfg.insights.enabled.to_string(),
+        "insights.top_n" => cfg.insights.top_n.to_string(),
         _ => return None,
     })
 }
@@ -598,7 +637,9 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, AgentKind, DisplayConfig, PluginConfig, UpdateConfig};
+    use crate::config::{
+        AgentConfig, AgentKind, DisplayConfig, InsightsConfig, PluginConfig, UpdateConfig,
+    };
 
     /// Walk a serialized default config and assert every leaf key under
     /// `[display]` / `[update]` has a `FieldDescriptor`. Fails if a struct
@@ -619,7 +660,7 @@ mod tests {
         let value = toml::Value::try_from(&cfg).unwrap();
         let table = value.as_table().unwrap();
 
-        for section in ["display", "update"] {
+        for section in ["display", "update", "insights"] {
             let sub = table
                 .get(section)
                 .and_then(|v| v.as_table())
@@ -718,6 +759,7 @@ mod tests {
         }
         assert_eq!(parsed.display, cfg.display);
         assert_eq!(parsed.update, cfg.update);
+        assert_eq!(parsed.insights, cfg.insights);
     }
 
     #[test]
@@ -754,6 +796,10 @@ mod tests {
             update: UpdateConfig {
                 dismissed_version: Some("0.1.18".to_string()),
                 dismiss_all: true,
+            },
+            insights: InsightsConfig {
+                enabled: true,
+                top_n: 8,
             },
         };
         assert_round_trips(&cfg);

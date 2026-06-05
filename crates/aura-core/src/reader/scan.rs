@@ -54,12 +54,45 @@ pub struct ModelAccum {
     pub cache_write_tokens: u64,
 }
 
-#[derive(Debug)]
+/// Substring markers that flag a session as an `ultracode` / high-effort run.
+///
+/// `ultracode` is **not** a structured field in the session JSONL — it is
+/// inferred from content. A session is treated as `ultracode` when its raw
+/// file bytes contain any of these markers:
+///
+/// - `"name":"Workflow"` — a `tool_use` entry invoking the Workflow tool.
+/// - `ultracode` — the literal token, as it appears in a user/system message.
+///
+/// This is a **heuristic** and is Claude-Code-version-dependent: if the marker
+/// disappears in a future release the chip simply stops showing — no crash, no
+/// wrong totals. Kept here as a `const` so the rule is auditable and unit-testable.
+pub const ULTRACODE_MARKERS: &[&str] = &["\"name\":\"Workflow\"", "ultracode"];
+
+/// Per-session statistics accumulated during the single JSONL scan pass.
+///
+/// One entry per non-subagent session file. Powers the Insights tab's
+/// "top sessions" table and mode distribution.
+#[derive(Debug, Default, Clone)]
 pub struct SessionStat {
+    /// Session length in seconds (last timestamp − first timestamp).
     pub duration_secs: u64,
-    #[allow(dead_code)] // used in future UI for session detail display
+    /// Number of relevant entries (assistant + user turns) in the session.
     pub message_count: u64,
+    /// RFC-3339 timestamp of the session's first entry.
     pub start_timestamp: String,
+    /// Stable session identifier — the JSONL file stem (`<uuid>.jsonl` → `<uuid>`).
+    pub session_id: String,
+    /// Slugified project-dir name this session lives under (the `projects/<dir>`
+    /// segment), e.g. `-Users-pedro-Downloads-aura`. Empty when undeterminable.
+    pub project_dir: String,
+    /// `input + output` tokens summed across every assistant turn in the session.
+    pub total_tokens: u64,
+    /// The model that contributed the most `input + output` tokens in this
+    /// session, or `None` when the session had no token-bearing assistant turns.
+    pub dominant_model: Option<String>,
+    /// Whether the session looks like an `ultracode` / high-effort run.
+    /// Heuristic — see [`ULTRACODE_MARKERS`].
+    pub is_ultracode: bool,
 }
 
 /// Raw output of scanning a set of JSONL files.
@@ -72,6 +105,10 @@ pub struct ScanAccum {
     pub daily_message_counts: HashMap<String, u64>,
     pub daily_session_counts: HashMap<String, u64>,
     pub sessions: Vec<SessionStat>,
+    /// project-dir (slugified cwd) → accumulated token usage. Powers the
+    /// Insights "top projects" table. Subagent files are folded into their
+    /// parent project dir.
+    pub tokens_by_project: HashMap<String, ModelAccum>,
     /// hour (0–23) → session start count.
     pub hour_counts: HashMap<u8, u64>,
     pub total_messages: u64,
@@ -143,7 +180,10 @@ pub fn scan_files(
         }
 
         // ── Read and parse entries ────────────────────────────────────────────
-        let entries = match read_jsonl_entries(path) {
+        // `is_ultracode` is a cheap byte-substring check over the same buffer
+        // we already read for JSON parsing — no second file open (see
+        // `ULTRACODE_MARKERS`).
+        let (entries, is_ultracode) = match read_jsonl_entries(path) {
             Ok(e) => e,
             Err(_) => continue, // skip unreadable files silently
         };
@@ -186,7 +226,15 @@ pub fn scan_files(
             }
         }
 
+        // Project dir this file lives under (slugified cwd). Subagent files are
+        // folded into their parent project, so token totals stay attributed to
+        // the project rather than a `subagents/` pseudo-dir.
+        let project_dir = project_dir_of(path, *is_subagent).unwrap_or_default();
+
         // ── Session stats (non-subagent files only) ───────────────────────────
+        // Index of the SessionStat we push for this file, so the per-entry loop
+        // below can fold per-session token totals + dominant model into it.
+        let mut session_idx: Option<usize> = None;
         if !is_subagent {
             let last_ts = relevant
                 .iter()
@@ -197,10 +245,16 @@ pub fn scan_files(
             let duration_secs = ts_diff_secs(first_ts, last_ts);
             let message_count = relevant.len() as u64;
 
+            session_idx = Some(accum.sessions.len());
             accum.sessions.push(SessionStat {
                 duration_secs,
                 message_count,
                 start_timestamp: first_ts.to_string(),
+                session_id: session_id_of(path),
+                project_dir: project_dir.clone(),
+                total_tokens: 0,
+                dominant_model: None,
+                is_ultracode,
             });
 
             *accum
@@ -212,6 +266,10 @@ pub fn scan_files(
                 *accum.hour_counts.entry(hour).or_insert(0) += 1;
             }
         }
+
+        // Per-session per-model token tally, used to pick the dominant model
+        // once the file is fully walked.
+        let mut session_model_tokens: HashMap<String, u64> = HashMap::new();
 
         // ── Per-entry accumulation ────────────────────────────────────────────
         for entry in &relevant {
@@ -249,12 +307,43 @@ pub fn scan_files(
             model_accum.cache_read_tokens += usage.cache_read_input_tokens;
             model_accum.cache_write_tokens += usage.cache_creation_input_tokens;
 
+            // Per-project token usage (Insights "top projects").
+            if !project_dir.is_empty() {
+                let proj = accum
+                    .tokens_by_project
+                    .entry(project_dir.clone())
+                    .or_default();
+                proj.input_tokens += usage.input_tokens;
+                proj.output_tokens += usage.output_tokens;
+                proj.cache_read_tokens += usage.cache_read_input_tokens;
+                proj.cache_write_tokens += usage.cache_creation_input_tokens;
+            }
+
+            // Per-session token tally (input+output) for the dominant-model pick.
+            *session_model_tokens.entry(model.clone()).or_insert(0) +=
+                usage.input_tokens + usage.output_tokens;
+
             // dailyModelTokens: input+output only (matches /usage)
             let day_model = accum
                 .daily_model_tokens
                 .entry(session_date.clone())
                 .or_default();
             *day_model.entry(model).or_insert(0) += usage.input_tokens + usage.output_tokens;
+        }
+
+        // ── Finalize per-session token total + dominant model ──────────────────
+        if let Some(idx) = session_idx {
+            let total: u64 = session_model_tokens.values().sum();
+            // Dominant model = highest token contributor; ties broken by model
+            // name for determinism.
+            let dominant = session_model_tokens
+                .iter()
+                .max_by(|(am, at), (bm, bt)| at.cmp(bt).then_with(|| bm.cmp(am)))
+                .map(|(m, _)| m.clone());
+            if let Some(stat) = accum.sessions.get_mut(idx) {
+                stat.total_tokens = total;
+                stat.dominant_model = dominant;
+            }
         }
     }
 
@@ -311,8 +400,12 @@ pub fn compute_streaks(active_dates: &[String]) -> (u32, u32) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn read_jsonl_entries(path: &Path) -> anyhow::Result<Vec<RawEntry>> {
+/// Read and parse a JSONL session file, returning its entries plus whether the
+/// raw bytes matched any [`ULTRACODE_MARKERS`]. The substring scan runs over the
+/// same buffer used for JSON parsing — no extra file I/O.
+fn read_jsonl_entries(path: &Path) -> anyhow::Result<(Vec<RawEntry>, bool)> {
     let content = fs::read_to_string(path)?;
+    let is_ultracode = content_is_ultracode(&content);
     let mut entries = Vec::new();
     for line in content.lines() {
         let line = line.trim();
@@ -323,7 +416,34 @@ fn read_jsonl_entries(path: &Path) -> anyhow::Result<Vec<RawEntry>> {
             entries.push(entry);
         }
     }
-    Ok(entries)
+    Ok((entries, is_ultracode))
+}
+
+/// Whether `content` contains any [`ULTRACODE_MARKERS`]. Heuristic — see the
+/// marker docs. Kept separate so it can be unit-tested directly.
+pub fn content_is_ultracode(content: &str) -> bool {
+    ULTRACODE_MARKERS.iter().any(|m| content.contains(m))
+}
+
+/// Session id derived from a JSONL path: the file stem (`<uuid>.jsonl` → `<uuid>`).
+fn session_id_of(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The slugified project-dir name a session file lives under (the
+/// `projects/<dir>/` segment). For subagent files (`projects/<dir>/subagents/…`)
+/// the grandparent directory is returned, folding subagents into their project.
+/// Returns `None` when the path has no usable parent.
+fn project_dir_of(path: &Path, is_subagent: bool) -> Option<String> {
+    let dir = if is_subagent {
+        path.parent()?.parent()?
+    } else {
+        path.parent()?
+    };
+    dir.file_name().and_then(|s| s.to_str()).map(str::to_string)
 }
 
 fn file_mtime_date(path: &Path) -> Option<String> {
@@ -557,6 +677,169 @@ mod tests {
         ];
         let (_current, longest) = compute_streaks(&dates);
         assert_eq!(longest, 3);
+    }
+
+    fn tool_use_workflow_entry(ts: &str) -> String {
+        // Mirrors a Claude Code assistant turn that invokes the Workflow tool.
+        serde_json::json!({
+            "type": "assistant",
+            "timestamp": ts,
+            "isSidechain": false,
+            "message": {
+                "model": "claude-opus-4-7",
+                "content": [
+                    { "type": "tool_use", "name": "Workflow", "input": {} }
+                ],
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn ultracode_detection_workflow_tool_use() {
+        let line = tool_use_workflow_entry("2026-05-10T10:00:00Z");
+        assert!(content_is_ultracode(&line));
+    }
+
+    #[test]
+    fn ultracode_detection_literal_token() {
+        // A plain user message that mentions the literal token.
+        let line = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-05-10T10:00:00Z",
+            "message": { "content": "please run in ultracode mode" }
+        })
+        .to_string();
+        assert!(content_is_ultracode(&line));
+    }
+
+    #[test]
+    fn ultracode_detection_plain_session_is_false() {
+        let line = session_entry("2026-05-10T10:00:00Z", "claude-opus-4-7", 10, 20, 0, 0);
+        assert!(!content_is_ultracode(&line));
+    }
+
+    #[test]
+    fn scan_marks_ultracode_session() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj1");
+        fs::create_dir_all(&project).unwrap();
+
+        let ultra = write_jsonl(
+            &project,
+            "ultra.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &tool_use_workflow_entry("2026-05-10T10:01:00Z"),
+            ],
+        );
+        let plain = write_jsonl(
+            &project,
+            "plain.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "claude-opus-4-7", 10, 20, 0, 0),
+            ],
+        );
+
+        let accum = scan_files(&[(ultra, false), (plain, false)], None, None).unwrap();
+        let ultra_stat = accum
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "ultra")
+            .unwrap();
+        let plain_stat = accum
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "plain")
+            .unwrap();
+        assert!(ultra_stat.is_ultracode);
+        assert!(!plain_stat.is_ultracode);
+    }
+
+    #[test]
+    fn scan_picks_dominant_model_and_session_total() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj1");
+        fs::create_dir_all(&project).unwrap();
+
+        // sonnet contributes 30+30=60, opus 100+100=200 → opus dominant, total 260.
+        let file = write_jsonl(
+            &project,
+            "mixed.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "claude-sonnet-4-7", 30, 30, 0, 0),
+                &session_entry("2026-05-10T10:02:00Z", "claude-opus-4-7", 100, 100, 0, 0),
+            ],
+        );
+
+        let accum = scan_files(&[(file, false)], None, None).unwrap();
+        let stat = &accum.sessions[0];
+        assert_eq!(stat.total_tokens, 260);
+        assert_eq!(stat.dominant_model.as_deref(), Some("claude-opus-4-7"));
+        assert_eq!(stat.project_dir, "proj1");
+    }
+
+    #[test]
+    fn scan_accumulates_tokens_per_project() {
+        let dir = tempdir().unwrap();
+        let proj_a = dir.path().join("projects").join("proj-a");
+        let proj_b = dir.path().join("projects").join("proj-b");
+        fs::create_dir_all(&proj_a).unwrap();
+        fs::create_dir_all(&proj_b).unwrap();
+
+        let fa = write_jsonl(
+            &proj_a,
+            "s.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "m", 100, 100, 0, 0),
+            ],
+        );
+        let fb = write_jsonl(
+            &proj_b,
+            "s.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "m", 20, 20, 0, 0),
+            ],
+        );
+
+        let accum = scan_files(&[(fa, false), (fb, false)], None, None).unwrap();
+        let a = accum.tokens_by_project.get("proj-a").unwrap();
+        let b = accum.tokens_by_project.get("proj-b").unwrap();
+        assert_eq!(a.input_tokens + a.output_tokens, 200);
+        assert_eq!(b.input_tokens + b.output_tokens, 40);
+    }
+
+    #[test]
+    fn scan_folds_subagent_tokens_into_parent_project() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj-x");
+        let subagents = project.join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+
+        let main = write_jsonl(
+            &project,
+            "main.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "m", 50, 50, 0, 0),
+            ],
+        );
+        let sub = write_jsonl(
+            &subagents,
+            "agent.jsonl",
+            &[&session_entry("2026-05-10T10:02:00Z", "m", 10, 10, 0, 0)],
+        );
+
+        let accum = scan_files(&[(main, false), (sub, true)], None, None).unwrap();
+        // Both the main file and the subagent fold into "proj-x".
+        let x = accum.tokens_by_project.get("proj-x").unwrap();
+        assert_eq!(x.input_tokens + x.output_tokens, 120);
+        assert!(!accum.tokens_by_project.contains_key("subagents"));
     }
 
     #[test]

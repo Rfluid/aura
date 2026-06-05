@@ -207,6 +207,9 @@ pub fn scan_files(
                 duration_secs,
                 message_count: session_messages,
                 start_timestamp: session_start.clone(),
+                // Per-project / per-session insights are Claude-Code-only; Gemini
+                // sessions leave the new fields at their defaults.
+                ..Default::default()
             });
 
             accum.total_messages += session_messages;

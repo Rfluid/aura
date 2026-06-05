@@ -5,6 +5,7 @@ mod dates;
 pub mod gemini;
 pub(crate) mod gemini_scan;
 mod incremental;
+pub mod insights;
 pub(crate) mod scan;
 mod stats_cache;
 mod watcher;
@@ -13,6 +14,7 @@ pub use claude_code::ClaudeCodeReader;
 pub use codex::CodexReader;
 pub use gemini::GeminiReader;
 pub use incremental::read_jsonl_since;
+pub use insights::{InsightsSnapshot, ModeDistribution, ModelTier, ProjectStat, SessionInsight};
 pub use watcher::ProjectsWatcher;
 
 use crate::config::{AgentConfig, AgentKind};
@@ -124,6 +126,12 @@ pub struct UsageSnapshot {
 
     pub first_session_date: Option<String>,
     pub last_session_date: Option<String>,
+
+    // ── Insights (F3) ───────────────────────────────────────────────────────
+    /// Top projects / sessions and mode distribution for the active period.
+    /// Populated only by the Claude Code reader; other agents leave it at its
+    /// `Default` (all-empty) value.
+    pub insights: InsightsSnapshot,
 }
 
 // ── AgentReader ───────────────────────────────────────────────────────────────

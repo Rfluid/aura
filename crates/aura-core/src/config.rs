@@ -231,6 +231,30 @@ pub struct UpdateConfig {
     pub dismiss_all: bool,
 }
 
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+/// Controls the **Insights** tab (top projects / top sessions / mode
+/// distribution). Hidden by default — the tab only appears when
+/// [`InsightsConfig::enabled`] is true.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InsightsConfig {
+    /// Show the Insights tab. Default `false`, so the feature is opt-in.
+    pub enabled: bool,
+    /// How many rows each ranked list (top projects / top sessions) renders.
+    /// Default `5`.
+    pub top_n: usize,
+}
+
+impl Default for InsightsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            top_n: 5,
+        }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -243,6 +267,8 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub insights: InsightsConfig,
 }
 
 impl AppConfig {
@@ -294,6 +320,7 @@ impl AppConfig {
             plugins: Vec::new(),
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         }
     }
 
@@ -539,6 +566,7 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -556,6 +584,7 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -569,6 +598,7 @@ mod tests {
             plugins: vec![plug("Alpha"), plug("Beta")],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -586,6 +616,30 @@ mod tests {
         assert_eq!(parsed.plugins.len(), cfg.plugins.len());
         assert_eq!(parsed.display, cfg.display);
         assert_eq!(parsed.update, cfg.update);
+        assert_eq!(parsed.insights, cfg.insights);
+    }
+
+    #[test]
+    fn insights_config_defaults_when_block_missing() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.insights, InsightsConfig::default());
+        assert!(!cfg.insights.enabled);
+        assert_eq!(cfg.insights.top_n, 5);
+    }
+
+    #[test]
+    fn insights_config_round_trips_populated_block() {
+        let toml_in = r#"
+[insights]
+enabled = true
+top_n = 8
+"#;
+        let cfg: AppConfig = toml::from_str(toml_in).unwrap();
+        assert!(cfg.insights.enabled);
+        assert_eq!(cfg.insights.top_n, 8);
+        let round = toml::to_string_pretty(&cfg).unwrap();
+        let again: AppConfig = toml::from_str(&round).unwrap();
+        assert_eq!(again.insights, cfg.insights);
     }
 
     #[test]
@@ -642,6 +696,7 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -680,6 +735,7 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {
