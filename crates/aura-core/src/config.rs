@@ -255,6 +255,39 @@ impl Default for InsightsConfig {
     }
 }
 
+// ── Pacing ─────────────────────────────────────────────────────────────────────
+
+/// Settings for the per-session **budget pacing** gauge on the Forecast tab
+/// (F2). Learns the user's active-session pattern from local JSONL history and
+/// recommends how much of the current 5h session to spend so the weekly window
+/// lands at/under 100% at reset. See `FEATURE_SPEC.md`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PacingConfig {
+    /// Master switch for the session-budget gauge. Off by default — opt-in
+    /// until the `active_session_min_tokens` heuristic is tuned against real
+    /// data.
+    pub enabled: bool,
+    /// A session counts as "active" (i.e. real coding, not an idle renewal)
+    /// when its `input + output` tokens reach this threshold. Sessions below it
+    /// are excluded from the learned pattern. Default 50,000 — excludes trivial
+    /// one-message sessions while keeping real coding ones.
+    pub active_session_min_tokens: u64,
+    /// Trailing window, in days, over which the active-session pattern is
+    /// learned. Default 14.
+    pub history_days: u32,
+}
+
+impl Default for PacingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_session_min_tokens: 50_000,
+            history_days: 14,
+        }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -269,6 +302,7 @@ pub struct AppConfig {
     pub update: UpdateConfig,
     #[serde(default)]
     pub insights: InsightsConfig,
+    pub pacing: PacingConfig,
 }
 
 impl AppConfig {
@@ -321,6 +355,7 @@ impl AppConfig {
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         }
     }
 
@@ -567,6 +602,7 @@ mod tests {
             },
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -585,6 +621,7 @@ mod tests {
             },
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -599,6 +636,7 @@ mod tests {
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -697,6 +735,7 @@ dismiss_all = true
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -736,6 +775,7 @@ dismiss_all = true
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
             insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

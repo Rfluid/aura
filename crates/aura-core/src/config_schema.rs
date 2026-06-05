@@ -213,6 +213,43 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 the active period.",
             example: "5",
         },
+        FieldDescriptor {
+            key: "pacing.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the per-session budget gauge on the Forecast tab.",
+            description: "Master switch for the budget-pacing gauge (F2). Off by default — \
+                opt-in until the active_session_min_tokens heuristic is tuned against real \
+                data. When on, the Forecast tab gains a gauge recommending how much of the \
+                current 5h session to spend so the weekly window lands at/under 100% at reset.",
+            example: "false",
+        },
+        FieldDescriptor {
+            key: "pacing.active_session_min_tokens",
+            type_label: "u64",
+            allowed: &[],
+            default: "50000",
+            summary: "Token threshold for a session to count as \"active\".",
+            description: "A session counts as \"active\" (real coding, not an idle renewal) \
+                when its input+output tokens reach this threshold. Sessions below it are \
+                excluded from the learned active-session pattern. Default 50000 — excludes \
+                trivial one-message sessions while keeping real coding ones. Tune against \
+                your own usage.",
+            example: "50000",
+        },
+        FieldDescriptor {
+            key: "pacing.history_days",
+            type_label: "u32",
+            allowed: &[],
+            default: "14",
+            summary: "Trailing window, in days, used to learn the active-session pattern.",
+            description: "Trailing window, in days, over which the active-session pattern is \
+                learned. Active days only contribute (zero-usage days are ignored), and the \
+                per-day counts are trimmed-mean averaged so a marathon day doesn't skew the \
+                estimate. Default 14.",
+            example: "14",
+        },
     ]
 }
 
@@ -383,6 +420,9 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "insights.enabled" => cfg.insights.enabled.to_string(),
         "insights.top_n" => cfg.insights.top_n.to_string(),
+        "pacing.enabled" => cfg.pacing.enabled.to_string(),
+        "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
+        "pacing.history_days" => cfg.pacing.history_days.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -410,6 +450,11 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
         "insights.enabled" => cfg.insights.enabled = parse_bool(key, raw)?,
         "insights.top_n" => cfg.insights.top_n = parse_usize(key, raw)?,
+        "pacing.enabled" => cfg.pacing.enabled = parse_bool(key, raw)?,
+        "pacing.active_session_min_tokens" => {
+            cfg.pacing.active_session_min_tokens = parse_u64(key, raw)?
+        }
+        "pacing.history_days" => cfg.pacing.history_days = parse_u32(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -477,6 +522,22 @@ fn parse_opt_u32(key: &str, raw: &str) -> Result<Option<u32>, SchemaError> {
         })
 }
 
+fn parse_u32(key: &str, raw: &str) -> Result<u32, SchemaError> {
+    raw.parse::<u32>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
+}
+
+fn parse_u64(key: &str, raw: &str) -> Result<u64, SchemaError> {
+    raw.parse::<u64>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
+}
+
 fn parse_opt_string(raw: &str) -> Option<String> {
     if is_clear(raw) {
         None
@@ -523,6 +584,7 @@ pub fn render_commented(cfg: &AppConfig) -> Result<String> {
     push_scalar_table(&mut out, cfg, "update");
     out.push('\n');
     push_scalar_table(&mut out, cfg, "insights");
+    push_scalar_table(&mut out, cfg, "pacing");
 
     Ok(out)
 }
@@ -578,6 +640,9 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "insights.enabled" => cfg.insights.enabled.to_string(),
         "insights.top_n" => cfg.insights.top_n.to_string(),
+        "pacing.enabled" => cfg.pacing.enabled.to_string(),
+        "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
+        "pacing.history_days" => cfg.pacing.history_days.to_string(),
         _ => return None,
     })
 }
@@ -638,7 +703,8 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentKind, DisplayConfig, InsightsConfig, PluginConfig, UpdateConfig,
+        AgentConfig, AgentKind, DisplayConfig, InsightsConfig, PacingConfig, PluginConfig,
+        UpdateConfig,
     };
 
     /// Walk a serialized default config and assert every leaf key under
@@ -660,7 +726,7 @@ mod tests {
         let value = toml::Value::try_from(&cfg).unwrap();
         let table = value.as_table().unwrap();
 
-        for section in ["display", "update", "insights"] {
+        for section in ["display", "update", "insights", "pacing"] {
             let sub = table
                 .get(section)
                 .and_then(|v| v.as_table())
@@ -760,6 +826,7 @@ mod tests {
         assert_eq!(parsed.display, cfg.display);
         assert_eq!(parsed.update, cfg.update);
         assert_eq!(parsed.insights, cfg.insights);
+        assert_eq!(parsed.pacing, cfg.pacing);
     }
 
     #[test]
@@ -800,6 +867,11 @@ mod tests {
             insights: InsightsConfig {
                 enabled: true,
                 top_n: 8,
+            },
+            pacing: PacingConfig {
+                enabled: true,
+                active_session_min_tokens: 40_000,
+                history_days: 21,
             },
         };
         assert_round_trips(&cfg);

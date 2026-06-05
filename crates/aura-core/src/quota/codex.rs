@@ -256,6 +256,7 @@ fn snapshot_from_wham(usage: WhamUsage, fallback_plan: Option<String>) -> QuotaS
         windows,
         source: QuotaSource::Api,
         note,
+        pacing_pattern: None,
     }
 }
 
@@ -392,6 +393,7 @@ fn snapshot_from_local(observed_at: String, rl: RawRateLimits) -> QuotaSnapshot 
         windows,
         source: QuotaSource::Fallback,
         note,
+        pacing_pattern: None,
     }
 }
 

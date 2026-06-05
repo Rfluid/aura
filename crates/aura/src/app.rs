@@ -5,8 +5,8 @@ use aura_core::{
     lexicon::{self, Lexicon},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{
-        forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
-        QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
+        forecast, pacing, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
+        GeminiQuota, PacingStatus, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow, SessionBudget,
     },
     reader::{make_reader, InsightsSnapshot, Period, ProjectStat, SessionInsight, UsageSnapshot},
     state::AppState,
@@ -427,11 +427,34 @@ fn do_refresh(
 
     // Quota windows: per-agent source → unavailable, never `Err`.
     let agent_path = agent.resolved_config_path();
-    let quota = Some(match agent.kind {
-        AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
-        AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
-        AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
+    let mut quota = Some(match agent.kind {
+        AgentKind::ClaudeCode => QuotaApi::new(agent_path.clone()).snapshot(),
+        AgentKind::Codex => CodexQuota::new(agent_path.clone()).snapshot(),
+        AgentKind::Gemini => GeminiQuota::new(agent_path.clone()).snapshot(),
     });
+
+    // Budget pacing (F2, Claude Code only): when enabled and we have live API
+    // percentages, learn the active-session pattern from a local JSONL scan and
+    // attach it to the snapshot so `pacing::session_budget` can pace on it. This
+    // rides the existing refresh — no new timer/thread.
+    if config.pacing.enabled && agent.kind == AgentKind::ClaudeCode {
+        if let Some(q) = quota.as_mut() {
+            if q.source == QuotaSource::Api {
+                let now = Utc::now();
+                let sessions = pacing::collect_session_tokens(
+                    &agent_path,
+                    now,
+                    config.pacing.history_days,
+                );
+                q.pacing_pattern = Some(pacing::learn_pattern(
+                    &sessions,
+                    now,
+                    config.pacing.history_days,
+                    config.pacing.active_session_min_tokens,
+                ));
+            }
+        }
+    }
 
     // Forecast piggybacks on the just-loaded quota snapshot. Same refresh
     // cadence, no extra I/O.
@@ -1280,6 +1303,8 @@ impl AuraView {
                         &self.theme,
                         lex,
                         self.forecast.as_ref(),
+                        self.quota.as_ref(),
+                        self.config.pacing.enabled,
                         accent,
                         self.spinner_frame,
                     ),
@@ -1637,10 +1662,13 @@ fn format_reset(ts: DateTime<Utc>) -> String {
 
 // ── Forecast (projected end-of-window usage at current burn rate) ───────────
 
+#[allow(clippy::too_many_arguments)]
 fn render_forecast(
     theme: &Theme,
     lex: &Lexicon,
     forecast: Option<&ForecastSnapshot>,
+    quota: Option<&QuotaSnapshot>,
+    pacing_enabled: bool,
     accent: u32,
     spinner_frame: usize,
 ) -> AnyElement {
@@ -1671,7 +1699,149 @@ fn render_forecast(
         }
     }
 
+    // Session-budget gauge (F2) — appended below the projected windows when the
+    // feature is enabled. Computed from the live snapshot + learned pattern.
+    if pacing_enabled {
+        if let Some(q) = quota {
+            let budget = pacing::session_budget(q, Utc::now());
+            col = col.child(render_session_budget(theme, lex, &budget, accent));
+        }
+    }
+
     col.into_any_element()
+}
+
+/// The per-session budget gauge (F2). Reuses the forecast card's bar/badge
+/// primitives: a header with a status badge, a usage-vs-ceiling bar, and a
+/// one-line rationale. `Insufficient` collapses to the warming-up note with no
+/// number.
+fn render_session_budget(
+    theme: &Theme,
+    lex: &Lexicon,
+    budget: &SessionBudget,
+    accent: u32,
+) -> impl IntoElement {
+    let (badge_text, badge_color) = match budget.status {
+        PacingStatus::Ok => (lex.pacing_ok, accent),
+        PacingStatus::Watch => (lex.pacing_watch, theme.colors.warning),
+        PacingStatus::Over => (lex.pacing_over, theme.colors.error),
+        PacingStatus::Insufficient => (lex.pacing_insufficient, theme.colors.text_dim),
+    };
+
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(lex.pacing_title)),
+        )
+        .child(
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(badge_color))
+                .text_xs()
+                .text_color(rgb(badge_color))
+                .child(SharedString::from(badge_text)),
+        );
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(header);
+
+    // No fabricated number when we lack history / live data.
+    let (Some(recommended), Some(used)) = (budget.recommended_pct, budget.session_used_pct) else {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(
+                    budget
+                        .note
+                        .clone()
+                        .unwrap_or_else(|| lex.forecast_warming_up.to_string()),
+                )),
+        );
+        return card;
+    };
+
+    card = card.child(
+        div()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from((lex.pacing_spend_up_to_fmt)(
+                recommended,
+            ))),
+    );
+
+    // Gauge: the recommended ceiling is the full track; the solid fill is the
+    // current 5h usage relative to that ceiling. Over budget fills the track
+    // and shows an overflow marker.
+    let ceiling = recommended.max(f64::EPSILON);
+    let used_frac = (used / ceiling).clamp(0.0, 1.0) as f32;
+    let bar_color = match budget.status {
+        PacingStatus::Over => theme.colors.error,
+        PacingStatus::Watch => theme.colors.warning,
+        _ => accent,
+    };
+
+    let bar = div()
+        .h(px(8.0))
+        .flex_1()
+        .bg(rgb(theme.colors.surface_hi))
+        .rounded_md()
+        .flex()
+        .flex_row()
+        .child(
+            div()
+                .h(px(8.0))
+                .w(gpui::relative(used_frac))
+                .bg(rgb(bar_color))
+                .rounded_md(),
+        );
+
+    let mut bar_row = div().flex().flex_row().items_center().gap_2().child(bar);
+    if budget.status == PacingStatus::Over {
+        bar_row = bar_row.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.error))
+                .child("↗"),
+        );
+    }
+    bar_row = bar_row.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "{:.0}% / {:.0}%",
+                used, recommended
+            ))),
+    );
+    card = card.child(bar_row);
+
+    if let Some(note) = &budget.note {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(note.clone())),
+        );
+    }
+
+    card
 }
 
 fn render_forecast_window(
