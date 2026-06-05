@@ -3,6 +3,13 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     lexicon::{self, Lexicon},
+    net::{
+        fleet::{FleetRow, Heartbeat},
+        pairing::PairingSecret,
+        secret_store,
+        transport::NtfyTransport,
+        FleetParams, FleetSync,
+    },
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{
         forecast, pacing, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
@@ -50,6 +57,8 @@ enum AgentSection {
     Summary,
     Models,
     Insights,
+    /// Cross-machine usage comparison. Only present when `[fleet].enabled`.
+    Fleet,
 }
 
 impl AgentSection {
@@ -60,6 +69,7 @@ impl AgentSection {
             Self::Summary => lex.tab_summary,
             Self::Models => lex.tab_models,
             Self::Insights => lex.tab_insights,
+            Self::Fleet => "Fleet",
         }
     }
 
@@ -70,15 +80,17 @@ impl AgentSection {
             Self::Summary => "summary",
             Self::Models => "models",
             Self::Insights => "insights",
+            Self::Fleet => "fleet",
         }
     }
 
     /// Whether this section filters data by the active period. Quota
     /// reports rolling 5h / 7d subscription windows fixed by the API, so
-    /// the period pills don't apply.
+    /// the period pills don't apply. Fleet is account-wide and live, so it
+    /// ignores the period too.
     fn uses_period(self) -> bool {
         match self {
-            Self::Quota | Self::Forecast => false,
+            Self::Quota | Self::Forecast | Self::Fleet => false,
             Self::Summary | Self::Models | Self::Insights => true,
         }
     }
@@ -138,6 +150,18 @@ pub struct AuraView {
     /// visible at the correct size with no visible flash.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     needs_uncloak: Rc<Cell<bool>>,
+
+    /// The running Fleet background sync, when `[fleet].enabled` and a pairing
+    /// secret exists in the keychain. `None` means Fleet is off or unpaired —
+    /// in either case no network task runs.
+    fleet_sync: Option<FleetSync>,
+    /// Pairing code shown transiently in the Fleet panel right after the user
+    /// clicks "Pair a machine" / "Show code". Cleared on panel close so it is
+    /// never persisted to the visible UI (screenshot-leak mitigation).
+    fleet_code: Option<String>,
+    /// One-line status / error for the Fleet panel ("Joined fleet", "Clipboard
+    /// empty", a decode error, etc.).
+    fleet_status: Option<String>,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -207,7 +231,13 @@ impl AuraView {
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
             body_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
+            fleet_sync: None,
+            fleet_code: None,
+            fleet_status: None,
         };
+        // Start the Fleet background sync if the user opted in and a fleet has
+        // been paired. No-op (zero cost) when `[fleet].enabled` is false.
+        view.ensure_fleet_started();
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
         view.refresh(cx);
@@ -284,7 +314,15 @@ impl AuraView {
             // focus-loss check picks up the new dismiss_on_focus_loss
             // value on the next poll without a service restart.
             crate::runtime::set_from_config(&cfg);
+            // If the user toggled `[fleet].enabled` off (or changed the broker)
+            // since the last refresh, stop the running sync so it doesn't keep
+            // using stale params; `ensure_fleet_started` below restarts it when
+            // still enabled.
+            let fleet_changed = self.config.fleet != cfg.fleet;
             self.config = cfg;
+            if fleet_changed {
+                self.fleet_sync = None;
+            }
         }
         if let Some(theme) = result.theme {
             self.theme = theme;
@@ -320,6 +358,12 @@ impl AuraView {
                 .and_then(|name| self.plugin_panels.iter().find(|(n, _)| n == name))
                 .and_then(|(_, panel)| panel.sections.first().map(|s| s.id.clone()));
         }
+
+        // Fleet: (re)start the sync if enabled+paired, then publish a fresh
+        // heartbeat built from the just-loaded Claude quota. Cheap no-ops when
+        // Fleet is off or the active agent isn't Claude.
+        self.ensure_fleet_started();
+        self.push_fleet_heartbeat();
 
         self.is_loading = false;
         cx.notify();
@@ -550,8 +594,154 @@ impl AuraView {
     fn set_agent_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
         if self.active_agent_section != section {
             self.active_agent_section = section;
+            // Leaving the Fleet tab hides any transiently-shown pairing code so
+            // it never lingers on screen.
+            if section != AgentSection::Fleet {
+                self.fleet_code = None;
+            }
             cx.notify();
         }
+    }
+
+    // ── Fleet ─────────────────────────────────────────────────────────────────
+
+    /// Start the Fleet sync loop if (a) the feature is enabled and (b) a
+    /// pairing secret exists in the keychain. Idempotent: a no-op when already
+    /// running, disabled, or unpaired. Never spawns a thread when disabled.
+    fn ensure_fleet_started(&mut self) {
+        if !self.config.fleet.enabled || self.fleet_sync.is_some() {
+            return;
+        }
+        let secret = match secret_store::get() {
+            Ok(Some(s)) => s,
+            Ok(None) => return, // not paired yet — nothing to sync
+            Err(e) => {
+                self.fleet_status = Some(format!("Keychain error: {e}"));
+                return;
+            }
+        };
+        let machine_id = match secret_store::machine_id() {
+            Ok(id) => id,
+            Err(e) => {
+                self.fleet_status = Some(format!("Machine id error: {e}"));
+                return;
+            }
+        };
+        let params = FleetParams {
+            broker_url: self.config.fleet.broker_url.clone(),
+            heartbeat_secs: self.config.fleet.heartbeat_secs,
+            stale_secs: self.config.fleet.stale_secs,
+        };
+        let transport = Box::new(NtfyTransport::new(self.config.fleet.broker_url.clone()));
+        self.fleet_sync = Some(FleetSync::spawn(secret, machine_id, params, transport));
+    }
+
+    /// This machine's display label: the configured override, or the system
+    /// hostname when blank.
+    fn fleet_machine_label(&self) -> String {
+        let configured = self.config.fleet.machine_label.trim();
+        if !configured.is_empty() {
+            return configured.to_string();
+        }
+        hostname_label()
+    }
+
+    /// Build a heartbeat from the latest Claude quota snapshot and hand it to
+    /// the sync loop. Called after every refresh so peers see fresh numbers.
+    /// No-op when Fleet isn't running.
+    fn push_fleet_heartbeat(&self) {
+        let Some(sync) = &self.fleet_sync else {
+            return;
+        };
+        let Some(quota) = &self.quota else { return };
+        let machine_id = match secret_store::machine_id() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        // Match against the Claude quota window labels (api: "Current session"
+        // / "Current week (all models)"; local fallback: "Current session
+        // (local est.)" / "Last 7 days (local est.)").
+        let (session_pct, session_tokens) = window_metrics(quota, &["session", "5h", "5-hour"]);
+        let (weekly_pct, weekly_tokens) =
+            window_metrics(quota, &["week (all models)", "week", "7 day", "7-day", "7d"]);
+        let hb = Heartbeat::new(
+            machine_id,
+            self.fleet_machine_label(),
+            session_pct.unwrap_or(0.0),
+            weekly_pct.unwrap_or(0.0),
+            session_tokens,
+            weekly_tokens,
+            Utc::now(),
+        );
+        sync.publish_local(hb);
+    }
+
+    /// "Pair a machine": generate a fresh secret, store it, (re)start the sync,
+    /// and surface the code for the user to copy onto the second machine.
+    fn fleet_generate_code(&mut self, cx: &mut Context<Self>) {
+        let secret = PairingSecret::generate();
+        if let Err(e) = secret_store::set(&secret) {
+            self.fleet_status = Some(format!("Could not store secret: {e}"));
+            cx.notify();
+            return;
+        }
+        let code = secret.to_code();
+        // Restart the sync against the new secret.
+        self.fleet_sync = None;
+        self.ensure_fleet_started();
+        self.fleet_code = Some(code);
+        self.fleet_status = Some("Code generated — copy it to the other machine.".to_string());
+        self.push_fleet_heartbeat();
+        cx.notify();
+    }
+
+    /// Copy the currently-shown pairing code to the clipboard.
+    fn fleet_copy_code(&mut self, cx: &mut Context<Self>) {
+        if let Some(code) = &self.fleet_code {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()));
+            self.fleet_status = Some("Copied to clipboard.".to_string());
+            cx.notify();
+        }
+    }
+
+    /// "Join fleet": read a pairing code from the clipboard, derive the secret,
+    /// store it, and start syncing.
+    fn fleet_join_from_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            self.fleet_status = Some("Clipboard is empty — copy the code first.".to_string());
+            cx.notify();
+            return;
+        };
+        match PairingSecret::from_code(&text) {
+            Ok(secret) => {
+                if let Err(e) = secret_store::set(&secret) {
+                    self.fleet_status = Some(format!("Could not store secret: {e}"));
+                    cx.notify();
+                    return;
+                }
+                self.fleet_sync = None;
+                self.ensure_fleet_started();
+                self.fleet_code = None;
+                self.fleet_status = Some("Joined fleet.".to_string());
+                self.push_fleet_heartbeat();
+            }
+            Err(e) => {
+                self.fleet_status = Some(format!("Invalid code: {e}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// "Leave fleet": stop syncing and delete the secret from the keychain.
+    fn fleet_leave(&mut self, cx: &mut Context<Self>) {
+        // Dropping the sync joins and stops its thread.
+        self.fleet_sync = None;
+        match secret_store::delete() {
+            Ok(()) => self.fleet_status = Some("Left fleet.".to_string()),
+            Err(e) => self.fleet_status = Some(format!("Could not delete secret: {e}")),
+        }
+        self.fleet_code = None;
+        cx.notify();
     }
 
     fn set_plugin(&mut self, name: String, cx: &mut Context<Self>) {
@@ -626,6 +816,11 @@ impl AuraView {
             .agents
             .iter()
             .find(|a| a.name == self.active_profile)
+    }
+
+    /// Kind of the currently-selected agent, if one is selected.
+    fn current_agent_kind(&self) -> Option<AgentKind> {
+        self.current_agent().map(|a| a.kind)
     }
 
     #[allow(dead_code)]
@@ -1213,6 +1408,13 @@ impl AuraView {
                 // appears when the user has turned it on.
                 if self.config.insights.enabled {
                     sections.push(AgentSection::Insights);
+                // The Fleet tab is hidden unless the user opted in via
+                // `[fleet].enabled`. Only meaningful for the Claude agent
+                // (account-wide rate-limit windows).
+                if self.config.fleet.enabled
+                    && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                {
+                    sections.push(AgentSection::Fleet);
                 }
                 for s in sections {
                     let active = self.active_agent_section == s;
@@ -1266,7 +1468,7 @@ impl AuraView {
         row.into_any_element()
     }
 
-    fn render_body(&self, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let lex = lexicon::pick(self.config.display.goblin_mode);
         let inner: AnyElement = if let Some(err) = &self.error {
             div()
@@ -1325,6 +1527,25 @@ impl AuraView {
                         ),
                         None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
+                    AgentSection::Fleet => {
+                        // Defensive: the tab is hidden for non-Claude agents /
+                        // when disabled, but the selection can persist across a
+                        // profile switch. Fall back to the quota view rather
+                        // than showing an empty Fleet panel.
+                        if self.config.fleet.enabled
+                            && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                        {
+                            self.render_fleet(accent, cx)
+                        } else {
+                            render_quota(
+                                &self.theme,
+                                lex,
+                                self.quota.as_ref(),
+                                accent,
+                                self.spinner_frame,
+                            )
+                        }
+                    }
                 },
                 Mode::Plugin => self.render_plugin_body(),
             }
@@ -2734,6 +2955,172 @@ impl AuraView {
         backdrop.child(card).into_any_element()
     }
 
+    /// Render the Fleet tab: the account sanity line, one row per machine with
+    /// 5h / weekly share bars and a freshness dot, then the pairing sub-panel.
+    fn render_fleet(&self, accent: u32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+        // ── Account sanity line ───────────────────────────────────────────────
+        let (rows, account, reachable) = match &self.fleet_sync {
+            Some(sync) => {
+                let state = sync.state();
+                // Recover from a poisoned lock rather than panicking the UI —
+                // the data is still readable and a hostile broker must never
+                // be able to take down the modal.
+                let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                let now = Utc::now();
+                (
+                    guard.rows(now, self.config.fleet.stale_secs),
+                    guard.account_pcts(),
+                    guard.broker_reachable,
+                )
+            }
+            None => (Vec::new(), None, true),
+        };
+
+        if let Some((session_pct, weekly_pct)) = account {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_4()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(format!("5h session: {session_pct:.0}%")))
+                    .child(SharedString::from(format!("Weekly: {weekly_pct:.0}%"))),
+            );
+        }
+
+        if !reachable {
+            col = col.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.warning))
+                    .child("Broker unreachable — retrying."),
+            );
+        }
+
+        // ── Machine rows ──────────────────────────────────────────────────────
+        if rows.is_empty() {
+            col = col.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(if self.fleet_sync.is_some() {
+                        "Waiting for machines… pair another machine to compare."
+                    } else {
+                        "Fleet is not paired yet. Pair a machine to begin."
+                    }),
+            );
+        } else {
+            for row in &rows {
+                col = col.child(render_fleet_row(theme, row, accent));
+            }
+        }
+
+        // ── Pairing sub-panel ─────────────────────────────────────────────────
+        col = col.child(self.render_fleet_pairing(cx));
+
+        col.into_any_element()
+    }
+
+    /// The generate / join / leave controls plus the transient code display.
+    fn render_fleet_pairing(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let surface_hi = theme.colors.surface_hi;
+        let paired = self.fleet_sync.is_some();
+
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mt_2()
+            .pt_3()
+            .border_t_1()
+            .border_color(rgb(theme.colors.border));
+
+        // Transient code: shown only right after generating, never persisted.
+        if let Some(code) = &self.fleet_code {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(rgb(theme.colors.surface))
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.colors.text_dim))
+                            .child("Pairing code (paste on the other machine):"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.colors.text))
+                            .child(SharedString::from(code.clone())),
+                    )
+                    .child(
+                        fleet_button("fleet-copy-code", "Copy code", theme).on_click(
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_copy_code(cx)),
+                        ),
+                    ),
+            );
+        }
+
+        // Status line.
+        if let Some(status) = &self.fleet_status {
+            panel = panel.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(status.clone())),
+            );
+        }
+
+        // Action row.
+        let mut actions = div().flex().flex_row().flex_wrap().gap_2();
+        actions = actions.child(
+            fleet_button("fleet-pair", "Pair a machine", theme)
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_generate_code(cx))),
+        );
+        actions = actions.child(
+            fleet_button("fleet-join", "Join from clipboard", theme)
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .on_click(
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_join_from_clipboard(cx)),
+                ),
+        );
+        if paired {
+            actions = actions.child(
+                fleet_button("fleet-leave", "Leave fleet", theme)
+                    .hover(move |d| d.bg(rgb(surface_hi)))
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_leave(cx))),
+            );
+        }
+        panel = panel.child(actions);
+
+        panel.into_any_element()
+    }
+
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let backdrop = div()
             .id("settings-backdrop")
@@ -2837,6 +3224,166 @@ const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
 
 fn open_url(url: &str) {
     crate::platform::open_url(url);
+}
+
+// ── Fleet helpers ─────────────────────────────────────────────────────────────
+
+/// One machine row: a freshness dot, the label (with a "you" tag), and the
+/// 5h + weekly share bars. Stale peers render dimmed.
+fn render_fleet_row(theme: &Theme, row: &FleetRow, accent: u32) -> impl IntoElement {
+    let label_color = if row.is_stale {
+        theme.colors.text_dim
+    } else {
+        theme.colors.text
+    };
+    let dot_color = if row.is_stale {
+        theme.colors.text_dim
+    } else {
+        accent
+    };
+
+    let label = if row.is_self {
+        format!("{} (you)", row.label)
+    } else {
+        row.label.clone()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    // Freshness dot.
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded_full()
+                        .bg(rgb(dot_color)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(label_color))
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(fleet_freshness_label(row))),
+                ),
+        )
+        .child(fleet_share_bar(theme, "5h", row.session_share, accent))
+        .child(fleet_share_bar(theme, "wk", row.weekly_share, accent))
+}
+
+/// A single labelled share bar. `share` is a 0.0–1.0 fraction, or `None` when
+/// the machine is stale / reported no tokens (rendered as a dashed em).
+fn fleet_share_bar(theme: &Theme, tag: &str, share: Option<f64>, accent: u32) -> impl IntoElement {
+    let pct_label = match share {
+        Some(s) => format!("{:.0}%", s * 100.0),
+        None => "—".to_string(),
+    };
+    let fraction = share.unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(20.0))
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(tag.to_string())),
+        )
+        .child(
+            div()
+                .h(px(8.0))
+                .flex_1()
+                .bg(rgb(theme.colors.surface_hi))
+                .rounded_md()
+                .child(
+                    div()
+                        .h(px(8.0))
+                        .w(gpui::relative(fraction))
+                        .bg(rgb(accent))
+                        .rounded_md(),
+                ),
+        )
+        .child(
+            div()
+                .w(px(36.0))
+                .text_xs()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(pct_label)),
+        )
+}
+
+/// "updated 8s ago" / "updated 3m ago" freshness string for a peer row.
+fn fleet_freshness_label(row: &FleetRow) -> String {
+    let secs = row.age_secs.max(0);
+    if secs < 60 {
+        format!("updated {secs}s ago")
+    } else {
+        format!("updated {}m ago", secs / 60)
+    }
+}
+
+/// A small bordered text button used in the Fleet pairing sub-panel. Caller
+/// chains `.on_click(...)` (and any `.hover(...)`).
+fn fleet_button(id: &'static str, label: &'static str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .text_xs()
+        .text_color(rgb(theme.colors.text))
+        .bg(rgb(theme.colors.surface))
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(label)
+}
+
+/// The system hostname, used as the default Fleet machine label. Falls back to
+/// `"this machine"` when the env vars aren't set (rare).
+fn hostname_label() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| "this machine".to_string())
+}
+
+/// Pull `(used_percentage, used_tokens)` from the quota window whose label
+/// matches any of `needles` (case-insensitive substring). Returns `(None, None)`
+/// when no matching window is present (e.g. a non-Claude agent).
+fn window_metrics(quota: &QuotaSnapshot, needles: &[&str]) -> (Option<f64>, Option<u64>) {
+    let window = quota.windows.iter().find(|w| {
+        let label = w.label.to_ascii_lowercase();
+        needles.iter().any(|n| label.contains(&n.to_ascii_lowercase()))
+    });
+    match window {
+        Some(w) => (w.used_percentage, w.used_tokens),
+        None => (None, None),
+    }
 }
 
 // ── Helpers: icons, buttons, color math ──────────────────────────────────────

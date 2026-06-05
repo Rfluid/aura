@@ -169,6 +169,64 @@ pub fn fields() -> &'static [FieldDescriptor] {
             example: "false",
         },
         FieldDescriptor {
+            key: "fleet.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Enable the Fleet tab and cross-machine usage sync.",
+            description: "Master switch for the Fleet feature. When false (default) the Fleet \
+                tab is hidden and the background publish/subscribe task is never started — no \
+                network, no keychain access, no cost. When true, paired machines sync \
+                end-to-end-encrypted usage heartbeats over the broker. See docs/fleet.md.",
+            example: "false",
+        },
+        FieldDescriptor {
+            key: "fleet.broker_url",
+            type_label: "string",
+            allowed: &[],
+            default: "https://ntfy.sh",
+            summary: "Base URL of the ntfy pub/sub broker (no trailing slash).",
+            description: "Base URL of the ntfy pub/sub broker. Defaults to the free public \
+                server https://ntfy.sh. Point this at a self-hosted ntfy instance for full \
+                privacy or heavier setups. No trailing slash. The broker only ever sees \
+                ciphertext and an opaque, secret-derived topic name.",
+            example: "https://ntfy.sh",
+        },
+        FieldDescriptor {
+            key: "fleet.machine_label",
+            type_label: "string",
+            allowed: &[],
+            default: "(empty → system hostname)",
+            summary: "Label for this machine in peer rows; empty uses the hostname.",
+            description: "Human-friendly label for this machine in the Fleet peer list. Empty \
+                (default) means \"use the system hostname\". Two machines with the same hostname \
+                are still disambiguated by a random per-install machine id.",
+            example: "Pedros-MacBook-Air",
+        },
+        FieldDescriptor {
+            key: "fleet.heartbeat_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "45",
+            summary: "Seconds between encrypted heartbeat publishes.",
+            description: "How often (seconds) this machine publishes an encrypted heartbeat to \
+                the broker. The public broker's rate limit is far above this; the default keeps \
+                well under it. Values below 10 are clamped up at runtime to stay polite.",
+            example: "45",
+        },
+        FieldDescriptor {
+            key: "fleet.stale_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "120",
+            summary: "Seconds before a silent peer is treated as stale.",
+            description: "A peer with no fresh heartbeat for this many seconds is treated as \
+                stale: its row dims and it is excluded from the per-machine share math. The \
+                replay window (messages older than 2 × heartbeat_secs are dropped) is derived \
+                from heartbeat_secs, not from this value.",
+            example: "120",
+        },
+        FieldDescriptor {
             key: "update.dismissed_version",
             type_label: "string?",
             allowed: &[],
@@ -412,6 +470,17 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .map(|n| n.to_string())
             .unwrap_or_else(|| "(unset)".to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "fleet.enabled" => cfg.fleet.enabled.to_string(),
+        "fleet.broker_url" => cfg.fleet.broker_url.clone(),
+        "fleet.machine_label" => {
+            if cfg.fleet.machine_label.is_empty() {
+                "(unset)".to_string()
+            } else {
+                cfg.fleet.machine_label.clone()
+            }
+        }
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs.to_string(),
+        "fleet.stale_secs" => cfg.fleet.stale_secs.to_string(),
         "update.dismissed_version" => cfg
             .update
             .dismissed_version
@@ -446,6 +515,11 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.auto_resize" => cfg.display.auto_resize = parse_opt_bool(key, raw)?,
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
+        "fleet.enabled" => cfg.fleet.enabled = parse_bool(key, raw)?,
+        "fleet.broker_url" => cfg.fleet.broker_url = raw.trim_end_matches('/').to_string(),
+        "fleet.machine_label" => cfg.fleet.machine_label = raw.to_string(),
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs = parse_u64(key, raw)?,
+        "fleet.stale_secs" => cfg.fleet.stale_secs = parse_u64(key, raw)?,
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
         "insights.enabled" => cfg.insights.enabled = parse_bool(key, raw)?,
@@ -585,6 +659,7 @@ pub fn render_commented(cfg: &AppConfig) -> Result<String> {
     out.push('\n');
     push_scalar_table(&mut out, cfg, "insights");
     push_scalar_table(&mut out, cfg, "pacing");
+    push_scalar_table(&mut out, cfg, "fleet");
 
     Ok(out)
 }
@@ -636,6 +711,11 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.auto_resize" => return cfg.display.auto_resize.map(|b| b.to_string()),
         "display.max_height" => return cfg.display.max_height.map(|n| n.to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "fleet.enabled" => cfg.fleet.enabled.to_string(),
+        "fleet.broker_url" => quote(&cfg.fleet.broker_url),
+        "fleet.machine_label" => quote(&cfg.fleet.machine_label),
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs.to_string(),
+        "fleet.stale_secs" => cfg.fleet.stale_secs.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "insights.enabled" => cfg.insights.enabled.to_string(),
@@ -703,8 +783,8 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentKind, DisplayConfig, InsightsConfig, PacingConfig, PluginConfig,
-        UpdateConfig,
+        AgentConfig, AgentKind, DisplayConfig, FleetConfig, InsightsConfig, PacingConfig,
+        PluginConfig, UpdateConfig,
     };
 
     /// Walk a serialized default config and assert every leaf key under
@@ -726,7 +806,7 @@ mod tests {
         let value = toml::Value::try_from(&cfg).unwrap();
         let table = value.as_table().unwrap();
 
-        for section in ["display", "update", "insights", "pacing"] {
+        for section in ["display", "update", "insights", "pacing", "fleet"] {
             let sub = table
                 .get(section)
                 .and_then(|v| v.as_table())
@@ -827,6 +907,7 @@ mod tests {
         assert_eq!(parsed.update, cfg.update);
         assert_eq!(parsed.insights, cfg.insights);
         assert_eq!(parsed.pacing, cfg.pacing);
+        assert_eq!(parsed.fleet, cfg.fleet);
     }
 
     #[test]
@@ -872,6 +953,13 @@ mod tests {
                 enabled: true,
                 active_session_min_tokens: 40_000,
                 history_days: 21,
+            },
+            fleet: FleetConfig {
+                enabled: true,
+                broker_url: "https://ntfy.example.com".to_string(),
+                machine_label: "Work-Linux".to_string(),
+                heartbeat_secs: 30,
+                stale_secs: 90,
             },
         };
         assert_round_trips(&cfg);
