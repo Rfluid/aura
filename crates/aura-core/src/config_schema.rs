@@ -753,6 +753,8 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "pacing.enabled" => cfg.pacing.enabled.to_string(),
         "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
         "pacing.history_days" => cfg.pacing.history_days.to_string(),
+        "activity.enabled" => cfg.activity.enabled.to_string(),
+        "activity.refresh_secs" => cfg.activity.refresh_secs.to_string(),
         _ => return None,
     })
 }
