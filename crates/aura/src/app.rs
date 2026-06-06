@@ -1408,6 +1408,7 @@ impl AuraView {
                 // appears when the user has turned it on.
                 if self.config.insights.enabled {
                     sections.push(AgentSection::Insights);
+                }
                 // The Fleet tab is hidden unless the user opted in via
                 // `[fleet].enabled`. Only meaningful for the Claude agent
                 // (account-wide rate-limit windows).
