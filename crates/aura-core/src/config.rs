@@ -284,6 +284,10 @@ impl Default for PacingConfig {
             enabled: false,
             active_session_min_tokens: 50_000,
             history_days: 14,
+        }
+    }
+}
+
 // ── Fleet ─────────────────────────────────────────────────────────────────────
 
 /// The `[fleet]` section — cross-machine usage comparison over an
@@ -347,7 +351,9 @@ pub struct AppConfig {
     pub update: UpdateConfig,
     #[serde(default)]
     pub insights: InsightsConfig,
+    #[serde(default)]
     pub pacing: PacingConfig,
+    #[serde(default)]
     pub fleet: FleetConfig,
 }
 
