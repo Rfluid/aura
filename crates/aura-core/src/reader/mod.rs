@@ -15,7 +15,9 @@ pub use codex::CodexReader;
 pub use gemini::GeminiReader;
 pub use incremental::read_jsonl_since;
 pub use scan::sum_tokens_in_range;
-pub use insights::{InsightsSnapshot, ModeDistribution, ModelTier, ProjectStat, SessionInsight};
+pub use insights::{
+    CacheEfficiency, InsightsSnapshot, ModelTier, ProjectStat, SessionInsight, UltracodeRoi,
+};
 pub use watcher::ProjectsWatcher;
 
 use crate::config::{AgentConfig, AgentKind};
@@ -129,7 +131,7 @@ pub struct UsageSnapshot {
     pub last_session_date: Option<String>,
 
     // ── Insights (F3) ───────────────────────────────────────────────────────
-    /// Top projects / sessions and mode distribution for the active period.
+    /// Top projects / sessions and ultracode ROI for the active period.
     /// Populated only by the Claude Code reader; other agents leave it at its
     /// `Default` (all-empty) value.
     pub insights: InsightsSnapshot,

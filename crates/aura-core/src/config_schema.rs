@@ -253,10 +253,10 @@ pub fn fields() -> &'static [FieldDescriptor] {
             type_label: "bool",
             allowed: &["true", "false"],
             default: "false",
-            summary: "Show the Insights tab (top projects / sessions / mode mix).",
+            summary: "Show the Insights tab (top projects / sessions / ultracode ROI / cache).",
             description: "Show the Insights tab, which surfaces the top projects and sessions \
-                by token spend plus a model-tier / ultracode mode distribution. Off by default \
-                — the tab is hidden until you opt in. Mode (ultracode) is inferred from session \
+                by token spend plus an ultracode ROI and cache-efficiency breakdown. Off by \
+                default — the tab is hidden until you opt in. Ultracode is inferred from session \
                 content and is a heuristic.",
             example: "true",
         },

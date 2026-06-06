@@ -15,7 +15,10 @@ use aura_core::{
         forecast, pacing, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
         GeminiQuota, PacingStatus, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow, SessionBudget,
     },
-    reader::{make_reader, InsightsSnapshot, Period, ProjectStat, SessionInsight, UsageSnapshot},
+    reader::{
+        make_reader, CacheEfficiency, InsightsSnapshot, Period, ProjectStat, SessionInsight,
+        UsageSnapshot,
+    },
     state::AppState,
     theme::Theme,
 };
@@ -2445,8 +2448,9 @@ fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl 
 
 // ── Insights ──────────────────────────────────────────────────────────────────
 
-/// Render the Insights tab: top projects, top sessions (with mode badges), and
-/// mode distribution. `top_n` slices the already-ranked lists from the snapshot.
+/// Render the Insights tab: top projects, top sessions (with mode badges),
+/// ultracode ROI, and cache efficiency. `top_n` slices the already-ranked lists
+/// from the snapshot.
 fn render_insights(
     theme: &Theme,
     snap: &UsageSnapshot,
@@ -2458,14 +2462,15 @@ fn render_insights(
 
     col = col.child(render_insights_projects(theme, ins, accent, top_n));
     col = col.child(render_insights_sessions(theme, ins, accent, top_n));
-    col = col.child(render_mode_distribution(theme, ins, accent));
+    col = col.child(render_ultracode_roi(theme, ins, accent));
+    col = col.child(render_cache_efficiency(theme, snap, accent));
 
-    // Heuristic footnote — mode (ultracode) is inferred from session content.
+    // Heuristic footnote — ultracode is inferred from session content.
     col = col.child(
         div()
             .text_xs()
             .text_color(rgb(theme.colors.text_dim))
-            .child("ⓘ mode is inferred from session content"),
+            .child("ⓘ ultracode is inferred from session content"),
     );
 
     col.into_any_element()
@@ -2592,13 +2597,9 @@ fn render_insights_sessions(
 }
 
 fn render_session_row(theme: &Theme, s: &SessionInsight, accent: u32) -> impl IntoElement {
-    // Left: "18.2M · 2h14m · project". Right: mode badges.
-    let summary = format!(
-        "{} · {} · {}",
-        compact_tokens(s.tokens),
-        duration(s.duration_secs),
-        s.project,
-    );
+    // Left: "18.2M · project". Right: mode badges. (Duration is intentionally
+    // omitted — it was wall-clock incl. idle gaps and misled on reopened sessions.)
+    let summary = format!("{} · {}", compact_tokens(s.tokens), s.project);
 
     let mut badges = div().flex().flex_row().flex_shrink_0().gap_1();
     badges = badges.child(mode_badge(theme, s.tier.label(), accent, false));
@@ -2641,68 +2642,111 @@ fn mode_badge(theme: &Theme, label: &str, accent: u32, filled: bool) -> impl Int
         .child(SharedString::from(label.to_string()))
 }
 
-fn render_mode_distribution(
-    theme: &Theme,
-    ins: &InsightsSnapshot,
-    accent: u32,
-) -> impl IntoElement {
-    let dist = &ins.mode_distribution;
-    let mut card = insights_card(theme).child(insights_heading(theme, "MODE DISTRIBUTION"));
+/// Whether heavy/ultracode sessions are actually heavier, by average tokens.
+/// `ultracode` detection is heuristic — see the tab footnote.
+fn render_ultracode_roi(theme: &Theme, ins: &InsightsSnapshot, accent: u32) -> impl IntoElement {
+    let roi = &ins.ultracode_roi;
+    let mut card = insights_card(theme).child(insights_heading(theme, "ULTRACODE ROI"));
 
-    if dist.by_tier.is_empty() {
-        return card.child(empty_hint(theme, "No token activity in this period."));
+    if roi.ultracode_sessions == 0 && roi.normal_sessions == 0 {
+        return card.child(empty_hint(theme, "No sessions in this period."));
     }
 
-    // Tier share row: "opus 92%  sonnet 6%  haiku 2%".
-    let mut tiers = div().flex().flex_row().flex_wrap().gap_3();
-    for (label, _) in &dist.by_tier {
-        let pct = dist.tier_pct(label);
-        tiers = tiers.child(
+    // Two group rows: ultracode (accent) and normal (dim).
+    let group_row = |label: &str, sessions: u32, avg: u64, filled: bool| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(mode_badge(theme, label, accent, filled))
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .text_color(rgb(theme.colors.text))
+                    .child(SharedString::from(format!(
+                        "{sessions} sessions · avg {}",
+                        compact_tokens(avg)
+                    ))),
+            )
+    };
+    card = card.child(group_row(
+        "ultracode",
+        roi.ultracode_sessions,
+        roi.ultracode_avg_tokens,
+        true,
+    ));
+    card = card.child(group_row(
+        "normal",
+        roi.normal_sessions,
+        roi.normal_avg_tokens,
+        false,
+    ));
+
+    // Multiplier line, omitted when there are no normal sessions to divide by.
+    if let Some(mult) = roi.multiplier() {
+        card = card.child(
             div()
-                .flex()
-                .flex_row()
-                .gap_1()
-                .child(
-                    div()
-                        .text_color(rgb(theme.colors.text))
-                        .child(SharedString::from(label.clone())),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(theme.colors.text_dim))
-                        .child(SharedString::from(format!("{pct:.0}%"))),
-                ),
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(format!(
+                    "ultracode sessions are {mult:.1}× heavier on average"
+                ))),
         );
     }
-    card = card.child(tiers);
 
-    // Stacked share bar, segmented by tier (accent fades per tier via blend).
-    let total = dist.total_tokens();
-    if total > 0 {
-        let mut bar = div().flex().flex_row().h(px(6.0)).w_full().rounded_md();
-        for (i, (_, tokens)) in dist.by_tier.iter().enumerate() {
-            let frac = *tokens as f32 / total as f32;
-            // Fade successive segments toward the surface for visual separation.
-            let t = (i as f64 / dist.by_tier.len().max(1) as f64) * 0.5;
-            let seg_color = Theme::blend(accent, theme.colors.surface_hi, t);
-            bar = bar.child(
+    card
+}
+
+/// Share of model context served from cache — a proxy for prompt-reuse
+/// efficiency. Built from the period-scoped snapshot cache totals.
+fn render_cache_efficiency(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
+    let eff = CacheEfficiency::new(snap.total_cache_read_tokens, snap.total_cache_write_tokens);
+    let mut card = insights_card(theme).child(insights_heading(theme, "CACHE EFFICIENCY"));
+
+    let Some(ratio) = eff.hit_ratio_pct() else {
+        return card.child(empty_hint(theme, "No cache activity yet."));
+    };
+
+    // Headline: "95% of context served from cache".
+    card = card.child(
+        div()
+            .text_sm()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "{ratio:.0}% of context served from cache"
+            ))),
+    );
+
+    // Read/write hit bar (accent = reuse, dim = fresh writes).
+    let frac = (ratio / 100.0) as f32;
+    card = card.child(
+        div()
+            .flex()
+            .flex_row()
+            .h(px(6.0))
+            .w_full()
+            .rounded_md()
+            .bg(rgb(theme.colors.surface_hi))
+            .child(
                 div()
                     .h_full()
                     .w(gpui::relative(frac))
-                    .bg(rgb(seg_color)),
-            );
-        }
-        card = card.child(bar);
-    }
+                    .bg(rgb(accent))
+                    .rounded_md(),
+            ),
+    );
 
-    // ultracode vs normal counts.
+    // Raw read/write counts.
     card = card.child(
         div()
             .text_xs()
             .text_color(rgb(theme.colors.text_dim))
             .child(SharedString::from(format!(
-                "ultracode: {} sessions · normal: {}",
-                dist.ultracode_sessions, dist.normal_sessions
+                "cache read: {} · cache write: {}",
+                compact_tokens(eff.read_tokens),
+                compact_tokens(eff.write_tokens)
             ))),
     );
 

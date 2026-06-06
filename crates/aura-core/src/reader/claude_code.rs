@@ -268,6 +268,7 @@ mod tests {
             "type": "assistant",
             "timestamp": ts,
             "isSidechain": false,
+            "cwd": "/Users/pedro/Downloads/my-proj",
             "message": {
                 "model": model,
                 "usage": {
@@ -282,7 +283,12 @@ mod tests {
     }
 
     fn user_entry(ts: &str) -> String {
-        serde_json::json!({ "type": "user", "timestamp": ts }).to_string()
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "cwd": "/Users/pedro/Downloads/my-proj",
+        })
+        .to_string()
     }
 
     fn setup_claude_dir(base: &std::path::Path) -> std::path::PathBuf {

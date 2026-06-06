@@ -24,6 +24,11 @@ pub struct RawEntry {
     /// Present only on `speculation-accept` entries.
     #[serde(rename = "timeSavedMs", default)]
     pub time_saved_ms: u64,
+    /// The real working directory Claude Code recorded for this entry, e.g.
+    /// `/Users/pedro/Downloads/reconhecimento`. Written on every entry; used to
+    /// recover a clean project name (the on-disk dir name is a lossy `/`→`-`
+    /// slug). `None` on older logs that predate the field.
+    pub cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +90,10 @@ pub struct SessionStat {
     /// Slugified project-dir name this session lives under (the `projects/<dir>`
     /// segment), e.g. `-Users-pedro-Downloads-aura`. Empty when undeterminable.
     pub project_dir: String,
+    /// Real working directory from the session's first entry that carries a
+    /// `cwd` field (e.g. `/Users/pedro/Downloads/aura`). `None` on older logs;
+    /// callers fall back to the slugified `project_dir` for display.
+    pub cwd: Option<String>,
     /// `input + output` tokens summed across every assistant turn in the session.
     pub total_tokens: u64,
     /// The model that contributed the most `input + output` tokens in this
@@ -109,6 +118,10 @@ pub struct ScanAccum {
     /// Insights "top projects" table. Subagent files are folded into their
     /// parent project dir.
     pub tokens_by_project: HashMap<String, ModelAccum>,
+    /// project-dir (slugified cwd) → real `cwd` path, captured from the first
+    /// entry seen for that project that carried one. Lets the Insights "top
+    /// projects" table show a clean `basename(cwd)` instead of the lossy slug.
+    pub cwd_by_project: HashMap<String, String>,
     /// hour (0–23) → session start count.
     pub hour_counts: HashMap<u8, u64>,
     pub total_messages: u64,
@@ -294,6 +307,22 @@ pub fn scan_files(
         // the project rather than a `subagents/` pseudo-dir.
         let project_dir = project_dir_of(path, *is_subagent).unwrap_or_default();
 
+        // Real `cwd` of this session, from the first entry that carries one.
+        // Used to recover a clean project name (the slug is lossy). Records it
+        // against the project dir so subagent files contribute too.
+        let session_cwd: Option<String> = relevant
+            .iter()
+            .find_map(|e| e.cwd.as_deref().filter(|c| !c.is_empty()))
+            .map(str::to_string);
+        if !project_dir.is_empty() {
+            if let Some(ref cwd) = session_cwd {
+                accum
+                    .cwd_by_project
+                    .entry(project_dir.clone())
+                    .or_insert_with(|| cwd.clone());
+            }
+        }
+
         // ── Session stats (non-subagent files only) ───────────────────────────
         // Index of the SessionStat we push for this file, so the per-entry loop
         // below can fold per-session token totals + dominant model into it.
@@ -315,6 +344,7 @@ pub fn scan_files(
                 start_timestamp: first_ts.to_string(),
                 session_id: session_id_of(path),
                 project_dir: project_dir.clone(),
+                cwd: session_cwd.clone(),
                 total_tokens: 0,
                 dominant_model: None,
                 is_ultracode,
@@ -567,6 +597,7 @@ mod tests {
             "type": "assistant",
             "timestamp": ts,
             "isSidechain": false,
+            "cwd": "/Users/pedro/Downloads/aura",
             "message": {
                 "model": model,
                 "usage": {
@@ -581,7 +612,12 @@ mod tests {
     }
 
     fn user_entry(ts: &str) -> String {
-        serde_json::json!({ "type": "user", "timestamp": ts }).to_string()
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "cwd": "/Users/pedro/Downloads/aura",
+        })
+        .to_string()
     }
 
     #[test]
@@ -843,6 +879,57 @@ mod tests {
         assert_eq!(stat.total_tokens, 260);
         assert_eq!(stat.dominant_model.as_deref(), Some("claude-opus-4-7"));
         assert_eq!(stat.project_dir, "proj1");
+    }
+
+    #[test]
+    fn scan_captures_cwd_on_session_and_project() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("-Users-pedro-Downloads-aura");
+        fs::create_dir_all(&project).unwrap();
+
+        let file = write_jsonl(
+            &project,
+            "s.jsonl",
+            &[
+                &user_entry("2026-05-10T10:00:00Z"),
+                &session_entry("2026-05-10T10:01:00Z", "claude-opus-4-7", 10, 20, 0, 0),
+            ],
+        );
+
+        let accum = scan_files(&[(file, false)], None, None).unwrap();
+        let stat = &accum.sessions[0];
+        assert_eq!(stat.cwd.as_deref(), Some("/Users/pedro/Downloads/aura"));
+        assert_eq!(
+            accum
+                .cwd_by_project
+                .get("-Users-pedro-Downloads-aura")
+                .map(String::as_str),
+            Some("/Users/pedro/Downloads/aura"),
+        );
+    }
+
+    #[test]
+    fn scan_session_cwd_none_when_field_missing() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj1");
+        fs::create_dir_all(&project).unwrap();
+
+        // Entry written without a `cwd` field (older log format).
+        let no_cwd = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-05-10T10:01:00Z",
+            "isSidechain": false,
+            "message": {
+                "model": "claude-opus-4-7",
+                "usage": { "input_tokens": 10, "output_tokens": 20 }
+            }
+        })
+        .to_string();
+
+        let file = write_jsonl(&project, "s.jsonl", &[&no_cwd]);
+        let accum = scan_files(&[(file, false)], None, None).unwrap();
+        assert!(accum.sessions[0].cwd.is_none());
+        assert!(!accum.cwd_by_project.contains_key("proj1"));
     }
 
     #[test]

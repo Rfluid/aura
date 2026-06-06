@@ -233,8 +233,8 @@ pub struct UpdateConfig {
 
 // ── Insights ──────────────────────────────────────────────────────────────────
 
-/// Controls the **Insights** tab (top projects / top sessions / mode
-/// distribution). Hidden by default — the tab only appears when
+/// Controls the **Insights** tab (top projects / top sessions / ultracode ROI /
+/// cache efficiency). Hidden by default — the tab only appears when
 /// [`InsightsConfig::enabled`] is true.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]

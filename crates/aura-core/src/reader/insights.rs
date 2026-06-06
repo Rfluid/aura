@@ -1,7 +1,7 @@
 //! Insights: pure aggregations over a single [`ScanAccum`] pass that answer the
 //! "interesting" questions a heavy user asks — which project burned the most
-//! tokens, which single session was the most expensive (and what mode it ran
-//! in), and how token spend splits across model tiers.
+//! tokens, which single session was the most expensive, whether `ultracode`
+//! runs are actually heavier, and how much context is served from cache.
 //!
 //! Everything here is derived from data the existing JSONL scan already
 //! collects (`tokens_by_project`, `sessions`); no extra file I/O happens. The
@@ -17,10 +17,14 @@ use super::scan::{ScanAccum, SessionStat};
 /// One project's total token spend, for the "top projects" table.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProjectStat {
-    /// Human-friendly project name (last path segment of the unslugged cwd).
+    /// Display name — `basename(cwd)` (e.g. `reconhecimento`), or the trimmed
+    /// slug when the log carried no `cwd`.
     pub name: String,
     /// Raw slugified project-dir as stored on disk (`-Users-pedro-…`).
     pub dir: String,
+    /// Full working-directory path when known (`/Users/pedro/Downloads/aura`),
+    /// for a tooltip. `None` on older logs that predate the `cwd` field.
+    pub path: Option<String>,
     /// `input + output` tokens across every session under this project.
     pub tokens: u64,
 }
@@ -33,10 +37,10 @@ pub struct ProjectStat {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionInsight {
     pub session_id: String,
-    /// Human-friendly project name this session ran under.
+    /// Display name of the project this session ran under — `basename(cwd)`, or
+    /// the trimmed slug when no `cwd` was logged.
     pub project: String,
     pub tokens: u64,
-    pub duration_secs: u64,
     /// Full dominant-model id (e.g. `claude-opus-4-7`), or `None`.
     pub dominant_model: Option<String>,
     /// Coarse model tier derived from `dominant_model`.
@@ -92,40 +96,66 @@ impl ModelTier {
     }
 }
 
-/// Share of token spend by model tier plus the `ultracode` session split, for
-/// the period in view.
+/// Whether `ultracode` sessions are actually heavier than normal ones, by
+/// average token spend. `ultracode` detection is a **heuristic** — see
+/// [`ULTRACODE_MARKERS`](super::scan::ULTRACODE_MARKERS).
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct ModeDistribution {
-    /// `(tier label, tokens)` pairs sorted by tokens descending. Only tiers
-    /// with non-zero spend appear.
-    pub by_tier: Vec<(String, u64)>,
-    /// Sessions flagged `ultracode` by the content heuristic.
+pub struct UltracodeRoi {
+    /// Number of sessions flagged `ultracode`.
     pub ultracode_sessions: u32,
-    /// Sessions not flagged `ultracode`.
+    /// Number of sessions not flagged `ultracode`.
     pub normal_sessions: u32,
+    /// Mean `input + output` tokens across `ultracode` sessions.
+    pub ultracode_avg_tokens: u64,
+    /// Mean `input + output` tokens across normal sessions.
+    pub normal_avg_tokens: u64,
 }
 
-impl ModeDistribution {
-    /// Total tokens across all tiers (denominator for percentage display).
-    pub fn total_tokens(&self) -> u64 {
-        self.by_tier.iter().map(|(_, t)| *t).sum()
+impl UltracodeRoi {
+    /// How many times heavier the average `ultracode` session is vs the average
+    /// normal one. `None` when there are no normal sessions to divide by (avoids
+    /// divide-by-zero) — the UI then omits the multiplier.
+    pub fn multiplier(&self) -> Option<f64> {
+        if self.normal_avg_tokens == 0 {
+            return None;
+        }
+        Some(self.ultracode_avg_tokens as f64 / self.normal_avg_tokens as f64)
+    }
+}
+
+/// How much of the model's context is served from cache — a proxy for prompt
+/// reuse efficiency. Claude Code re-reads large cached contexts, so a high hit
+/// ratio means little is being re-sent fresh.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CacheEfficiency {
+    /// Cache *read* tokens (context served from cache).
+    pub read_tokens: u64,
+    /// Cache *write* tokens (context newly written to cache).
+    pub write_tokens: u64,
+}
+
+impl CacheEfficiency {
+    pub fn new(read_tokens: u64, write_tokens: u64) -> Self {
+        Self {
+            read_tokens,
+            write_tokens,
+        }
     }
 
-    /// Percentage of total token spend for a given tier label, `0.0` when there
-    /// is no spend. The returned percentages across all tiers sum to 100 (±
-    /// floating-point rounding).
-    pub fn tier_pct(&self, label: &str) -> f64 {
-        let total = self.total_tokens();
+    /// Whether there is any cache activity to report.
+    pub fn has_activity(&self) -> bool {
+        self.read_tokens + self.write_tokens > 0
+    }
+
+    /// Hit ratio `read / (read + write) * 100`, the share of cache traffic that
+    /// was a reuse rather than a fresh write. `None` when there is no activity
+    /// (guards divide-by-zero).
+    pub fn hit_ratio_pct(&self) -> Option<f64> {
+        let total = self.read_tokens + self.write_tokens;
         if total == 0 {
-            return 0.0;
+            return None;
         }
-        let tokens = self
-            .by_tier
-            .iter()
-            .find(|(l, _)| l == label)
-            .map(|(_, t)| *t)
-            .unwrap_or(0);
-        tokens as f64 / total as f64 * 100.0
+        Some(self.read_tokens as f64 / total as f64 * 100.0)
     }
 }
 
@@ -135,7 +165,7 @@ impl ModeDistribution {
 pub struct InsightsSnapshot {
     pub top_projects: Vec<ProjectStat>,
     pub top_sessions: Vec<SessionInsight>,
-    pub mode_distribution: ModeDistribution,
+    pub ultracode_roi: UltracodeRoi,
 }
 
 // ── Aggregations ────────────────────────────────────────────────────────────
@@ -146,10 +176,14 @@ pub(crate) fn top_projects(accum: &ScanAccum, n: usize) -> Vec<ProjectStat> {
     let mut projects: Vec<ProjectStat> = accum
         .tokens_by_project
         .iter()
-        .map(|(dir, acc)| ProjectStat {
-            name: humanize_project(dir),
-            dir: dir.clone(),
-            tokens: acc.input_tokens + acc.output_tokens,
+        .map(|(dir, acc)| {
+            let path = accum.cwd_by_project.get(dir).cloned();
+            ProjectStat {
+                name: project_name(path.as_deref(), dir),
+                dir: dir.clone(),
+                path,
+                tokens: acc.input_tokens + acc.output_tokens,
+            }
         })
         .collect();
     projects.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.dir.cmp(&b.dir)));
@@ -176,36 +210,32 @@ pub(crate) fn top_sessions(accum: &ScanAccum, n: usize) -> Vec<SessionInsight> {
     sessions
 }
 
-/// Share of token spend by model tier plus the ultracode/normal session split,
-/// over every session in the accumulator.
-pub(crate) fn mode_distribution(accum: &ScanAccum) -> ModeDistribution {
-    use std::collections::HashMap;
-
-    let mut by_tier: HashMap<&'static str, u64> = HashMap::new();
-    let mut ultracode_sessions = 0u32;
-    let mut normal_sessions = 0u32;
+/// Average token spend of `ultracode` sessions vs normal ones, over every
+/// session in the accumulator. Averages are integer-truncated; groups with no
+/// sessions report a `0` average.
+pub(crate) fn ultracode_roi(accum: &ScanAccum) -> UltracodeRoi {
+    let mut ultra_sum = 0u64;
+    let mut ultra_count = 0u32;
+    let mut normal_sum = 0u64;
+    let mut normal_count = 0u32;
 
     for s in &accum.sessions {
-        let tier = ModelTier::from_model(s.dominant_model.as_deref());
-        *by_tier.entry(tier.label()).or_insert(0) += s.total_tokens;
         if s.is_ultracode {
-            ultracode_sessions += 1;
+            ultra_sum += s.total_tokens;
+            ultra_count += 1;
         } else {
-            normal_sessions += 1;
+            normal_sum += s.total_tokens;
+            normal_count += 1;
         }
     }
 
-    let mut by_tier: Vec<(String, u64)> = by_tier
-        .into_iter()
-        .filter(|(_, t)| *t > 0)
-        .map(|(l, t)| (l.to_string(), t))
-        .collect();
-    by_tier.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let avg = |sum: u64, count: u32| if count == 0 { 0 } else { sum / count as u64 };
 
-    ModeDistribution {
-        by_tier,
-        ultracode_sessions,
-        normal_sessions,
+    UltracodeRoi {
+        ultracode_sessions: ultra_count,
+        normal_sessions: normal_count,
+        ultracode_avg_tokens: avg(ultra_sum, ultra_count),
+        normal_avg_tokens: avg(normal_sum, normal_count),
     }
 }
 
@@ -215,7 +245,7 @@ pub(crate) fn build_insights(accum: &ScanAccum, n: usize) -> InsightsSnapshot {
     InsightsSnapshot {
         top_projects: top_projects(accum, n),
         top_sessions: top_sessions(accum, n),
-        mode_distribution: mode_distribution(accum),
+        ultracode_roi: ultracode_roi(accum),
     }
 }
 
@@ -224,31 +254,34 @@ pub(crate) fn build_insights(accum: &ScanAccum, n: usize) -> InsightsSnapshot {
 fn session_insight(s: &SessionStat) -> SessionInsight {
     SessionInsight {
         session_id: s.session_id.clone(),
-        project: humanize_project(&s.project_dir),
+        project: project_name(s.cwd.as_deref(), &s.project_dir),
         tokens: s.total_tokens,
-        duration_secs: s.duration_secs,
         tier: ModelTier::from_model(s.dominant_model.as_deref()),
         dominant_model: s.dominant_model.clone(),
         is_ultracode: s.is_ultracode,
     }
 }
 
-/// Turn a slugified project-dir (`-Users-pedro-Downloads-cambrian-api-key-dashboard`)
-/// into a short human label — the last path segment of the original cwd.
+/// Resolve a project's display name.
 ///
-/// Claude Code slugifies a project's cwd by replacing every `/` with `-`, so the
-/// original segment boundaries are not recoverable in general. We take the
-/// trailing run after the final separator, which is the working-directory name
-/// in the common case (`…-cambrian-api-key-dashboard` → `cambrian-api-key-dashboard`).
-/// Empty input yields `"(unknown)"`.
-pub fn humanize_project(dir: &str) -> String {
-    let trimmed = dir.trim_matches('-');
+/// Claude Code stores each project's dir as the cwd slugified by replacing every
+/// `/` with `-`, which is lossy — the original path segments can't be recovered.
+/// So we prefer the real `cwd` Claude Code writes on every entry and display its
+/// `basename` (`/Users/pedro/Downloads/reconhecimento` → `reconhecimento`).
+///
+/// `slug` is the fallback for older logs that predate the `cwd` field: we trim
+/// the leading/trailing dashes and surface the whole slug (`(unknown)` if empty).
+pub fn project_name(cwd: Option<&str>, slug: &str) -> String {
+    if let Some(cwd) = cwd {
+        let base = cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        if !base.is_empty() {
+            return base.to_string();
+        }
+    }
+    let trimmed = slug.trim_matches('-');
     if trimmed.is_empty() {
         return "(unknown)".to_string();
     }
-    // The slug is `<segment>-<segment>-…`; without the original separator map we
-    // can't split path segments, so surface the whole trimmed slug. It reads as
-    // the project path with dashes, which is what users recognise.
     trimmed.to_string()
 }
 
@@ -288,6 +321,7 @@ mod tests {
             start_timestamp: "2026-05-10T10:00:00Z".to_string(),
             session_id: id.to_string(),
             project_dir: project.to_string(),
+            cwd: None,
             total_tokens: tokens,
             dominant_model: model.map(str::to_string),
             is_ultracode: ultracode,
@@ -349,58 +383,99 @@ mod tests {
     }
 
     #[test]
-    fn mode_distribution_tiers_and_counts() {
+    fn ultracode_roi_averages_and_multiplier() {
         let mut accum = ScanAccum::default();
         accum.sessions = vec![
-            session("a", "p", 920, Some("claude-opus-4-7"), true),
-            session("b", "p", 60, Some("claude-sonnet-4-7"), false),
-            session("c", "p", 20, Some("claude-haiku-4"), false),
+            // ultracode: 1000 + 3000 → avg 2000
+            session("u1", "p", 1000, Some("claude-opus-4-7"), true),
+            session("u2", "p", 3000, Some("claude-opus-4-7"), true),
+            // normal: 400 + 600 → avg 500
+            session("n1", "p", 400, Some("claude-opus-4-7"), false),
+            session("n2", "p", 600, Some("claude-opus-4-7"), false),
         ];
-        let dist = mode_distribution(&accum);
-
-        // Sorted by tokens desc.
-        assert_eq!(dist.by_tier[0].0, "opus");
-        assert_eq!(dist.by_tier[0].1, 920);
-        assert_eq!(dist.ultracode_sessions, 1);
-        assert_eq!(dist.normal_sessions, 2);
-
-        // Percentages sum to ~100.
-        let sum: f64 = dist
-            .by_tier
-            .iter()
-            .map(|(l, _)| dist.tier_pct(l))
-            .sum();
-        assert!((sum - 100.0).abs() < 1e-6, "tier pct sum was {sum}");
-        // opus is ~92%.
-        assert!((dist.tier_pct("opus") - 92.0).abs() < 0.001);
+        let roi = ultracode_roi(&accum);
+        assert_eq!(roi.ultracode_sessions, 2);
+        assert_eq!(roi.normal_sessions, 2);
+        assert_eq!(roi.ultracode_avg_tokens, 2000);
+        assert_eq!(roi.normal_avg_tokens, 500);
+        assert_eq!(roi.multiplier(), Some(4.0));
     }
 
     #[test]
-    fn mode_distribution_empty_is_safe() {
-        let accum = ScanAccum::default();
-        let dist = mode_distribution(&accum);
-        assert_eq!(dist.total_tokens(), 0);
-        assert_eq!(dist.tier_pct("opus"), 0.0);
-        assert!(dist.by_tier.is_empty());
+    fn ultracode_roi_multiplier_none_without_normal_sessions() {
+        let mut accum = ScanAccum::default();
+        accum.sessions = vec![session("u1", "p", 1000, Some("claude-opus-4-7"), true)];
+        let roi = ultracode_roi(&accum);
+        assert_eq!(roi.normal_sessions, 0);
+        assert_eq!(roi.normal_avg_tokens, 0);
+        assert_eq!(roi.multiplier(), None); // divide-by-zero guarded
     }
 
     #[test]
-    fn humanize_project_trims_leading_dashes() {
+    fn cache_efficiency_hit_ratio_and_zero_guard() {
+        // 95 read of 100 total → 95%.
+        let eff = CacheEfficiency::new(95, 5);
+        assert!(eff.has_activity());
+        assert!((eff.hit_ratio_pct().unwrap() - 95.0).abs() < 1e-9);
+
+        // No activity → guarded.
+        let empty = CacheEfficiency::new(0, 0);
+        assert!(!empty.has_activity());
+        assert_eq!(empty.hit_ratio_pct(), None);
+    }
+
+    #[test]
+    fn project_name_prefers_cwd_basename() {
+        // Real cwd → basename, even though the slug is lossy.
         assert_eq!(
-            humanize_project("-Users-pedro-Downloads-aura"),
+            project_name(
+                Some("/Users/pedro/Downloads/reconhecimento"),
+                "-Users-pedro-Downloads-reconhecimento"
+            ),
+            "reconhecimento"
+        );
+        // Trailing slash is tolerated.
+        assert_eq!(
+            project_name(Some("/Users/pedro/Downloads/aura/"), "-x"),
+            "aura"
+        );
+    }
+
+    #[test]
+    fn project_name_falls_back_to_slug_when_cwd_missing() {
+        assert_eq!(
+            project_name(None, "-Users-pedro-Downloads-aura"),
             "Users-pedro-Downloads-aura"
         );
-        assert_eq!(humanize_project(""), "(unknown)");
-        assert_eq!(humanize_project("---"), "(unknown)");
+        assert_eq!(project_name(None, ""), "(unknown)");
+        assert_eq!(project_name(None, "---"), "(unknown)");
+        // Empty cwd also falls back.
+        assert_eq!(project_name(Some(""), "-x"), "x");
     }
 
     #[test]
-    fn build_insights_assembles_all_three() {
+    fn top_projects_uses_cwd_basename() {
+        let mut accum = accum_with_projects(&[("-Users-pedro-Downloads-aura", 500)]);
+        accum.cwd_by_project.insert(
+            "-Users-pedro-Downloads-aura".to_string(),
+            "/Users/pedro/Downloads/aura".to_string(),
+        );
+        let top = top_projects(&accum, 5);
+        assert_eq!(top[0].name, "aura");
+        assert_eq!(top[0].path.as_deref(), Some("/Users/pedro/Downloads/aura"));
+    }
+
+    #[test]
+    fn build_insights_assembles_lists_and_roi() {
         let mut accum = accum_with_projects(&[("p1", 500)]);
-        accum.sessions = vec![session("s1", "p1", 500, Some("claude-opus-4-7"), false)];
+        accum.sessions = vec![
+            session("s1", "p1", 500, Some("claude-opus-4-7"), false),
+            session("s2", "p1", 1500, Some("claude-opus-4-7"), true),
+        ];
         let ins = build_insights(&accum, 5);
         assert_eq!(ins.top_projects.len(), 1);
-        assert_eq!(ins.top_sessions.len(), 1);
-        assert_eq!(ins.mode_distribution.by_tier[0].0, "opus");
+        assert_eq!(ins.top_sessions.len(), 2);
+        assert_eq!(ins.ultracode_roi.ultracode_sessions, 1);
+        assert_eq!(ins.ultracode_roi.normal_sessions, 1);
     }
 }
