@@ -4,6 +4,15 @@ version           = "0.1.14"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The live Activity monitor's OS-touching `ActivityMonitor` (which owns a
+# long-lived `sysinfo::System`). On by default so the GUI gets it; the pure
+# `activity` helpers + their unit tests compile without it, so a downstream
+# that only wants the headless logic can opt out with
+# `default-features = false`.
+default  = ["activity"]
+activity = ["dep:sysinfo"]
+
 [dependencies]
 anyhow.workspace                = true
 chrono.workspace                = true
@@ -13,6 +22,14 @@ serde.workspace                 = true
 serde_json.workspace            = true
 thiserror.workspace             = true
 toml.workspace                  = true
+
+# Live process monitor (Activity tab). `default-features = false` + only the
+# `system` feature keeps the footprint lean — we drop sysinfo's disk / network
+# / component / user collectors and the rayon-backed `multithread` refresh,
+# since we only enumerate processes (CPU%, RSS, cwd, parent). Pure Rust,
+# cross-compilable. Pinned to 0.31 to reuse the version already in Cargo.lock
+# (no duplicate-version bloat). Optional + gated behind the `activity` feature.
+sysinfo = { version = "0.31", default-features = false, features = ["system"], optional = true }
 ureq.workspace                  = true
 
 # ── Fleet (cross-machine usage sync) ────────────────────────────────────────

@@ -337,6 +337,35 @@ impl Default for FleetConfig {
     }
 }
 
+// ── Activity ────────────────────────────────────────────────────────────────────
+
+/// The `[activity]` section — the live **Activity** tab, a process monitor
+/// scoped to Claude Code: each CLI session's CPU% + RAM and the heaviest
+/// processes it spawned (MCP servers, build commands, sub-agents). Off by
+/// default: when [`Self::enabled`] is false the tab is hidden and nothing is
+/// sampled, so non-users pay zero cost. See `docs/activity.md`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ActivityConfig {
+    /// Show the Activity tab. Default `false`, so the feature is opt-in.
+    pub enabled: bool,
+    /// How often (seconds) the monitor re-samples while the tab is open and
+    /// active. Sampling stops entirely when the modal closes or the user
+    /// switches tabs, so this only costs while it's on screen. Clamped to a
+    /// minimum of 1 at use. Default `3` — also the spacing sysinfo needs for a
+    /// valid CPU% delta.
+    pub refresh_secs: u64,
+}
+
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            refresh_secs: 3,
+        }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -355,6 +384,8 @@ pub struct AppConfig {
     pub pacing: PacingConfig,
     #[serde(default)]
     pub fleet: FleetConfig,
+    #[serde(default)]
+    pub activity: ActivityConfig,
 }
 
 impl AppConfig {
@@ -409,6 +440,7 @@ impl AppConfig {
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         }
     }
 
@@ -657,6 +689,7 @@ mod tests {
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -677,6 +710,7 @@ mod tests {
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -693,6 +727,7 @@ mod tests {
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -793,6 +828,7 @@ dismiss_all = true
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -834,6 +870,7 @@ dismiss_all = true
             insights: InsightsConfig::default(),
             pacing: PacingConfig::default(),
             fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

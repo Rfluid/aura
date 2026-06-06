@@ -1,6 +1,7 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
+    activity::{ActivityMonitor, ClaudeSession, ProcView},
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     lexicon::{self, Lexicon},
     net::{
@@ -62,6 +63,8 @@ enum AgentSection {
     Insights,
     /// Cross-machine usage comparison. Only present when `[fleet].enabled`.
     Fleet,
+    /// Live Claude Code process monitor. Only present when `[activity].enabled`.
+    Activity,
 }
 
 impl AgentSection {
@@ -73,6 +76,7 @@ impl AgentSection {
             Self::Models => lex.tab_models,
             Self::Insights => lex.tab_insights,
             Self::Fleet => "Fleet",
+            Self::Activity => "Activity",
         }
     }
 
@@ -84,16 +88,17 @@ impl AgentSection {
             Self::Models => "models",
             Self::Insights => "insights",
             Self::Fleet => "fleet",
+            Self::Activity => "activity",
         }
     }
 
     /// Whether this section filters data by the active period. Quota
     /// reports rolling 5h / 7d subscription windows fixed by the API, so
-    /// the period pills don't apply. Fleet is account-wide and live, so it
-    /// ignores the period too.
+    /// the period pills don't apply. Fleet is account-wide and live, and
+    /// Activity is a live process monitor, so both ignore the period too.
     fn uses_period(self) -> bool {
         match self {
-            Self::Quota | Self::Forecast | Self::Fleet => false,
+            Self::Quota | Self::Forecast | Self::Fleet | Self::Activity => false,
             Self::Summary | Self::Models | Self::Insights => true,
         }
     }
@@ -169,6 +174,22 @@ pub struct AuraView {
     /// One-line status / error for the Fleet panel ("Joined fleet", "Clipboard
     /// empty", a decode error, etc.).
     fleet_status: Option<String>,
+
+    /// Live Claude Code process monitor. Owns a long-lived `sysinfo::System`
+    /// so CPU% deltas compute correctly across ticks. Lazily created the first
+    /// time the Activity tab is sampled and dropped with the view when the
+    /// modal closes, so it costs nothing until used.
+    activity_monitor: Option<ActivityMonitor>,
+    /// The most recent Activity sample, rendered by `render_activity`.
+    activity_sessions: Vec<ClaudeSession>,
+    /// True once the monitor has a CPU baseline (after the first sample). Until
+    /// then the UI shows "measuring…" instead of a bogus 0% reading.
+    activity_primed: bool,
+    /// Monotonic token bumped each time the live Activity loop starts. The
+    /// self-rescheduling tick captures its generation and stops as soon as a
+    /// newer loop supersedes it (e.g. the user leaves and re-enters the tab),
+    /// guaranteeing exactly one live sampler at a time.
+    activity_tick: u64,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -243,6 +264,10 @@ impl AuraView {
             fleet_sync: None,
             fleet_code: None,
             fleet_status: None,
+            activity_monitor: None,
+            activity_sessions: Vec::new(),
+            activity_primed: false,
+            activity_tick: 0,
         };
         // Start the Fleet background sync if the user opted in and a fleet has
         // been paired. No-op (zero cost) when `[fleet].enabled` is false.
@@ -638,8 +663,70 @@ impl AuraView {
             if section != AgentSection::Fleet {
                 self.fleet_code = None;
             }
+            // Bumping the generation token stops any running Activity sampler
+            // (its captured generation no longer matches). Entering the tab
+            // starts a fresh one; this guarantees a single live sampler and
+            // zero background cost whenever the tab isn't on screen.
+            self.activity_tick = self.activity_tick.wrapping_add(1);
+            if section == AgentSection::Activity {
+                self.start_activity_loop(cx);
+            }
             cx.notify();
         }
+    }
+
+    // ── Activity (live Claude Code process monitor) ─────────────────────────────
+
+    /// Begin (or restart) the live sampling loop for the Activity tab. Mirrors
+    /// the spinner-tick pattern (`spawn_spinner_tick`): a self-rescheduling
+    /// `cx.spawn` chain whose continuation is gated on a still-valid condition.
+    /// Here the gate is "the captured generation still matches AND the tab is
+    /// still Activity" — so the loop dies the instant the user switches tabs
+    /// or the modal closes (the view drops and `update` fails). The first
+    /// sample primes the CPU baseline; subsequent ones (spaced `refresh_secs`,
+    /// itself ≥ `MINIMUM_CPU_UPDATE_INTERVAL`) carry real CPU deltas.
+    fn start_activity_loop(&mut self, cx: &mut Context<Self>) {
+        // Reuse the monitor across visits so its CPU baseline survives — a
+        // re-entered tab then shows real CPU% immediately instead of
+        // "measuring…". A first-ever visit creates it and pays the one-tick
+        // priming cost.
+        if self.activity_monitor.is_none() {
+            self.activity_monitor = Some(ActivityMonitor::new());
+        }
+        let generation = self.activity_tick;
+        self.sample_activity(cx);
+        self.spawn_activity_tick(generation, cx);
+    }
+
+    /// Take one sample from the monitor into `activity_sessions` and mark the
+    /// baseline primed once the monitor reports it has one.
+    fn sample_activity(&mut self, cx: &mut Context<Self>) {
+        if let Some(monitor) = self.activity_monitor.as_mut() {
+            self.activity_sessions = monitor.sample();
+            self.activity_primed = monitor.is_primed();
+        }
+        cx.notify();
+    }
+
+    /// Schedule a single live re-sample after `refresh_secs`. Re-schedules
+    /// itself only while `generation` is still current and the Activity tab is
+    /// still active; otherwise the chain stops (zero background cost).
+    fn spawn_activity_tick(&self, generation: u64, cx: &mut Context<Self>) {
+        let refresh_secs = self.config.activity.refresh_secs.max(1);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(refresh_secs))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.activity_tick == generation
+                    && view.active_agent_section == AgentSection::Activity
+                {
+                    view.sample_activity(cx);
+                    view.spawn_activity_tick(generation, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     // ── Fleet ─────────────────────────────────────────────────────────────────
@@ -1456,6 +1543,14 @@ impl AuraView {
                 {
                     sections.push(AgentSection::Fleet);
                 }
+                // The Activity tab (live Claude Code process monitor) is hidden
+                // unless the user opted in via `[activity].enabled`. Only
+                // meaningful for the Claude agent.
+                if self.config.activity.enabled
+                    && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                {
+                    sections.push(AgentSection::Activity);
+                }
                 for s in sections {
                     let active = self.active_agent_section == s;
                     row = row.child(
@@ -1587,6 +1682,13 @@ impl AuraView {
                             )
                         }
                     }
+                    AgentSection::Activity => render_activity(
+                        &self.theme,
+                        &self.activity_sessions,
+                        self.activity_primed,
+                        self.config.activity.refresh_secs.max(1),
+                        accent,
+                    ),
                 },
                 Mode::Plugin => self.render_plugin_body(),
             }
@@ -3453,6 +3555,201 @@ fn hostname_label() -> String {
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .filter(|h| !h.trim().is_empty())
         .unwrap_or_else(|| "this machine".to_string())
+}
+
+// ── Activity (live Claude Code process monitor) ─────────────────────────────────
+
+/// Render the live Activity tab: one card per Claude Code session (root +
+/// subtree) sorted by total CPU%, each with its heaviest child processes, plus
+/// a footer of account-wide totals. `primed` is false on the very first sample
+/// (no CPU baseline yet) — in that case CPU numbers render as "measuring…".
+fn render_activity(
+    theme: &Theme,
+    sessions: &[ClaudeSession],
+    primed: bool,
+    refresh_secs: u64,
+    accent: u32,
+) -> AnyElement {
+    let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+    // ── Header: "ACTIVITY · live    ⟳ 3s" ─────────────────────────────────────
+    col = col.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child("ACTIVITY · live"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(format!("⟳ {refresh_secs}s"))),
+            ),
+    );
+
+    if sessions.is_empty() {
+        return col
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child("No Claude Code processes running."),
+            )
+            .into_any_element();
+    }
+
+    for session in sessions {
+        col = col.child(render_activity_session(theme, session, primed, accent));
+    }
+
+    // ── Footer: total CPU% · RAM · session count ──────────────────────────────
+    let total_cpu: f32 = sessions.iter().map(|s| s.total_cpu).sum();
+    let total_mem: u64 = sessions.iter().map(|s| s.total_mem_bytes).sum();
+    let count = sessions.len();
+    let cpu_label = if primed {
+        format!("{total_cpu:.0}% CPU")
+    } else {
+        "measuring…".to_string()
+    };
+    let session_word = if count == 1 { "session" } else { "sessions" };
+    col = col.child(
+        div()
+            .pt_2()
+            .border_t_1()
+            .border_color(rgb(theme.colors.border))
+            .text_xs()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "Total Claude Code: {cpu_label} · {} · {count} {session_word}",
+                format_mem_bytes(total_mem),
+            ))),
+    );
+
+    col.into_any_element()
+}
+
+/// One session card: header row (status dot · project · session · totals) plus
+/// the heaviest child rows beneath it.
+fn render_activity_session(
+    theme: &Theme,
+    session: &ClaudeSession,
+    primed: bool,
+    accent: u32,
+) -> impl IntoElement {
+    let title = match &session.session_id {
+        Some(id) => format!("{} · {id}…", session.project),
+        None => session.project.clone(),
+    };
+    let cpu_mem = if primed {
+        format!(
+            "{:.0}% CPU · {}",
+            session.total_cpu,
+            format_mem_bytes(session.total_mem_bytes)
+        )
+    } else {
+        format!("measuring… · {}", format_mem_bytes(session.total_mem_bytes))
+    };
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    // Live-session dot, accent-coloured.
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded_full()
+                        .bg(rgb(accent)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(theme.colors.text))
+                        .child(SharedString::from(title)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(cpu_mem)),
+                ),
+        );
+
+    for child in &session.children {
+        card = card.child(render_activity_child(theme, child, primed));
+    }
+    card
+}
+
+/// One culprit child row: "↳ node mcp-server-figma    180% · 0.8 GB".
+fn render_activity_child(theme: &Theme, child: &ProcView, primed: bool) -> impl IntoElement {
+    let metrics = if primed {
+        format!("{:.0}% · {}", child.cpu, format_mem_bytes(child.mem_bytes))
+    } else {
+        format!("measuring… · {}", format_mem_bytes(child.mem_bytes))
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .text_xs()
+        .child(
+            div()
+                .flex_1()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(format!("↳ {}", child.label))),
+        )
+        .child(
+            div()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(metrics)),
+        )
+}
+
+/// Human-readable RAM: bytes → "812 MB" / "2.1 GB". Uses binary units (GiB/MiB)
+/// under the conventional GB/MB labels, matching how Activity Monitor and
+/// `top` report process RSS.
+fn format_mem_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.0} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Pull `(used_percentage, used_tokens)` from the quota window whose label

@@ -308,6 +308,31 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 estimate. Default 14.",
             example: "14",
         },
+        FieldDescriptor {
+            key: "activity.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the Activity tab (live Claude Code process monitor).",
+            description: "Show the Activity tab, a live process monitor scoped to Claude Code: \
+                each CLI session's CPU% and RAM plus the heaviest processes it spawned (MCP \
+                servers, build commands, sub-agents). Off by default — the tab is hidden and \
+                nothing is sampled until you opt in. Sampling only runs while the tab is open \
+                and on screen, so it costs nothing otherwise. See docs/activity.md.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "activity.refresh_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "3",
+            summary: "Seconds between live re-samples while the Activity tab is on screen.",
+            description: "How often (seconds) the Activity monitor re-samples while its tab is \
+                open and active. Sampling stops entirely when the modal closes or you switch \
+                tabs. Clamped to a minimum of 1 at use. Default 3 — also the spacing sysinfo \
+                needs to compute a valid CPU% delta between samples.",
+            example: "3",
+        },
     ]
 }
 
@@ -492,6 +517,8 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
         "pacing.enabled" => cfg.pacing.enabled.to_string(),
         "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
         "pacing.history_days" => cfg.pacing.history_days.to_string(),
+        "activity.enabled" => cfg.activity.enabled.to_string(),
+        "activity.refresh_secs" => cfg.activity.refresh_secs.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -529,6 +556,8 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
             cfg.pacing.active_session_min_tokens = parse_u64(key, raw)?
         }
         "pacing.history_days" => cfg.pacing.history_days = parse_u32(key, raw)?,
+        "activity.enabled" => cfg.activity.enabled = parse_bool(key, raw)?,
+        "activity.refresh_secs" => cfg.activity.refresh_secs = parse_u64(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -660,6 +689,7 @@ pub fn render_commented(cfg: &AppConfig) -> Result<String> {
     push_scalar_table(&mut out, cfg, "insights");
     push_scalar_table(&mut out, cfg, "pacing");
     push_scalar_table(&mut out, cfg, "fleet");
+    push_scalar_table(&mut out, cfg, "activity");
 
     Ok(out)
 }
@@ -783,8 +813,8 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentKind, DisplayConfig, FleetConfig, InsightsConfig, PacingConfig,
-        PluginConfig, UpdateConfig,
+        ActivityConfig, AgentConfig, AgentKind, DisplayConfig, FleetConfig, InsightsConfig,
+        PacingConfig, PluginConfig, UpdateConfig,
     };
 
     /// Walk a serialized default config and assert every leaf key under
@@ -806,7 +836,7 @@ mod tests {
         let value = toml::Value::try_from(&cfg).unwrap();
         let table = value.as_table().unwrap();
 
-        for section in ["display", "update", "insights", "pacing", "fleet"] {
+        for section in ["display", "update", "insights", "pacing", "fleet", "activity"] {
             let sub = table
                 .get(section)
                 .and_then(|v| v.as_table())
@@ -960,6 +990,10 @@ mod tests {
                 machine_label: "Work-Linux".to_string(),
                 heartbeat_secs: 30,
                 stale_secs: 90,
+            },
+            activity: ActivityConfig {
+                enabled: true,
+                refresh_secs: 5,
             },
         };
         assert_round_trips(&cfg);
