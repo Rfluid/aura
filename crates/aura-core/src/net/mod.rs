@@ -54,7 +54,19 @@ use transport::FleetTransport;
 
 /// Lower bound on the heartbeat interval, enforced regardless of config, to
 /// stay polite to the public broker's rate limit.
-const MIN_HEARTBEAT_SECS: u64 = 10;
+///
+/// Each cadence the loop makes **two** broker requests: one `publish` (the
+/// outgoing heartbeat) and one `poll` (the long-poll subscribe for peers). The
+/// public `ntfy.sh` broker tolerates roughly **1 request / 10 s** once the
+/// initial burst allowance is spent; exceeding that returns HTTP 429 (verified
+/// live). At the previous floor of 10 s an aggressive config drove ~2 req/10 s
+/// and tripped the limiter. A 20 s floor keeps even the most aggressive config
+/// at ~2 req/20 s = 1 req/10 s, which the broker accepts indefinitely.
+///
+/// The very first heartbeat still fires immediately on spawn (`last_publish`
+/// is back-dated so `due == true` on the first iteration) regardless of this
+/// floor — only the steady-state cadence is clamped.
+const MIN_HEARTBEAT_SECS: u64 = 20;
 
 /// Initial reconnect backoff after a broker error.
 const BACKOFF_START: Duration = Duration::from_secs(2);
@@ -104,11 +116,22 @@ impl FleetSync {
     ///
     /// `transport` is boxed so callers can inject a mock in tests; production
     /// passes a [`transport::NtfyTransport`].
+    ///
+    /// `heartbeat_source` makes the loop **self-sufficient**: each cadence the
+    /// loop calls it to build a fresh heartbeat from the current local quota,
+    /// with no dependency on the UI. This is what lets Fleet keep publishing
+    /// while the modal is closed (the app process is a long-lived tray app).
+    /// The closure runs on the sync thread, so it must be `Send + 'static` and
+    /// own everything it touches; returning `None` skips that cadence's
+    /// self-publish (a UI-pushed [`Self::publish_local`] heartbeat still
+    /// publishes). A UI-pushed heartbeat takes priority for an instant update
+    /// but is no longer required for publishing to happen.
     pub fn spawn(
         secret: PairingSecret,
         self_machine_id: String,
         params: FleetParams,
         transport: Box<dyn FleetTransport>,
+        heartbeat_source: Box<dyn Fn() -> Option<Heartbeat> + Send + 'static>,
     ) -> Self {
         let state = Arc::new(Mutex::new(FleetState::new(self_machine_id)));
         let (tx, rx) = mpsc::sync_channel::<Heartbeat>(OUTBOUND_CAPACITY);
@@ -119,7 +142,15 @@ impl FleetSync {
         let handle = std::thread::Builder::new()
             .name("aura-fleet".to_string())
             .spawn(move || {
-                run_loop(secret, params, transport, loop_state, loop_stop, rx);
+                run_loop(
+                    secret,
+                    params,
+                    transport,
+                    loop_state,
+                    loop_stop,
+                    rx,
+                    heartbeat_source,
+                );
             })
             .expect("spawn fleet thread");
 
@@ -181,6 +212,7 @@ fn run_loop(
     state: Arc<Mutex<FleetState>>,
     stop: Arc<AtomicBool>,
     outbound: Receiver<Heartbeat>,
+    heartbeat_source: Box<dyn Fn() -> Option<Heartbeat> + Send + 'static>,
 ) {
     let topic = secret.topic();
     let key = secret.aead_key();
@@ -197,16 +229,26 @@ fn run_loop(
         .unwrap_or_else(std::time::Instant::now);
 
     while !stop.load(Ordering::Relaxed) {
-        // 1. Publish if it's time, or if a fresh local heartbeat was queued.
+        // 1. Publish if a fresh local heartbeat was queued by the UI, or — when
+        //    the cadence is due — a freshly-built one from `heartbeat_source`.
+        //    The cadence path is what keeps Fleet alive with the modal closed:
+        //    it never depends on the UI having pushed anything.
         let queued = drain_latest(&outbound);
         let due = last_publish.elapsed() >= interval;
-        if let Some(hb) = queued.or_else(|| {
-            if due {
-                state.lock().ok().and_then(|s| s.self_heartbeat_clone())
-            } else {
-                None
+        let outgoing = match next_outbound(queued, due, &heartbeat_source) {
+            Outgoing::FromUi(hb) => Some(hb),
+            // A heartbeat the loop built itself is also mirrored as the local
+            // "self" row, so the user's own row renders even when the UI never
+            // called `publish_local` (modal closed).
+            Outgoing::SelfBuilt(hb) => {
+                if let Ok(mut st) = state.lock() {
+                    st.set_self_heartbeat(hb.clone(), Utc::now());
+                }
+                Some(hb)
             }
-        }) {
+            Outgoing::None => None,
+        };
+        if let Some(hb) = outgoing {
             let plaintext = serde_json::to_vec(&hb).unwrap_or_default();
             if !plaintext.is_empty() {
                 let sealed = crypto::seal(&key, &plaintext);
@@ -270,6 +312,41 @@ fn run_loop(
     }
 }
 
+/// What (if anything) the loop should publish this iteration, and where it came
+/// from — the source matters because a self-built heartbeat is also mirrored
+/// into [`FleetState`] as the local "self" row.
+#[derive(Debug, PartialEq)]
+enum Outgoing {
+    /// A heartbeat the UI pushed via [`FleetSync::publish_local`]. Takes
+    /// priority for an instant update; already mirrored into state by the UI.
+    FromUi(Heartbeat),
+    /// A heartbeat the loop built itself from `heartbeat_source` because the
+    /// cadence was due. Must be mirrored into state as the self row.
+    SelfBuilt(Heartbeat),
+    /// Nothing to publish this iteration.
+    None,
+}
+
+/// Decide what to publish this iteration. Pure (given the source closure) so
+/// the cadence/priority logic is unit-testable without a thread or transport:
+/// a UI-queued heartbeat wins; otherwise, when the cadence is `due`, the loop
+/// builds a fresh one from `source`; otherwise nothing.
+fn next_outbound(
+    queued: Option<Heartbeat>,
+    due: bool,
+    source: &dyn Fn() -> Option<Heartbeat>,
+) -> Outgoing {
+    if let Some(hb) = queued {
+        return Outgoing::FromUi(hb);
+    }
+    if due {
+        if let Some(hb) = source() {
+            return Outgoing::SelfBuilt(hb);
+        }
+    }
+    Outgoing::None
+}
+
 /// Drain the outbound queue, keeping only the most recent heartbeat (older
 /// queued ones are stale).
 fn drain_latest(rx: &Receiver<Heartbeat>) -> Option<Heartbeat> {
@@ -316,9 +393,15 @@ mod tests {
     fn params() -> FleetParams {
         FleetParams {
             broker_url: "mock".to_string(),
-            heartbeat_secs: 10,
+            heartbeat_secs: 20,
             stale_secs: 120,
         }
+    }
+
+    /// A `heartbeat_source` that never volunteers a heartbeat, for tests that
+    /// drive publishing purely through `publish_local`.
+    fn no_source() -> Box<dyn Fn() -> Option<Heartbeat> + Send + 'static> {
+        Box::new(|| None)
     }
 
     #[test]
@@ -346,6 +429,7 @@ mod tests {
             "machine-a".to_string(),
             params(),
             Box::new((*shared).clone()),
+            no_source(),
         );
         // Machine B (same secret → same topic + key).
         let b = FleetSync::spawn(
@@ -353,6 +437,7 @@ mod tests {
             "machine-b".to_string(),
             params(),
             Box::new((*shared).clone()),
+            no_source(),
         );
 
         let now = Utc::now();
@@ -364,10 +449,10 @@ mod tests {
         ));
 
         // Give the loops time to publish + poll. The poll cadence is the
-        // (clamped) 10 s heartbeat interval, so the deadline must clear at
+        // (clamped) 20 s heartbeat interval, so the deadline must clear at
         // least two polls; we poll the assertion to finish as soon as both
         // sides converge rather than always waiting the full timeout.
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
         let mut a_sees_b = false;
         let mut b_sees_a = false;
         while std::time::Instant::now() < deadline {
@@ -386,7 +471,7 @@ mod tests {
     fn publish_local_updates_self_row_immediately() {
         let secret = PairingSecret::generate();
         let transport = Box::new(MockTransport::new());
-        let sync = FleetSync::spawn(secret, "me".to_string(), params(), transport);
+        let sync = FleetSync::spawn(secret, "me".to_string(), params(), transport, no_source());
 
         sync.publish_local(Heartbeat::new(
             "me", "Self", 22.0, 41.0, Some(10), Some(10), Utc::now(),
@@ -395,5 +480,85 @@ mod tests {
         let st = sync.state();
         let guard = st.lock().unwrap();
         assert!(guard.self_heartbeat_clone().is_some());
+    }
+
+    fn fixed_hb() -> Heartbeat {
+        Heartbeat::new("me", "Self", 22.0, 41.0, Some(10), Some(10), Utc::now())
+    }
+
+    #[test]
+    fn next_outbound_prioritises_ui_then_falls_back_to_source() {
+        let hb = fixed_hb();
+        // A UI-queued heartbeat always wins, even when the cadence isn't due.
+        assert_eq!(
+            next_outbound(Some(hb.clone()), false, &|| panic!("source must not be called")),
+            Outgoing::FromUi(hb.clone()),
+        );
+        // No queued heartbeat + cadence due → build one from the source.
+        assert_eq!(
+            next_outbound(None, true, &|| Some(hb.clone())),
+            Outgoing::SelfBuilt(hb.clone()),
+        );
+        // Cadence not due and nothing queued → publish nothing, source unused.
+        assert_eq!(
+            next_outbound(None, false, &|| panic!("source must not be called")),
+            Outgoing::None,
+        );
+        // Source declines (e.g. quota unavailable) → nothing this cadence.
+        assert_eq!(next_outbound(None, true, &|| None), Outgoing::None);
+    }
+
+    /// Background autonomy: with the modal closed (no `publish_local` ever
+    /// called), the loop still publishes a sealed heartbeat that it built from
+    /// `heartbeat_source` — and mirrors it into the self row. This is the whole
+    /// point of the fix: peers see us without anyone holding the UI open.
+    #[test]
+    fn publishes_from_source_without_publish_local() {
+        let secret = PairingSecret::generate();
+        let topic = secret.topic();
+        let transport = MockTransport::new();
+        let probe = transport.clone();
+
+        let sync = FleetSync::spawn(
+            secret,
+            "me".to_string(),
+            params(),
+            Box::new(transport),
+            // Self-sufficient source: a fixed heartbeat, no UI involvement.
+            Box::new(|| {
+                Some(Heartbeat::new(
+                    "me",
+                    "Self",
+                    22.0,
+                    41.0,
+                    Some(10),
+                    Some(10),
+                    Utc::now(),
+                ))
+            }),
+        );
+
+        // The first heartbeat fires immediately on spawn (last_publish is
+        // back-dated so the cadence is due on the first iteration). Wait for it
+        // to land on the topic — no `publish_local` is ever called.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut published = 0;
+        while std::time::Instant::now() < deadline {
+            published = probe.published_count(&topic);
+            if published >= 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            published >= 1,
+            "loop never published from heartbeat_source without publish_local",
+        );
+        // And the self-built heartbeat is mirrored as the local "self" row, so
+        // the user's own row renders with the modal closed.
+        assert!(
+            sync.state().lock().unwrap().self_heartbeat_clone().is_some(),
+            "self-built heartbeat was not mirrored into FleetState",
+        );
     }
 }

@@ -759,7 +759,63 @@ impl AuraView {
             stale_secs: self.config.fleet.stale_secs,
         };
         let transport = Box::new(NtfyTransport::new(self.config.fleet.broker_url.clone()));
-        self.fleet_sync = Some(FleetSync::spawn(secret, machine_id, params, transport));
+
+        // Self-sufficient heartbeat source: the sync thread builds a fresh
+        // heartbeat each cadence by fetching the local Claude quota itself, so
+        // Fleet keeps publishing with the modal closed (the tray app is always
+        // alive). The closure must be `Send + 'static`, so it captures only
+        // owned data — no `&self`, no GPUI handles. One quota snapshot per call.
+        let claude_path = self.claude_config_path();
+        let label = self.fleet_machine_label();
+        let source_machine_id = machine_id.clone();
+        let heartbeat_source: Box<dyn Fn() -> Option<Heartbeat> + Send + 'static> =
+            Box::new(move || {
+                let quota = QuotaApi::new(claude_path.clone()).snapshot();
+                let (session_pct, session_tokens) =
+                    window_metrics(&quota, &["session", "5h", "5-hour"]);
+                let (weekly_pct, weekly_tokens) = window_metrics(
+                    &quota,
+                    &["week (all models)", "week", "7 day", "7-day", "7d"],
+                );
+                Some(Heartbeat::new(
+                    source_machine_id.clone(),
+                    label.clone(),
+                    session_pct.unwrap_or(0.0),
+                    weekly_pct.unwrap_or(0.0),
+                    session_tokens,
+                    weekly_tokens,
+                    Utc::now(),
+                ))
+            });
+
+        self.fleet_sync = Some(FleetSync::spawn(
+            secret,
+            machine_id,
+            params,
+            transport,
+            heartbeat_source,
+        ));
+    }
+
+    /// Config directory the Fleet heartbeat reads Claude quota from: the first
+    /// configured Claude Code agent's resolved path, or the default `~/.claude`
+    /// when none is configured. Returned by value so the result can move into
+    /// the `Send + 'static` heartbeat-source closure.
+    fn claude_config_path(&self) -> PathBuf {
+        self.config
+            .agents
+            .iter()
+            .find(|a| a.kind == AgentKind::ClaudeCode)
+            .map(|a| a.resolved_config_path())
+            .unwrap_or_else(|| {
+                AgentConfig {
+                    name: String::new(),
+                    kind: AgentKind::ClaudeCode,
+                    config_path: None,
+                    color: None,
+                }
+                .resolved_config_path()
+            })
     }
 
     /// This machine's display label: the configured override, or the system
