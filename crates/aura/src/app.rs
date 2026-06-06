@@ -25,8 +25,8 @@ use aura_core::{
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, ScrollHandle,
-    SharedString, Window,
+    div, prelude::*, px, rgb, size, svg, Animation, AnimationExt, AnyElement, ClickEvent, Context,
+    Pixels, ScrollHandle, SharedString, Window,
 };
 
 use crate::format::{
@@ -2510,23 +2510,145 @@ fn render_model_row(
         )
 }
 
+/// Hover card for a single bar in the "Tokens per day" chart. Built fresh on
+/// each hover so its entrance animation replays. Colors are captured as resolved
+/// `u32`s so the view doesn't need to borrow the theme.
+struct DailyBarTooltip {
+    date: SharedString,
+    total: SharedString,
+    /// Per-model breakdown for the day: (short model name, compact tokens).
+    models: Vec<(SharedString, SharedString)>,
+    bg: u32,
+    border: u32,
+    text: u32,
+    text_dim: u32,
+    accent: u32,
+}
+
+impl Render for DailyBarTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .bg(rgb(self.bg))
+            .border_1()
+            .border_color(rgb(self.border))
+            .rounded_md()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(self.text_dim))
+                    .child(self.date.clone()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(self.text))
+                    .child(self.total.clone()),
+            );
+        for (model, tokens) in &self.models {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .gap_3()
+                    .text_xs()
+                    .child(div().text_color(rgb(self.accent)).child(model.clone()))
+                    .child(div().text_color(rgb(self.text_dim)).child(tokens.clone())),
+            );
+        }
+        // Fade + rise into place over ~160ms (ease-out cubic).
+        col.with_animation(
+            "daily-bar-tooltip-in",
+            Animation::new(Duration::from_millis(160)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+            |this, delta| this.opacity(delta).mt(px(6.0 * (1.0 - delta))),
+        )
+    }
+}
+
 fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
-    let days: Vec<(String, u64)> = snap
+    struct DayBar {
+        date: String,
+        total: u64,
+        models: Vec<(String, u64)>,
+    }
+
+    let days: Vec<DayBar> = snap
         .daily_tokens
         .iter()
-        .map(|d| (d.date.clone(), d.by_model.values().sum::<u64>()))
+        .map(|d| {
+            let total = d.by_model.values().sum::<u64>();
+            let mut models: Vec<(String, u64)> =
+                d.by_model.iter().map(|(m, n)| (m.clone(), *n)).collect();
+            models.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            DayBar {
+                date: d.date.clone(),
+                total,
+                models,
+            }
+        })
         .collect();
 
-    let max = days.iter().map(|(_, n)| *n).max().unwrap_or(0);
+    let max = days.iter().map(|d| d.total).max().unwrap_or(0);
+
+    // Captured into each bar's hover/tooltip closures.
+    let surface_hi = theme.colors.surface_hi;
+    let border = theme.colors.border;
+    let text = theme.colors.text;
+    let text_dim = theme.colors.text_dim;
+    // Brighten the accent ~28% toward white for the hover state.
+    let accent_hi = {
+        let lift = |shift: u32| {
+            let c = ((accent >> shift) & 0xff) as f32;
+            ((c + (255.0 - c) * 0.28).round() as u32).min(255)
+        };
+        (lift(16) << 16) | (lift(8) << 8) | lift(0)
+    };
 
     let mut bars = div().flex().flex_row().items_end().gap_1().h(px(56.0));
-    for (_, n) in &days {
+    for (i, d) in days.iter().enumerate() {
         let height = if max > 0 {
-            (*n as f32 / max as f32 * 48.0).max(2.0)
+            (d.total as f32 / max as f32 * 48.0).max(2.0)
         } else {
             2.0
         };
-        bars = bars.child(div().flex_1().h(px(height)).bg(rgb(accent)).rounded_sm());
+        let date = d.date.clone();
+        let total = d.total;
+        let models = d.models.clone();
+        bars = bars.child(
+            div()
+                .id(SharedString::from(format!("daily-bar-{i}")))
+                .flex_1()
+                .h(px(height))
+                .bg(rgb(accent))
+                .rounded_sm()
+                .hover(move |s| s.bg(rgb(accent_hi)))
+                .tooltip(move |_window, cx| {
+                    let models_fmt: Vec<(SharedString, SharedString)> = models
+                        .iter()
+                        .take(3)
+                        .map(|(m, n)| {
+                            let short = m.strip_prefix("claude-").unwrap_or(m);
+                            (SharedString::from(short.to_string()), compact_tokens(*n).into())
+                        })
+                        .collect();
+                    cx.new(|_| DailyBarTooltip {
+                        date: date.clone().into(),
+                        total: format!("{} tokens", compact_tokens(total)).into(),
+                        models: models_fmt,
+                        bg: surface_hi,
+                        border,
+                        text,
+                        text_dim,
+                        accent,
+                    })
+                    .into()
+                }),
+        );
     }
 
     div()
