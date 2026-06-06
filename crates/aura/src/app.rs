@@ -431,6 +431,7 @@ fn do_refresh(
                 snapshot: None,
                 quota: None,
                 forecast: None,
+                pacing_caps: None,
                 plugin_panels: Vec::new(),
                 error: Some(format!("Could not reload config: {e}")),
             };
