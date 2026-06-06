@@ -203,7 +203,7 @@ fn describe_all() {
     let current = AppConfig::load(&AppConfig::default_path()).ok();
 
     println!("Settable keys — `aura config set <key> <value>`:\n");
-    for section in ["display", "update", "insights", "pacing"] {
+    for section in ["display", "update", "insights", "pacing", "fleet"] {
         println!("[{section}]");
         let prefix = format!("{section}.");
         for f in config_schema::fields()
