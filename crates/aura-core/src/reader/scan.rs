@@ -156,6 +156,69 @@ fn collect_jsonl_files(
     Ok(())
 }
 
+/// Sum `input + output` tokens of every `assistant` entry whose **message
+/// timestamp** falls within `[from, to]`, across all non-subagent session
+/// files under `config_path/projects/`.
+///
+/// This is message-level (not session-start): it powers pacing's real-window
+/// token caps, where we need exactly the tokens charged inside a 5h or 7d
+/// rate-limit window. Subagent (`isSidechain`) files and entries are skipped,
+/// matching the rest of the scanner. Files whose mtime predates `from` are
+/// skipped via a cheap OS stat before any parse.
+pub fn sum_tokens_in_range(
+    config_path: &Path,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> u64 {
+    let files = match list_session_files(config_path) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+
+    let mut total: u64 = 0;
+    for (path, is_subagent) in files {
+        if is_subagent {
+            continue;
+        }
+        // Cheap OS check: a file last written before `from` can't hold any
+        // in-range entries, so skip it without reading.
+        if let Ok(meta) = fs::metadata(&path) {
+            if let Ok(mtime) = meta.modified() {
+                let mtime: chrono::DateTime<chrono::Utc> = mtime.into();
+                if mtime < from {
+                    continue;
+                }
+            }
+        }
+        let Ok((entries, _)) = read_jsonl_entries(&path) else {
+            continue;
+        };
+        for entry in entries {
+            if entry.is_sidechain || entry.entry_type != "assistant" {
+                continue;
+            }
+            let Some(ts) = entry.timestamp.as_deref().and_then(parse_entry_ts) else {
+                continue;
+            };
+            if ts < from || ts > to {
+                continue;
+            }
+            if let Some(usage) = entry.message.and_then(|m| m.usage) {
+                total += usage.input_tokens + usage.output_tokens;
+            }
+        }
+    }
+    total
+}
+
+/// Parse an RFC-3339 JSONL timestamp into UTC. Returns `None` on malformed
+/// input so a single bad line never aborts a scan.
+fn parse_entry_ts(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .ok()
+}
+
 // ── Main scanner ──────────────────────────────────────────────────────────────
 
 /// Scan a list of JSONL session files, optionally restricting to entries whose
@@ -840,6 +903,61 @@ mod tests {
         let x = accum.tokens_by_project.get("proj-x").unwrap();
         assert_eq!(x.input_tokens + x.output_tokens, 120);
         assert!(!accum.tokens_by_project.contains_key("subagents"));
+    }
+
+    #[test]
+    fn sum_tokens_in_range_message_level_and_bounds() {
+        use chrono::{DateTime, Utc};
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj");
+        fs::create_dir_all(&project).unwrap();
+
+        write_jsonl(
+            &project,
+            "s.jsonl",
+            &[
+                // before window → excluded
+                &session_entry("2026-05-10T09:00:00Z", "m", 100, 100, 0, 0),
+                // in window → 300
+                &session_entry("2026-05-10T10:00:00Z", "m", 200, 100, 0, 0),
+                // in window → 50
+                &session_entry("2026-05-10T11:00:00Z", "m", 30, 20, 0, 0),
+                // after window → excluded
+                &session_entry("2026-05-10T13:00:00Z", "m", 500, 500, 0, 0),
+                // user entry → no usage, ignored
+                &user_entry("2026-05-10T10:30:00Z"),
+            ],
+        );
+
+        let from: DateTime<Utc> = "2026-05-10T09:30:00Z".parse().unwrap();
+        let to: DateTime<Utc> = "2026-05-10T12:00:00Z".parse().unwrap();
+        let sum = sum_tokens_in_range(dir.path(), from, to);
+        assert_eq!(sum, 350, "only the two in-window assistant entries count");
+    }
+
+    #[test]
+    fn sum_tokens_in_range_skips_subagents() {
+        use chrono::{DateTime, Utc};
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects").join("proj");
+        let subagents = project.join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+
+        write_jsonl(
+            &project,
+            "main.jsonl",
+            &[&session_entry("2026-05-10T10:00:00Z", "m", 100, 100, 0, 0)],
+        );
+        write_jsonl(
+            &subagents,
+            "agent.jsonl",
+            &[&session_entry("2026-05-10T10:00:00Z", "m", 999, 999, 0, 0)],
+        );
+
+        let from: DateTime<Utc> = "2026-05-10T00:00:00Z".parse().unwrap();
+        let to: DateTime<Utc> = "2026-05-11T00:00:00Z".parse().unwrap();
+        let sum = sum_tokens_in_range(dir.path(), from, to);
+        assert_eq!(sum, 200, "subagent file must be ignored");
     }
 
     #[test]

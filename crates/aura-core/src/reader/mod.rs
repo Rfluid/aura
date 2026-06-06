@@ -14,6 +14,7 @@ pub use claude_code::ClaudeCodeReader;
 pub use codex::CodexReader;
 pub use gemini::GeminiReader;
 pub use incremental::read_jsonl_since;
+pub use scan::sum_tokens_in_range;
 pub use insights::{InsightsSnapshot, ModeDistribution, ModelTier, ProjectStat, SessionInsight};
 pub use watcher::ProjectsWatcher;
 

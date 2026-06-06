@@ -18,7 +18,8 @@ pub use codex::CodexQuota;
 pub use forecast::{forecast, ForecastSnapshot, ForecastStatus, ForecastWindow};
 pub use gemini::GeminiQuota;
 pub use pacing::{
-    session_budget, ActivityPattern, PacingStatus, SessionBudget, SessionTokens,
+    compute_caps, session_budget, ActivityPattern, Caps, PacingStatus, SessionBudget,
+    SessionTokens,
 };
 
 use chrono::{DateTime, Utc};

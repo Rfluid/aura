@@ -117,6 +117,10 @@ pub struct AuraView {
 
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    /// Token caps for the session-budget gauge, derived during refresh from the
+    /// quota windows + a local JSONL token sum. `None` when pacing is off or
+    /// usage is too thin to invert a reliable cap.
+    pacing_caps: Option<pacing::Caps>,
     forecast: Option<ForecastSnapshot>,
     /// Indexed by plugin name.
     plugin_panels: Vec<(String, PluginPanel)>,
@@ -176,6 +180,7 @@ struct RefreshResult {
     fallback_profile: Option<String>,
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    pacing_caps: Option<pacing::Caps>,
     forecast: Option<ForecastSnapshot>,
     plugin_panels: Vec<(String, PluginPanel)>,
     error: Option<String>,
@@ -220,6 +225,7 @@ impl AuraView {
             active_plugin_section: None,
             snapshot: None,
             quota: None,
+            pacing_caps: None,
             forecast: None,
             plugin_panels: Vec::new(),
             update: None,
@@ -332,6 +338,7 @@ impl AuraView {
         }
         self.snapshot = result.snapshot;
         self.quota = result.quota;
+        self.pacing_caps = result.pacing_caps;
         self.forecast = result.forecast;
         self.plugin_panels = result.plugin_panels;
         self.error = result.error;
@@ -453,6 +460,7 @@ fn do_refresh(
             fallback_profile,
             snapshot: None,
             quota: None,
+            pacing_caps: None,
             forecast: None,
             plugin_panels: Vec::new(),
             error: Some(format!("Profile `{resolved_profile}` not found in config")),
@@ -481,6 +489,7 @@ fn do_refresh(
     // percentages, learn the active-session pattern from a local JSONL scan and
     // attach it to the snapshot so `pacing::session_budget` can pace on it. This
     // rides the existing refresh — no new timer/thread.
+    let mut pacing_caps: Option<pacing::Caps> = None;
     if config.pacing.enabled && agent.kind == AgentKind::ClaudeCode {
         if let Some(q) = quota.as_mut() {
             if q.source == QuotaSource::Api {
@@ -490,12 +499,37 @@ fn do_refresh(
                     now,
                     config.pacing.history_days,
                 );
+                // The 5h "session" window's `resets_at` anchors the 5h grid the
+                // pattern buckets history onto.
+                let session_resets_at = q
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "Current session")
+                    .and_then(|w| w.resets_at)
+                    .unwrap_or(now);
                 q.pacing_pattern = Some(pacing::learn_pattern(
                     &sessions,
                     now,
                     config.pacing.history_days,
                     config.pacing.active_session_min_tokens,
+                    session_resets_at,
                 ));
+                // Token caps need both the quota windows and the JSONL token
+                // sums — compute them here where both are in scope. `None` when
+                // the windows are missing or usage is too thin to invert a cap.
+                if let (Some(weekly), Some(session)) = (
+                    q.windows
+                        .iter()
+                        .find(|w| w.label == "Current week (all models)")
+                        .cloned(),
+                    q.windows
+                        .iter()
+                        .find(|w| w.label == "Current session")
+                        .cloned(),
+                ) {
+                    pacing_caps =
+                        pacing::compute_caps(&agent_path, &weekly, &session, now).ok();
+                }
             }
         }
     }
@@ -517,6 +551,7 @@ fn do_refresh(
         fallback_profile,
         snapshot,
         quota,
+        pacing_caps,
         forecast,
         plugin_panels,
         error,
@@ -1507,6 +1542,7 @@ impl AuraView {
                         lex,
                         self.forecast.as_ref(),
                         self.quota.as_ref(),
+                        self.pacing_caps,
                         self.config.pacing.enabled,
                         accent,
                         self.spinner_frame,
@@ -1890,6 +1926,7 @@ fn render_forecast(
     lex: &Lexicon,
     forecast: Option<&ForecastSnapshot>,
     quota: Option<&QuotaSnapshot>,
+    pacing_caps: Option<pacing::Caps>,
     pacing_enabled: bool,
     accent: u32,
     spinner_frame: usize,
@@ -1925,7 +1962,7 @@ fn render_forecast(
     // feature is enabled. Computed from the live snapshot + learned pattern.
     if pacing_enabled {
         if let Some(q) = quota {
-            let budget = pacing::session_budget(q, Utc::now());
+            let budget = pacing::session_budget(q, pacing_caps, Utc::now());
             col = col.child(render_session_budget(theme, lex, &budget, accent));
         }
     }
