@@ -97,12 +97,15 @@ struct NtfyEnvelope {
 impl FleetTransport for NtfyTransport {
     fn publish(&self, topic: &str, body: &str) -> Result<()> {
         let url = format!("{}/{}", self.broker_url, topic);
-        // `Priority: min` + `X-Cache: no` keep this a silent, ephemeral
-        // sync channel rather than a user-facing notification.
+        // `Priority: min` keeps this silent (no phone notification). Caching is
+        // left ON: the subscribe side uses one-shot `poll=1`, which only returns
+        // *cached* messages, so a peer that polls a few seconds after a heartbeat
+        // was published still receives it. `X-Cache: no` would drop the message
+        // for any peer not holding a live stream at the exact publish instant —
+        // i.e. always, with this poll-based design.
         self.agent
             .post(&url)
             .header("Priority", "min")
-            .header("X-Cache", "no")
             .header("Content-Type", "text/plain")
             .send(body)
             .map_err(|e| anyhow!("ntfy publish to {url} failed: {e}"))?;
