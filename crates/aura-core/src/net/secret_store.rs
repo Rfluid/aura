@@ -54,6 +54,11 @@ fn data_dir() -> PathBuf {
 }
 
 /// Path of the 0600 file fallback for the secret (Linux headless only).
+///
+/// Only the Linux + "other" `read_raw`/`write_raw`/`delete_raw` paths read this;
+/// macOS and Windows use their native keychains, so the function is dead code
+/// there. The cfg keeps a `-D warnings` build clean on every platform.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn fallback_path() -> PathBuf {
     data_dir().join("fleet-secret")
 }

@@ -46,11 +46,65 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use fleet::{FleetState, Heartbeat};
 use pairing::PairingSecret;
 use transport::FleetTransport;
+
+use crate::quota::QuotaSnapshot;
+
+/// Quota-window label needles for the rolling **5h "session"** window, matched
+/// case-insensitively as substrings. Shared by every heartbeat builder so the
+/// session metric is always pulled from the same window.
+const SESSION_NEEDLES: &[&str] = &["session", "5h", "5-hour"];
+
+/// Quota-window label needles for the rolling **7d "weekly"** window. See
+/// [`SESSION_NEEDLES`].
+const WEEKLY_NEEDLES: &[&str] = &["week (all models)", "week", "7 day", "7-day", "7d"];
+
+/// Pull `(used_percentage, used_tokens)` from the first quota window whose label
+/// matches any of `needles` (case-insensitive substring). Returns `(None, None)`
+/// when no matching window is present (e.g. a non-Claude agent or an
+/// unavailable snapshot).
+fn window_metrics(quota: &QuotaSnapshot, needles: &[&str]) -> (Option<f64>, Option<u64>) {
+    let window = quota.windows.iter().find(|w| {
+        let label = w.label.to_ascii_lowercase();
+        needles
+            .iter()
+            .any(|n| label.contains(&n.to_ascii_lowercase()))
+    });
+    match window {
+        Some(w) => (w.used_percentage, w.used_tokens),
+        None => (None, None),
+    }
+}
+
+/// Build a [`Heartbeat`] from a local Claude quota snapshot.
+///
+/// This is the single source of truth for turning a [`QuotaSnapshot`] into a
+/// heartbeat, used by every publish path so heartbeats are always consistent
+/// (some earlier paths carried `pct` while others carried `tokens`). It locates
+/// the 5h "session" and 7d "weekly" windows by the shared label needles and
+/// folds their percentages + token counts into a fresh heartbeat stamped `now`.
+pub fn build_heartbeat(
+    quota: &QuotaSnapshot,
+    machine_id: String,
+    label: String,
+    now: DateTime<Utc>,
+) -> Heartbeat {
+    let (session_pct, session_tokens) = window_metrics(quota, SESSION_NEEDLES);
+    let (weekly_pct, weekly_tokens) = window_metrics(quota, WEEKLY_NEEDLES);
+    Heartbeat::new(
+        machine_id,
+        label,
+        session_pct.unwrap_or(0.0),
+        weekly_pct.unwrap_or(0.0),
+        session_tokens,
+        weekly_tokens,
+        now,
+    )
+}
 
 /// Lower bound on the heartbeat interval, enforced regardless of config, to
 /// stay polite to the public broker's rate limit.
@@ -388,7 +442,74 @@ fn sleep_with_stop(stop: &Arc<AtomicBool>, total: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quota::{QuotaSnapshot, QuotaWindow};
     use transport::MockTransport;
+
+    fn quota_with(windows: Vec<QuotaWindow>) -> QuotaSnapshot {
+        QuotaSnapshot {
+            windows,
+            ..Default::default()
+        }
+    }
+
+    fn window(label: &str, pct: Option<f64>, tokens: Option<u64>) -> QuotaWindow {
+        QuotaWindow {
+            label: label.to_string(),
+            used_percentage: pct,
+            used_tokens: tokens,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_heartbeat_extracts_session_and_weekly_from_api_labels() {
+        let now = Utc::now();
+        let quota = quota_with(vec![
+            window("Current session", Some(20.0), Some(100)),
+            window("Current week (all models)", Some(40.0), Some(200)),
+        ]);
+        let hb = build_heartbeat(&quota, "id".to_string(), "host".to_string(), now);
+        assert_eq!(hb.machine_id, "id");
+        assert_eq!(hb.label, "host");
+        assert_eq!(hb.session_pct, 20.0);
+        assert_eq!(hb.weekly_pct, 40.0);
+        assert_eq!(hb.session_tokens, Some(100));
+        assert_eq!(hb.weekly_tokens, Some(200));
+        assert_eq!(hb.ts, now);
+    }
+
+    #[test]
+    fn build_heartbeat_matches_local_fallback_labels() {
+        let now = Utc::now();
+        // The local-fallback estimator uses different window labels; the needle
+        // logic must still locate both windows.
+        let quota = quota_with(vec![
+            window("Current session (local est.)", Some(11.0), Some(5)),
+            window("Last 7 days (local est.)", Some(22.0), Some(9)),
+        ]);
+        let hb = build_heartbeat(&quota, "id".to_string(), "host".to_string(), now);
+        assert_eq!(hb.session_pct, 11.0);
+        assert_eq!(hb.weekly_pct, 22.0);
+        assert_eq!(hb.session_tokens, Some(5));
+        assert_eq!(hb.weekly_tokens, Some(9));
+    }
+
+    #[test]
+    fn build_heartbeat_defaults_when_windows_absent() {
+        let now = Utc::now();
+        // A non-Claude / unavailable snapshot has no matching windows → the
+        // heartbeat carries zeroed percentages and no token counts.
+        let hb = build_heartbeat(
+            &QuotaSnapshot::default(),
+            "id".to_string(),
+            "host".to_string(),
+            now,
+        );
+        assert_eq!(hb.session_pct, 0.0);
+        assert_eq!(hb.weekly_pct, 0.0);
+        assert_eq!(hb.session_tokens, None);
+        assert_eq!(hb.weekly_tokens, None);
+    }
 
     fn params() -> FleetParams {
         FleetParams {

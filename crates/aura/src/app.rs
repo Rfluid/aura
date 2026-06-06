@@ -4,13 +4,7 @@ use aura_core::{
     activity::{ActivityMonitor, ClaudeSession, ProcView},
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     lexicon::{self, Lexicon},
-    net::{
-        fleet::{FleetRow, Heartbeat},
-        pairing::PairingSecret,
-        secret_store,
-        transport::NtfyTransport,
-        FleetParams, FleetSync,
-    },
+    net::{fleet::FleetRow, pairing::PairingSecret, secret_store},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{
         forecast, pacing, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
@@ -163,10 +157,6 @@ pub struct AuraView {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     needs_uncloak: Rc<Cell<bool>>,
 
-    /// The running Fleet background sync, when `[fleet].enabled` and a pairing
-    /// secret exists in the keychain. `None` means Fleet is off or unpaired —
-    /// in either case no network task runs.
-    fleet_sync: Option<FleetSync>,
     /// Pairing code shown transiently in the Fleet panel right after the user
     /// clicks "Pair a machine" / "Show code". Cleared on panel close so it is
     /// never persisted to the visible UI (screenshot-leak mitigation).
@@ -261,7 +251,6 @@ impl AuraView {
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
             body_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
-            fleet_sync: None,
             fleet_code: None,
             fleet_status: None,
             activity_monitor: None,
@@ -269,9 +258,10 @@ impl AuraView {
             activity_primed: false,
             activity_tick: 0,
         };
-        // Start the Fleet background sync if the user opted in and a fleet has
-        // been paired. No-op (zero cost) when `[fleet].enabled` is false.
-        view.ensure_fleet_started();
+        // Fleet runs at the process level (see `main::FleetManager`), not here —
+        // so it publishes/polls with the modal closed. The view only reads peers
+        // for rendering and signals the manager via `runtime::mark_fleet_dirty`.
+        //
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
         view.refresh(cx);
@@ -348,14 +338,13 @@ impl AuraView {
             // focus-loss check picks up the new dismiss_on_focus_loss
             // value on the next poll without a service restart.
             crate::runtime::set_from_config(&cfg);
-            // If the user toggled `[fleet].enabled` off (or changed the broker)
-            // since the last refresh, stop the running sync so it doesn't keep
-            // using stale params; `ensure_fleet_started` below restarts it when
-            // still enabled.
+            // If the user toggled `[fleet]` (enable/disable/broker/label) since
+            // the last refresh, signal the process-level Fleet manager to
+            // reconcile so it (re)starts or stops the sync with the new params.
             let fleet_changed = self.config.fleet != cfg.fleet;
             self.config = cfg;
             if fleet_changed {
-                self.fleet_sync = None;
+                crate::runtime::mark_fleet_dirty();
             }
         }
         if let Some(theme) = result.theme {
@@ -393,12 +382,6 @@ impl AuraView {
                 .and_then(|name| self.plugin_panels.iter().find(|(n, _)| n == name))
                 .and_then(|(_, panel)| panel.sections.first().map(|s| s.id.clone()));
         }
-
-        // Fleet: (re)start the sync if enabled+paired, then publish a fresh
-        // heartbeat built from the just-loaded Claude quota. Cheap no-ops when
-        // Fleet is off or the active agent isn't Claude.
-        self.ensure_fleet_started();
-        self.push_fleet_heartbeat();
 
         self.is_loading = false;
         cx.notify();
@@ -730,136 +713,16 @@ impl AuraView {
     }
 
     // ── Fleet ─────────────────────────────────────────────────────────────────
+    //
+    // The Fleet sync runs at the process level (see `main::FleetManager`), not
+    // here — so it publishes/polls 24/7 with the modal closed. The view's only
+    // jobs are to (a) read peers for rendering via `runtime::fleet_state()` and
+    // (b) mutate the keychain secret on pair/join/leave, then signal the manager
+    // to reconcile via `runtime::mark_fleet_dirty()`.
 
-    /// Start the Fleet sync loop if (a) the feature is enabled and (b) a
-    /// pairing secret exists in the keychain. Idempotent: a no-op when already
-    /// running, disabled, or unpaired. Never spawns a thread when disabled.
-    fn ensure_fleet_started(&mut self) {
-        if !self.config.fleet.enabled || self.fleet_sync.is_some() {
-            return;
-        }
-        let secret = match secret_store::get() {
-            Ok(Some(s)) => s,
-            Ok(None) => return, // not paired yet — nothing to sync
-            Err(e) => {
-                self.fleet_status = Some(format!("Keychain error: {e}"));
-                return;
-            }
-        };
-        let machine_id = match secret_store::machine_id() {
-            Ok(id) => id,
-            Err(e) => {
-                self.fleet_status = Some(format!("Machine id error: {e}"));
-                return;
-            }
-        };
-        let params = FleetParams {
-            broker_url: self.config.fleet.broker_url.clone(),
-            heartbeat_secs: self.config.fleet.heartbeat_secs,
-            stale_secs: self.config.fleet.stale_secs,
-        };
-        let transport = Box::new(NtfyTransport::new(self.config.fleet.broker_url.clone()));
-
-        // Self-sufficient heartbeat source: the sync thread builds a fresh
-        // heartbeat each cadence by fetching the local Claude quota itself, so
-        // Fleet keeps publishing with the modal closed (the tray app is always
-        // alive). The closure must be `Send + 'static`, so it captures only
-        // owned data — no `&self`, no GPUI handles. One quota snapshot per call.
-        let claude_path = self.claude_config_path();
-        let label = self.fleet_machine_label();
-        let source_machine_id = machine_id.clone();
-        let heartbeat_source: Box<dyn Fn() -> Option<Heartbeat> + Send + 'static> =
-            Box::new(move || {
-                let quota = QuotaApi::new(claude_path.clone()).snapshot();
-                let (session_pct, session_tokens) =
-                    window_metrics(&quota, &["session", "5h", "5-hour"]);
-                let (weekly_pct, weekly_tokens) = window_metrics(
-                    &quota,
-                    &["week (all models)", "week", "7 day", "7-day", "7d"],
-                );
-                Some(Heartbeat::new(
-                    source_machine_id.clone(),
-                    label.clone(),
-                    session_pct.unwrap_or(0.0),
-                    weekly_pct.unwrap_or(0.0),
-                    session_tokens,
-                    weekly_tokens,
-                    Utc::now(),
-                ))
-            });
-
-        self.fleet_sync = Some(FleetSync::spawn(
-            secret,
-            machine_id,
-            params,
-            transport,
-            heartbeat_source,
-        ));
-    }
-
-    /// Config directory the Fleet heartbeat reads Claude quota from: the first
-    /// configured Claude Code agent's resolved path, or the default `~/.claude`
-    /// when none is configured. Returned by value so the result can move into
-    /// the `Send + 'static` heartbeat-source closure.
-    fn claude_config_path(&self) -> PathBuf {
-        self.config
-            .agents
-            .iter()
-            .find(|a| a.kind == AgentKind::ClaudeCode)
-            .map(|a| a.resolved_config_path())
-            .unwrap_or_else(|| {
-                AgentConfig {
-                    name: String::new(),
-                    kind: AgentKind::ClaudeCode,
-                    config_path: None,
-                    color: None,
-                }
-                .resolved_config_path()
-            })
-    }
-
-    /// This machine's display label: the configured override, or the system
-    /// hostname when blank.
-    fn fleet_machine_label(&self) -> String {
-        let configured = self.config.fleet.machine_label.trim();
-        if !configured.is_empty() {
-            return configured.to_string();
-        }
-        hostname_label()
-    }
-
-    /// Build a heartbeat from the latest Claude quota snapshot and hand it to
-    /// the sync loop. Called after every refresh so peers see fresh numbers.
-    /// No-op when Fleet isn't running.
-    fn push_fleet_heartbeat(&self) {
-        let Some(sync) = &self.fleet_sync else {
-            return;
-        };
-        let Some(quota) = &self.quota else { return };
-        let machine_id = match secret_store::machine_id() {
-            Ok(id) => id,
-            Err(_) => return,
-        };
-        // Match against the Claude quota window labels (api: "Current session"
-        // / "Current week (all models)"; local fallback: "Current session
-        // (local est.)" / "Last 7 days (local est.)").
-        let (session_pct, session_tokens) = window_metrics(quota, &["session", "5h", "5-hour"]);
-        let (weekly_pct, weekly_tokens) =
-            window_metrics(quota, &["week (all models)", "week", "7 day", "7-day", "7d"]);
-        let hb = Heartbeat::new(
-            machine_id,
-            self.fleet_machine_label(),
-            session_pct.unwrap_or(0.0),
-            weekly_pct.unwrap_or(0.0),
-            session_tokens,
-            weekly_tokens,
-            Utc::now(),
-        );
-        sync.publish_local(hb);
-    }
-
-    /// "Pair a machine": generate a fresh secret, store it, (re)start the sync,
-    /// and surface the code for the user to copy onto the second machine.
+    /// "Pair a machine": generate a fresh secret, store it, signal the manager
+    /// to (re)start the sync, and surface the code to copy onto the other
+    /// machine.
     fn fleet_generate_code(&mut self, cx: &mut Context<Self>) {
         let secret = PairingSecret::generate();
         if let Err(e) = secret_store::set(&secret) {
@@ -868,12 +731,11 @@ impl AuraView {
             return;
         }
         let code = secret.to_code();
-        // Restart the sync against the new secret.
-        self.fleet_sync = None;
-        self.ensure_fleet_started();
+        // The process-level manager reconciles against the new secret on its
+        // next poll tick.
+        crate::runtime::mark_fleet_dirty();
         self.fleet_code = Some(code);
         self.fleet_status = Some("Code generated — copy it to the other machine.".to_string());
-        self.push_fleet_heartbeat();
         cx.notify();
     }
 
@@ -887,7 +749,7 @@ impl AuraView {
     }
 
     /// "Join fleet": read a pairing code from the clipboard, derive the secret,
-    /// store it, and start syncing.
+    /// store it, and signal the manager to start syncing.
     fn fleet_join_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
             self.fleet_status = Some("Clipboard is empty — copy the code first.".to_string());
@@ -901,11 +763,9 @@ impl AuraView {
                     cx.notify();
                     return;
                 }
-                self.fleet_sync = None;
-                self.ensure_fleet_started();
+                crate::runtime::mark_fleet_dirty();
                 self.fleet_code = None;
                 self.fleet_status = Some("Joined fleet.".to_string());
-                self.push_fleet_heartbeat();
             }
             Err(e) => {
                 self.fleet_status = Some(format!("Invalid code: {e}"));
@@ -914,14 +774,14 @@ impl AuraView {
         cx.notify();
     }
 
-    /// "Leave fleet": stop syncing and delete the secret from the keychain.
+    /// "Leave fleet": delete the secret from the keychain and signal the manager
+    /// to stop syncing.
     fn fleet_leave(&mut self, cx: &mut Context<Self>) {
-        // Dropping the sync joins and stops its thread.
-        self.fleet_sync = None;
         match secret_store::delete() {
             Ok(()) => self.fleet_status = Some("Left fleet.".to_string()),
             Err(e) => self.fleet_status = Some(format!("Could not delete secret: {e}")),
         }
+        crate::runtime::mark_fleet_dirty();
         self.fleet_code = None;
         cx.notify();
     }
@@ -3325,9 +3185,13 @@ impl AuraView {
         let mut col = div().flex().flex_col().px_4().py_3().gap_3();
 
         // ── Account sanity line ───────────────────────────────────────────────
-        let (rows, account, reachable) = match &self.fleet_sync {
-            Some(sync) => {
-                let state = sync.state();
+        // Peers are read from the process-level manager's shared `FleetState`
+        // (it runs whether or not this modal is open). `None` means the manager
+        // has no running sync — fleet disabled or unpaired.
+        let fleet_state = crate::runtime::fleet_state();
+        let running = fleet_state.is_some();
+        let (rows, account, reachable) = match &fleet_state {
+            Some(state) => {
                 // Recover from a poisoned lock rather than panicking the UI —
                 // the data is still readable and a hostile broker must never
                 // be able to take down the modal.
@@ -3382,7 +3246,7 @@ impl AuraView {
                     .bg(rgb(theme.colors.surface))
                     .text_xs()
                     .text_color(rgb(theme.colors.text_dim))
-                    .child(if self.fleet_sync.is_some() {
+                    .child(if running {
                         "Waiting for machines… pair another machine to compare."
                     } else {
                         "Fleet is not paired yet. Pair a machine to begin."
@@ -3404,7 +3268,10 @@ impl AuraView {
     fn render_fleet_pairing(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let surface_hi = theme.colors.surface_hi;
-        let paired = self.fleet_sync.is_some();
+        // "Paired" tracks whether the process-level manager has a running sync.
+        // After a pair/join the manager reconciles on its next poll tick (~150
+        // ms), so the Leave button appears almost immediately.
+        let paired = crate::runtime::fleet_state().is_some();
 
         let mut panel = div()
             .flex()
@@ -3727,12 +3594,45 @@ fn fleet_button(id: &'static str, label: &'static str, theme: &Theme) -> gpui::S
 
 /// The system hostname, used as the default Fleet machine label. Falls back to
 /// `"this machine"` when the env vars aren't set (rare).
-fn hostname_label() -> String {
+pub fn hostname_label() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .filter(|h| !h.trim().is_empty())
         .unwrap_or_else(|| "this machine".to_string())
+}
+
+/// Config directory the Fleet heartbeat reads Claude quota from: the first
+/// configured Claude Code agent's resolved path, or the default `~/.claude` when
+/// none is configured. Returned by value so the result can move into the
+/// `Send + 'static` heartbeat-source closure. Shared by the modal view and the
+/// process-level Fleet manager so both read the same path.
+pub fn fleet_claude_config_path(config: &AppConfig) -> PathBuf {
+    config
+        .agents
+        .iter()
+        .find(|a| a.kind == AgentKind::ClaudeCode)
+        .map(|a| a.resolved_config_path())
+        .unwrap_or_else(|| {
+            AgentConfig {
+                name: String::new(),
+                kind: AgentKind::ClaudeCode,
+                config_path: None,
+                color: None,
+            }
+            .resolved_config_path()
+        })
+}
+
+/// This machine's display label: the configured `[fleet].machine_label`
+/// override, or the system hostname when blank. Shared by the modal view and
+/// the process-level Fleet manager.
+pub fn fleet_machine_label(config: &AppConfig) -> String {
+    let configured = config.fleet.machine_label.trim();
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    hostname_label()
 }
 
 // ── Activity (live Claude Code process monitor) ─────────────────────────────────
@@ -3927,20 +3827,6 @@ fn format_mem_bytes(bytes: u64) -> String {
         format!("{:.0} KB", b / KB)
     } else {
         format!("{bytes} B")
-    }
-}
-
-/// Pull `(used_percentage, used_tokens)` from the quota window whose label
-/// matches any of `needles` (case-insensitive substring). Returns `(None, None)`
-/// when no matching window is present (e.g. a non-Claude agent).
-fn window_metrics(quota: &QuotaSnapshot, needles: &[&str]) -> (Option<f64>, Option<u64>) {
-    let window = quota.windows.iter().find(|w| {
-        let label = w.label.to_ascii_lowercase();
-        needles.iter().any(|n| label.contains(&n.to_ascii_lowercase()))
-    });
-    match window {
-        Some(w) => (w.used_percentage, w.used_tokens),
-        None => (None, None),
     }
 }
 
