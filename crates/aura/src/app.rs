@@ -851,7 +851,11 @@ impl AuraView {
                 d.child(
                     div()
                         .text_color(rgb(self.theme.colors.text_dim))
-                        .child(frame),
+                        // Same braille bias as the loading placeholder: the lit
+                        // dots sit in the top three of four rows, so the glyph
+                        // reads high next to the icon. Nudge it down to centre
+                        // it against the Aura mark.
+                        .child(div().relative().top(px(2.0)).child(frame)),
                 )
             });
 
@@ -1290,11 +1294,19 @@ impl AuraView {
         // capped at the screen bottom; `overflow_y_scroll` lets the user reach
         // the clipped portion; `track_scroll` exposes the overflow back to the
         // auto-resize callback so the window still re-grows when content fits.
+        //
+        // When `auto_resize` is off the window stays at its fixed open height,
+        // so the body must `flex_1` to fill that height — otherwise centered
+        // states (e.g. the loading spinner) would park in the upper portion of
+        // the window instead of its visible middle. With auto-resize on we must
+        // NOT grow the body, or it would fill `h_full` and the auto-fit
+        // measurement (bottom of children) could never shrink the window.
         div()
             .id("body")
             .flex()
             .flex_col()
             .min_h_0()
+            .when(!self.config.display.auto_resize(), |d| d.flex_1())
             .overflow_y_scroll()
             .track_scroll(&self.body_scroll)
             .child(inner)
@@ -1352,10 +1364,16 @@ impl AuraView {
 /// jumps on first paint and on agent/plugin switches.
 fn render_loading(theme: &Theme, lex: &Lexicon, spinner_frame: usize) -> AnyElement {
     let frame = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
+    // `flex_1` so the placeholder fills the body when it has been stretched to
+    // a fixed window height (auto-resize off), keeping the spinner in the true
+    // vertical center. `min_h(260)` preserves the original height when the body
+    // sizes to content (auto-resize on) so the modal barely resizes on first
+    // paint and on agent/plugin switches.
     div()
         .flex()
         .flex_col()
-        .h(px(260.0))
+        .flex_1()
+        .min_h(px(260.0))
         .w_full()
         .items_center()
         .justify_center()
@@ -1373,7 +1391,12 @@ fn render_loading(theme: &Theme, lex: &Lexicon, spinner_frame: usize) -> AnyElem
                 .border_color(rgb(theme.colors.border))
                 .text_lg()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(frame),
+                // The braille "dots" frames only ever light the top three of
+                // the cell's four dot-rows (dots 1–6; 7–8 stay blank), so the
+                // glyph's ink sits high in its line box and reads as off-centre
+                // even though the box itself is centred. Nudge the glyph down by
+                // ~half a dot-row so the *visible* spinner lands in the middle.
+                .child(div().relative().top(px(2.0)).child(frame)),
         )
         .child(
             div()
