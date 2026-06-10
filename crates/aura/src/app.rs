@@ -244,6 +244,17 @@ impl AuraView {
     /// background executor. The result is applied via `apply_refresh_result`
     /// back on the foreground thread.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_inner(cx, false);
+    }
+
+    /// Like [`Self::refresh`], but plugins whose last panel doesn't filter by
+    /// period keep their cached output instead of being re-spawned. Used when
+    /// only the active period changed — their data can't have changed.
+    fn refresh_for_period_change(&mut self, cx: &mut Context<Self>) {
+        self.refresh_inner(cx, true);
+    }
+
+    fn refresh_inner(&mut self, cx: &mut Context<Self>, period_only: bool) {
         if self.is_loading {
             // A refresh is already in flight; don't double-spawn.
             return;
@@ -257,11 +268,18 @@ impl AuraView {
         let theme_path = self.theme_path.clone();
         let active_profile = self.active_profile.clone();
         let period = self.active_period;
+        let cached_panels = if period_only {
+            self.plugin_panels.clone()
+        } else {
+            Vec::new()
+        };
 
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { do_refresh(config_path, theme_path, active_profile, period) })
+                .spawn(async move {
+                    do_refresh(config_path, theme_path, active_profile, period, cached_panels)
+                })
                 .await;
 
             this.update(cx, |view, cx| {
@@ -345,11 +363,23 @@ impl AuraView {
 /// thread can keep rendering the spinner. Errors are bundled into the
 /// returned `RefreshResult` rather than returned via `Result` so partial
 /// success (e.g. quota OK but snapshot failed) still surfaces.
+/// Cached panel for `name`, if its previous run proved the plugin is
+/// period-insensitive (no section sets `uses_period`). `None` means the
+/// plugin must be (re-)run — including error panels and unknown plugins.
+fn reusable_panel<'a>(cached: &'a [(String, PluginPanel)], name: &str) -> Option<&'a PluginPanel> {
+    cached
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, p)| p)
+        .filter(|p| !p.uses_period())
+}
+
 fn do_refresh(
     config_path: PathBuf,
     theme_path: PathBuf,
     active_profile: String,
     period: Period,
+    cached_panels: Vec<(String, PluginPanel)>,
 ) -> RefreshResult {
     // Reload theme alongside the config so an edit to either file takes
     // effect on the same "Refresh" click (see .design/customization.md
@@ -433,10 +463,18 @@ fn do_refresh(
     let forecast = quota.as_ref().map(|q| forecast::forecast(q, Utc::now()));
 
     // Plugins: each runs as a subprocess with `--period` passed through.
+    // On a period-only refresh, plugins whose previous panel proved they
+    // don't filter by period keep that cached panel instead of re-spawning.
     let plugin_panels = config
         .plugins
         .iter()
-        .map(|p| (p.name.clone(), PluginRunner::run_with_period(p, period)))
+        .map(|p| {
+            let panel = match reusable_panel(&cached_panels, &p.name) {
+                Some(panel) => panel.clone(),
+                None => PluginRunner::run_with_period(p, period),
+            };
+            (p.name.clone(), panel)
+        })
         .collect();
 
     RefreshResult {
@@ -508,7 +546,7 @@ impl AuraView {
     fn set_period(&mut self, period: Period, cx: &mut Context<Self>) {
         if self.active_period != period {
             self.active_period = period;
-            self.refresh(cx);
+            self.refresh_for_period_change(cx);
         }
     }
 
@@ -2542,5 +2580,42 @@ mod tests {
     fn shows_when_never_dismissed() {
         let cfg = UpdateConfig::default();
         assert!(should_show_update_button(Some(&info("0.1.18")), &cfg));
+    }
+
+    fn panel(uses_period: bool) -> PluginPanel {
+        PluginPanel {
+            title: "t".to_string(),
+            sections: vec![PluginSection {
+                id: "s".to_string(),
+                label: "S".to_string(),
+                uses_period,
+                content: PluginContent::default(),
+            }],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn reusable_panel_returns_period_insensitive_cache() {
+        let cached = vec![("RTK".to_string(), panel(false))];
+        assert!(reusable_panel(&cached, "RTK").is_some());
+    }
+
+    #[test]
+    fn reusable_panel_skips_period_using_cache() {
+        let cached = vec![("Hello".to_string(), panel(true))];
+        assert!(reusable_panel(&cached, "Hello").is_none());
+    }
+
+    #[test]
+    fn reusable_panel_skips_error_cache() {
+        let cached = vec![("RTK".to_string(), PluginPanel::from_error("t", "boom"))];
+        assert!(reusable_panel(&cached, "RTK").is_none());
+    }
+
+    #[test]
+    fn reusable_panel_skips_unknown_plugin() {
+        let cached = vec![("RTK".to_string(), panel(false))];
+        assert!(reusable_panel(&cached, "New Plugin").is_none());
     }
 }
