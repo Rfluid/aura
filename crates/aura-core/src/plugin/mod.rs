@@ -110,6 +110,15 @@ impl PluginPanel {
     pub fn section(&self, id: &str) -> Option<&PluginSection> {
         self.sections.iter().find(|s| s.id == id)
     }
+
+    /// Whether any section filters by the active period. Error panels and
+    /// panels with no sections return `true` so the host re-runs them on
+    /// period change (retry rather than cache a failure).
+    pub fn uses_period(&self) -> bool {
+        self.error.is_some()
+            || self.sections.is_empty()
+            || self.sections.iter().any(|s| s.uses_period)
+    }
 }
 
 // ── Legacy wire format (single flat panel) ────────────────────────────────────
@@ -146,5 +155,55 @@ impl From<LegacyPluginPanel> for PluginPanel {
             }],
             error: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section(uses_period: bool) -> PluginSection {
+        PluginSection {
+            id: "s".to_string(),
+            label: "S".to_string(),
+            uses_period,
+            content: PluginContent::default(),
+        }
+    }
+
+    #[test]
+    fn uses_period_true_for_error_panel() {
+        let panel = PluginPanel::from_error("t", "boom");
+        assert!(panel.uses_period());
+    }
+
+    #[test]
+    fn uses_period_true_for_empty_sections() {
+        let panel = PluginPanel {
+            title: "t".to_string(),
+            sections: Vec::new(),
+            error: None,
+        };
+        assert!(panel.uses_period());
+    }
+
+    #[test]
+    fn uses_period_false_when_no_section_uses_it() {
+        let panel = PluginPanel {
+            title: "t".to_string(),
+            sections: vec![section(false), section(false)],
+            error: None,
+        };
+        assert!(!panel.uses_period());
+    }
+
+    #[test]
+    fn uses_period_true_when_any_section_uses_it() {
+        let panel = PluginPanel {
+            title: "t".to_string(),
+            sections: vec![section(false), section(true)],
+            error: None,
+        };
+        assert!(panel.uses_period());
     }
 }

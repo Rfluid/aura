@@ -39,6 +39,10 @@ For the broader plugin-system rationale, see
 - The host always passes `--period`. Honour it if your data has a time
   dimension; otherwise mark the section as `uses_period = false` (see
   below) and the modal will hide the period pill row.
+- If **no** section in your panel sets `uses_period = true`, the host
+  reuses your previous output when the user switches periods instead of
+  re-invoking the binary (a manual refresh still re-runs everything).
+  Don't rely on being called once per period change.
 - Stdout must be a single UTF-8 JSON object. Stderr is captured and
   surfaced as the error message on non-zero exit.
 - The host enforces a **500 ms** budget per invocation. Cache or

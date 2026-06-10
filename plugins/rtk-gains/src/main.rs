@@ -185,8 +185,9 @@ fn emit_error(msg: String) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Plugin protocol passes `--period all|7d|30d` (currently unused — `rtk gain`
-    // is always all-time today, but we accept the arg so the harness is happy).
+    // Plugin protocol passes `--period all|7d|30d`, but `rtk gain` is always
+    // all-time today, so every section is marked `uses_period: false` — the
+    // host hides the period pills and skips re-running us on period switches.
     let _args: Vec<String> = std::env::args().collect();
 
     let output = match Command::new("rtk")
@@ -403,7 +404,7 @@ fn overview_section(parsed: &RtkOutput) -> PluginSection {
     PluginSection {
         id: "overview".to_string(),
         label: "Overview".to_string(),
-        uses_period: true,
+        uses_period: false,
         content: PluginContent::Lines {
             lines: vec![
                 PluginLine {
@@ -498,7 +499,7 @@ fn by_command_section(parsed: &RtkOutput) -> PluginSection {
     PluginSection {
         id: "by-command".to_string(),
         label: "By Command".to_string(),
-        uses_period: true,
+        uses_period: false,
         content: PluginContent::Table {
             headers: vec![
                 "#".to_string(),
