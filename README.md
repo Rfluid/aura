@@ -25,14 +25,14 @@ click again to dismiss.
 - [Plugins](#plugins)
 - [Configuration](#configuration)
 - [Installation](#installation)
-  - [Making the tray icon always visible](#making-the-tray-icon-always-visible)
-  - [Modal placement on Wayland](#modal-placement-on-wayland)
-  - [System dependencies](#system-dependencies-linux)
-  - [Install from GitHub Releases](#install-from-github-releases)
-  - [Build from source](#build-from-source)
-  - [Common commands](#common-commands)
-  - [Updating](#updating)
-  - [Uninstall](#uninstall)
+    - [Making the tray icon always visible](#making-the-tray-icon-always-visible)
+    - [Modal placement on Wayland](#modal-placement-on-wayland)
+    - [System dependencies](#system-dependencies-linux)
+    - [Install from GitHub Releases](#install-from-github-releases)
+    - [Build from source](#build-from-source)
+    - [Common commands](#common-commands)
+    - [Updating](#updating)
+    - [Uninstall](#uninstall)
 - [Compatibility](#compatibility)
 - [Under the hood](#under-the-hood)
 - [Roadmap](#roadmap)
@@ -123,10 +123,10 @@ dropping a binary into the user plugins dir
 
 First-party plugins (built from this repo's `plugins/` directory):
 
-| Plugin                                          | Description                                                                                                        |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **[RTK Gains](plugins/rtk-gains/README.md)**    | Shows tokens saved by the Rust Token Killer (RTK) optimizer — how much you spent vs. how much you would have spent |
-| **[Hello](plugins/hello/)** _(reference only)_  | Minimal example showing the JSON contract for plugin authors                                                       |
+| Plugin                                         | Description                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **[RTK Gains](plugins/rtk-gains/README.md)**   | Shows tokens saved by the Rust Token Killer (RTK) optimizer — how much you spent vs. how much you would have spent |
+| **[Hello](plugins/hello/)** _(reference only)_ | Minimal example showing the JSON contract for plugin authors                                                       |
 
 Each plugin's README explains how to build and install it. The
 `aura plugin` CLI wraps the common workflows:
@@ -557,16 +557,16 @@ StatusNotifierItem code path but haven't been explicitly verified —
 please open an issue if anything goes wrong, with the desktop env /
 compositor version.
 
-| Platform          | Desktop / Compositor          | Tray protocol                                                                                                     | Status                                                                                               |
-| ----------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Linux             | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni)                                                                                         | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive                  |
-| Linux             | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right                    |
-| Linux             | KDE Plasma 5                  | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ                           |
-| Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear                                           |
-| Linux             | sway / Hyprland / wlroots     | StatusNotifierItem                                                                                                | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.)                                 |
-| Linux             | XFCE / Cinnamon / MATE        | StatusNotifierItem                                                                                                | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work                                  |
-| **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ✅ Tested — `tray-icon`'s native AppKit backend, single-click activation, launchd autostart          |
-| **Windows 10/11** | —                             | Shell_NotifyIcon                                                                                                  | ✅ Tested — `tray-icon`'s native Win32 backend, single-click activation, Startup-folder autostart    |
+| Platform          | Desktop / Compositor          | Tray protocol                                                                                                     | Status                                                                                            |
+| ----------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Linux             | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni)                                                                                         | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive               |
+| Linux             | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right                 |
+| Linux             | KDE Plasma 5                  | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ                        |
+| Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear                                        |
+| Linux             | sway / Hyprland / wlroots     | StatusNotifierItem                                                                                                | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.)                              |
+| Linux             | XFCE / Cinnamon / MATE        | StatusNotifierItem                                                                                                | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work                               |
+| **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ✅ Tested — `tray-icon`'s native AppKit backend, single-click activation, launchd autostart       |
+| **Windows 10/11** | —                             | Shell_NotifyIcon                                                                                                  | ✅ Tested — `tray-icon`'s native Win32 backend, single-click activation, Startup-folder autostart |
 
 Pull requests confirming or fixing any of the ⚠️ rows are welcome — see
 [Under the hood](#under-the-hood) for the relevant code paths.
@@ -647,7 +647,7 @@ Next up
 
 - [x] Plugin authoring guide + example plugin (see `docs/plugin-authoring.md` and `plugins/hello/`)
 - [x] Plugin discovery (local scan of `~/.config/aura/plugins/`) + `aura plugin add|list|remove`
-- [ ] **Forecast tab** — project end-of-window usage (session, weekly, …) from the current burn rate, shown alongside each quota bar; rolls out per agent: Claude Code → Codex → Gemini. Design: [`docs/forecast-tab.md`](docs/forecast-tab.md)
+- [x] **Forecast tab** — project end-of-window usage (session, weekly, …) from the current burn rate, shown alongside each quota bar; rolls out per agent: Claude Code → Codex → Gemini. Design: [`docs/forecast-tab.md`](docs/forecast-tab.md)
 - [ ] Custom command agents (BYOA — Bring Your Own Agent via a shell command)
 - [ ] Historical usage charts (daily / weekly trend in the modal)
 - [ ] Per-project usage breakdown (where agents expose project-scoped data)
