@@ -278,7 +278,13 @@ impl AuraView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    do_refresh(config_path, theme_path, active_profile, period, cached_panels)
+                    do_refresh(
+                        config_path,
+                        theme_path,
+                        active_profile,
+                        period,
+                        cached_panels,
+                    )
                 })
                 .await;
 
