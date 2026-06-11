@@ -218,6 +218,7 @@ impl QuotaApi {
             windows,
             source: QuotaSource::Api,
             note: None,
+            pacing_pattern: None,
         })
     }
 
@@ -293,6 +294,7 @@ impl QuotaApi {
             windows,
             source: QuotaSource::Fallback,
             note: None,
+            pacing_pattern: None,
         })
     }
 }

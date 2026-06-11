@@ -67,6 +67,29 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
+/// Compact token count for dense tables: `18.2M`, `9.1K`, `742`. Keeps one
+/// decimal place for the K/M/B ranges and drops a trailing `.0`. Used by the
+/// Insights tab where full thousands-separated numbers would overflow the row.
+pub fn compact_tokens(n: u64) -> String {
+    fn scaled(n: u64, div: f64, suffix: char) -> String {
+        let v = n as f64 / div;
+        if (v.fract()).abs() < 0.05 {
+            format!("{:.0}{}", v, suffix)
+        } else {
+            format!("{:.1}{}", v, suffix)
+        }
+    }
+    if n >= 1_000_000_000 {
+        scaled(n, 1_000_000_000.0, 'B')
+    } else if n >= 1_000_000 {
+        scaled(n, 1_000_000.0, 'M')
+    } else if n >= 1_000 {
+        scaled(n, 1_000.0, 'K')
+    } else {
+        n.to_string()
+    }
+}
+
 pub fn duration(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -105,6 +128,17 @@ mod tests {
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1_000), "1,000");
         assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn compact_tokens_scales() {
+        assert_eq!(compact_tokens(0), "0");
+        assert_eq!(compact_tokens(742), "742");
+        assert_eq!(compact_tokens(1_000), "1K");
+        assert_eq!(compact_tokens(9_100), "9.1K");
+        assert_eq!(compact_tokens(18_200_000), "18.2M");
+        assert_eq!(compact_tokens(9_000_000), "9M");
+        assert_eq!(compact_tokens(2_500_000_000), "2.5B");
     }
 
     #[test]

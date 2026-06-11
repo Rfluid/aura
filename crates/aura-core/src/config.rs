@@ -231,6 +231,141 @@ pub struct UpdateConfig {
     pub dismiss_all: bool,
 }
 
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+/// Controls the **Insights** tab (top projects / top sessions / ultracode ROI /
+/// cache efficiency). Hidden by default — the tab only appears when
+/// [`InsightsConfig::enabled`] is true.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InsightsConfig {
+    /// Show the Insights tab. Default `false`, so the feature is opt-in.
+    pub enabled: bool,
+    /// How many rows each ranked list (top projects / top sessions) renders.
+    /// Default `5`.
+    pub top_n: usize,
+}
+
+impl Default for InsightsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            top_n: 5,
+        }
+    }
+}
+
+// ── Pacing ─────────────────────────────────────────────────────────────────────
+
+/// Settings for the per-session **budget pacing** gauge on the Forecast tab
+/// (F2). Learns the user's active-session pattern from local JSONL history and
+/// recommends how much of the current 5h session to spend so the weekly window
+/// lands at/under 100% at reset. See `FEATURE_SPEC.md`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PacingConfig {
+    /// Master switch for the session-budget gauge. Off by default — opt-in
+    /// until the `active_session_min_tokens` heuristic is tuned against real
+    /// data.
+    pub enabled: bool,
+    /// A session counts as "active" (i.e. real coding, not an idle renewal)
+    /// when its `input + output` tokens reach this threshold. Sessions below it
+    /// are excluded from the learned pattern. Default 50,000 — excludes trivial
+    /// one-message sessions while keeping real coding ones.
+    pub active_session_min_tokens: u64,
+    /// Trailing window, in days, over which the active-session pattern is
+    /// learned. Default 14.
+    pub history_days: u32,
+}
+
+impl Default for PacingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_session_min_tokens: 50_000,
+            history_days: 14,
+        }
+    }
+}
+
+// ── Fleet ─────────────────────────────────────────────────────────────────────
+
+/// The `[fleet]` section — cross-machine usage comparison over an
+/// end-to-end-encrypted ntfy.sh pub/sub channel. Off by default: when
+/// [`Self::enabled`] is false the background sync task is never spawned, so
+/// non-users pay zero cost. See `docs/fleet.md` and `aura-core::net`.
+///
+/// The shared `pairing_secret` is deliberately **not** a field here — it lives
+/// in the OS keychain (service `"aura-fleet-secret"`), never on disk in
+/// `config.toml`. This struct only carries non-sensitive operational knobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct FleetConfig {
+    /// Master switch. When false (default), the Fleet tab is hidden and the
+    /// background publish/subscribe task is never started — no network, no
+    /// keychain access, no cost.
+    pub enabled: bool,
+    /// Base URL of the ntfy pub/sub broker. Defaults to the free public
+    /// server `https://ntfy.sh`. Point this at a self-hosted ntfy instance
+    /// for full privacy / heavier setups. No trailing slash.
+    pub broker_url: String,
+    /// Human-friendly label for *this* machine in peer rows. Empty means
+    /// "use the system hostname". Two machines with the same hostname are
+    /// still disambiguated by a random per-install `machine_id` (not stored
+    /// here — it lives in `AppState`).
+    pub machine_label: String,
+    /// How often (seconds) this machine publishes an encrypted heartbeat.
+    /// The public broker's rate limit is far above this; the default keeps
+    /// well under it. Minimum enforced at the call site.
+    pub heartbeat_secs: u64,
+    /// A peer with no fresh heartbeat for this many seconds is treated as
+    /// stale: its row dims and it's excluded from the share math. Also bounds
+    /// the replay window (messages older than `2 × heartbeat_secs` are
+    /// dropped regardless of this value).
+    pub stale_secs: u64,
+}
+
+impl Default for FleetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            broker_url: "https://ntfy.sh".to_string(),
+            machine_label: String::new(),
+            heartbeat_secs: 45,
+            stale_secs: 120,
+        }
+    }
+}
+
+// ── Activity ────────────────────────────────────────────────────────────────────
+
+/// The `[activity]` section — the live **Activity** tab, a process monitor
+/// scoped to Claude Code: each CLI session's CPU% + RAM and the heaviest
+/// processes it spawned (MCP servers, build commands, sub-agents). Off by
+/// default: when [`Self::enabled`] is false the tab is hidden and nothing is
+/// sampled, so non-users pay zero cost. See `docs/activity.md`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ActivityConfig {
+    /// Show the Activity tab. Default `false`, so the feature is opt-in.
+    pub enabled: bool,
+    /// How often (seconds) the monitor re-samples while the tab is open and
+    /// active. Sampling stops entirely when the modal closes or the user
+    /// switches tabs, so this only costs while it's on screen. Clamped to a
+    /// minimum of 1 at use. Default `3` — also the spacing sysinfo needs for a
+    /// valid CPU% delta.
+    pub refresh_secs: u64,
+}
+
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            refresh_secs: 3,
+        }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -243,6 +378,14 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub insights: InsightsConfig,
+    #[serde(default)]
+    pub pacing: PacingConfig,
+    #[serde(default)]
+    pub fleet: FleetConfig,
+    #[serde(default)]
+    pub activity: ActivityConfig,
 }
 
 impl AppConfig {
@@ -294,6 +437,10 @@ impl AppConfig {
             plugins: Vec::new(),
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         }
     }
 
@@ -539,6 +686,10 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -556,6 +707,10 @@ mod tests {
                 ..DisplayConfig::default()
             },
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -569,6 +724,10 @@ mod tests {
             plugins: vec![plug("Alpha"), plug("Beta")],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -586,6 +745,30 @@ mod tests {
         assert_eq!(parsed.plugins.len(), cfg.plugins.len());
         assert_eq!(parsed.display, cfg.display);
         assert_eq!(parsed.update, cfg.update);
+        assert_eq!(parsed.insights, cfg.insights);
+    }
+
+    #[test]
+    fn insights_config_defaults_when_block_missing() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.insights, InsightsConfig::default());
+        assert!(!cfg.insights.enabled);
+        assert_eq!(cfg.insights.top_n, 5);
+    }
+
+    #[test]
+    fn insights_config_round_trips_populated_block() {
+        let toml_in = r#"
+[insights]
+enabled = true
+top_n = 8
+"#;
+        let cfg: AppConfig = toml::from_str(toml_in).unwrap();
+        assert!(cfg.insights.enabled);
+        assert_eq!(cfg.insights.top_n, 8);
+        let round = toml::to_string_pretty(&cfg).unwrap();
+        let again: AppConfig = toml::from_str(&round).unwrap();
+        assert_eq!(again.insights, cfg.insights);
     }
 
     #[test]
@@ -642,6 +825,10 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -680,6 +867,10 @@ dismiss_all = true
             plugins: vec![],
             display: DisplayConfig::default(),
             update: UpdateConfig::default(),
+            insights: InsightsConfig::default(),
+            pacing: PacingConfig::default(),
+            fleet: FleetConfig::default(),
+            activity: ActivityConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

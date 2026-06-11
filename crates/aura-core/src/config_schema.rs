@@ -169,6 +169,64 @@ pub fn fields() -> &'static [FieldDescriptor] {
             example: "false",
         },
         FieldDescriptor {
+            key: "fleet.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Enable the Fleet tab and cross-machine usage sync.",
+            description: "Master switch for the Fleet feature. When false (default) the Fleet \
+                tab is hidden and the background publish/subscribe task is never started — no \
+                network, no keychain access, no cost. When true, paired machines sync \
+                end-to-end-encrypted usage heartbeats over the broker. See docs/fleet.md.",
+            example: "false",
+        },
+        FieldDescriptor {
+            key: "fleet.broker_url",
+            type_label: "string",
+            allowed: &[],
+            default: "https://ntfy.sh",
+            summary: "Base URL of the ntfy pub/sub broker (no trailing slash).",
+            description: "Base URL of the ntfy pub/sub broker. Defaults to the free public \
+                server https://ntfy.sh. Point this at a self-hosted ntfy instance for full \
+                privacy or heavier setups. No trailing slash. The broker only ever sees \
+                ciphertext and an opaque, secret-derived topic name.",
+            example: "https://ntfy.sh",
+        },
+        FieldDescriptor {
+            key: "fleet.machine_label",
+            type_label: "string",
+            allowed: &[],
+            default: "(empty → system hostname)",
+            summary: "Label for this machine in peer rows; empty uses the hostname.",
+            description: "Human-friendly label for this machine in the Fleet peer list. Empty \
+                (default) means \"use the system hostname\". Two machines with the same hostname \
+                are still disambiguated by a random per-install machine id.",
+            example: "Pedros-MacBook-Air",
+        },
+        FieldDescriptor {
+            key: "fleet.heartbeat_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "45",
+            summary: "Seconds between encrypted heartbeat publishes.",
+            description: "How often (seconds) this machine publishes an encrypted heartbeat to \
+                the broker. The public broker's rate limit is far above this; the default keeps \
+                well under it. Values below 10 are clamped up at runtime to stay polite.",
+            example: "45",
+        },
+        FieldDescriptor {
+            key: "fleet.stale_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "120",
+            summary: "Seconds before a silent peer is treated as stale.",
+            description: "A peer with no fresh heartbeat for this many seconds is treated as \
+                stale: its row dims and it is excluded from the per-machine share math. The \
+                replay window (messages older than 2 × heartbeat_secs are dropped) is derived \
+                from heartbeat_secs, not from this value.",
+            example: "120",
+        },
+        FieldDescriptor {
             key: "update.dismissed_version",
             type_label: "string?",
             allowed: &[],
@@ -189,6 +247,91 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 the background check is skipped entirely (so no GitHub request fires). Off by \
                 default.",
             example: "false",
+        },
+        FieldDescriptor {
+            key: "insights.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the Insights tab (top projects / sessions / ultracode ROI / cache).",
+            description: "Show the Insights tab, which surfaces the top projects and sessions \
+                by token spend plus an ultracode ROI and cache-efficiency breakdown. Off by \
+                default — the tab is hidden until you opt in. Ultracode is inferred from session \
+                content and is a heuristic.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "insights.top_n",
+            type_label: "usize",
+            allowed: &[],
+            default: "5",
+            summary: "How many rows each Insights ranked list shows.",
+            description: "How many rows the Insights tab's top-projects and top-sessions lists \
+                render. Default 5. Capped by the number of projects/sessions actually scanned in \
+                the active period.",
+            example: "5",
+        },
+        FieldDescriptor {
+            key: "pacing.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the per-session budget gauge on the Forecast tab.",
+            description: "Master switch for the budget-pacing gauge (F2). Off by default — \
+                opt-in until the active_session_min_tokens heuristic is tuned against real \
+                data. When on, the Forecast tab gains a gauge recommending how much of the \
+                current 5h session to spend so the weekly window lands at/under 100% at reset.",
+            example: "false",
+        },
+        FieldDescriptor {
+            key: "pacing.active_session_min_tokens",
+            type_label: "u64",
+            allowed: &[],
+            default: "50000",
+            summary: "Token threshold for a session to count as \"active\".",
+            description: "A session counts as \"active\" (real coding, not an idle renewal) \
+                when its input+output tokens reach this threshold. Sessions below it are \
+                excluded from the learned active-session pattern. Default 50000 — excludes \
+                trivial one-message sessions while keeping real coding ones. Tune against \
+                your own usage.",
+            example: "50000",
+        },
+        FieldDescriptor {
+            key: "pacing.history_days",
+            type_label: "u32",
+            allowed: &[],
+            default: "14",
+            summary: "Trailing window, in days, used to learn the active-session pattern.",
+            description: "Trailing window, in days, over which the active-session pattern is \
+                learned. Active days only contribute (zero-usage days are ignored), and the \
+                per-day counts are trimmed-mean averaged so a marathon day doesn't skew the \
+                estimate. Default 14.",
+            example: "14",
+        },
+        FieldDescriptor {
+            key: "activity.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Show the Activity tab (live Claude Code process monitor).",
+            description: "Show the Activity tab, a live process monitor scoped to Claude Code: \
+                each CLI session's CPU% and RAM plus the heaviest processes it spawned (MCP \
+                servers, build commands, sub-agents). Off by default — the tab is hidden and \
+                nothing is sampled until you opt in. Sampling only runs while the tab is open \
+                and on screen, so it costs nothing otherwise. See docs/activity.md.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "activity.refresh_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "3",
+            summary: "Seconds between live re-samples while the Activity tab is on screen.",
+            description: "How often (seconds) the Activity monitor re-samples while its tab is \
+                open and active. Sampling stops entirely when the modal closes or you switch \
+                tabs. Clamped to a minimum of 1 at use. Default 3 — also the spacing sysinfo \
+                needs to compute a valid CPU% delta between samples.",
+            example: "3",
         },
     ]
 }
@@ -352,12 +495,30 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .map(|n| n.to_string())
             .unwrap_or_else(|| "(unset)".to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "fleet.enabled" => cfg.fleet.enabled.to_string(),
+        "fleet.broker_url" => cfg.fleet.broker_url.clone(),
+        "fleet.machine_label" => {
+            if cfg.fleet.machine_label.is_empty() {
+                "(unset)".to_string()
+            } else {
+                cfg.fleet.machine_label.clone()
+            }
+        }
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs.to_string(),
+        "fleet.stale_secs" => cfg.fleet.stale_secs.to_string(),
         "update.dismissed_version" => cfg
             .update
             .dismissed_version
             .clone()
             .unwrap_or_else(|| "(unset)".to_string()),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "insights.enabled" => cfg.insights.enabled.to_string(),
+        "insights.top_n" => cfg.insights.top_n.to_string(),
+        "pacing.enabled" => cfg.pacing.enabled.to_string(),
+        "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
+        "pacing.history_days" => cfg.pacing.history_days.to_string(),
+        "activity.enabled" => cfg.activity.enabled.to_string(),
+        "activity.refresh_secs" => cfg.activity.refresh_secs.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -381,11 +542,33 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.auto_resize" => cfg.display.auto_resize = parse_opt_bool(key, raw)?,
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
+        "fleet.enabled" => cfg.fleet.enabled = parse_bool(key, raw)?,
+        "fleet.broker_url" => cfg.fleet.broker_url = raw.trim_end_matches('/').to_string(),
+        "fleet.machine_label" => cfg.fleet.machine_label = raw.to_string(),
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs = parse_u64(key, raw)?,
+        "fleet.stale_secs" => cfg.fleet.stale_secs = parse_u64(key, raw)?,
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
+        "insights.enabled" => cfg.insights.enabled = parse_bool(key, raw)?,
+        "insights.top_n" => cfg.insights.top_n = parse_usize(key, raw)?,
+        "pacing.enabled" => cfg.pacing.enabled = parse_bool(key, raw)?,
+        "pacing.active_session_min_tokens" => {
+            cfg.pacing.active_session_min_tokens = parse_u64(key, raw)?
+        }
+        "pacing.history_days" => cfg.pacing.history_days = parse_u32(key, raw)?,
+        "activity.enabled" => cfg.activity.enabled = parse_bool(key, raw)?,
+        "activity.refresh_secs" => cfg.activity.refresh_secs = parse_u64(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
+}
+
+fn parse_usize(key: &str, raw: &str) -> Result<usize, SchemaError> {
+    raw.parse::<usize>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
 }
 
 fn parse_enum(
@@ -442,6 +625,22 @@ fn parse_opt_u32(key: &str, raw: &str) -> Result<Option<u32>, SchemaError> {
         })
 }
 
+fn parse_u32(key: &str, raw: &str) -> Result<u32, SchemaError> {
+    raw.parse::<u32>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
+}
+
+fn parse_u64(key: &str, raw: &str) -> Result<u64, SchemaError> {
+    raw.parse::<u64>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
+}
+
 fn parse_opt_string(raw: &str) -> Option<String> {
     if is_clear(raw) {
         None
@@ -486,6 +685,11 @@ pub fn render_commented(cfg: &AppConfig) -> Result<String> {
     push_scalar_table(&mut out, cfg, "display");
     out.push('\n');
     push_scalar_table(&mut out, cfg, "update");
+    out.push('\n');
+    push_scalar_table(&mut out, cfg, "insights");
+    push_scalar_table(&mut out, cfg, "pacing");
+    push_scalar_table(&mut out, cfg, "fleet");
+    push_scalar_table(&mut out, cfg, "activity");
 
     Ok(out)
 }
@@ -537,8 +741,20 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.auto_resize" => return cfg.display.auto_resize.map(|b| b.to_string()),
         "display.max_height" => return cfg.display.max_height.map(|n| n.to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "fleet.enabled" => cfg.fleet.enabled.to_string(),
+        "fleet.broker_url" => quote(&cfg.fleet.broker_url),
+        "fleet.machine_label" => quote(&cfg.fleet.machine_label),
+        "fleet.heartbeat_secs" => cfg.fleet.heartbeat_secs.to_string(),
+        "fleet.stale_secs" => cfg.fleet.stale_secs.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "insights.enabled" => cfg.insights.enabled.to_string(),
+        "insights.top_n" => cfg.insights.top_n.to_string(),
+        "pacing.enabled" => cfg.pacing.enabled.to_string(),
+        "pacing.active_session_min_tokens" => cfg.pacing.active_session_min_tokens.to_string(),
+        "pacing.history_days" => cfg.pacing.history_days.to_string(),
+        "activity.enabled" => cfg.activity.enabled.to_string(),
+        "activity.refresh_secs" => cfg.activity.refresh_secs.to_string(),
         _ => return None,
     })
 }
@@ -598,7 +814,10 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, AgentKind, DisplayConfig, PluginConfig, UpdateConfig};
+    use crate::config::{
+        ActivityConfig, AgentConfig, AgentKind, DisplayConfig, FleetConfig, InsightsConfig,
+        PacingConfig, PluginConfig, UpdateConfig,
+    };
 
     /// Walk a serialized default config and assert every leaf key under
     /// `[display]` / `[update]` has a `FieldDescriptor`. Fails if a struct
@@ -619,7 +838,7 @@ mod tests {
         let value = toml::Value::try_from(&cfg).unwrap();
         let table = value.as_table().unwrap();
 
-        for section in ["display", "update"] {
+        for section in ["display", "update", "insights", "pacing", "fleet", "activity"] {
             let sub = table
                 .get(section)
                 .and_then(|v| v.as_table())
@@ -718,6 +937,9 @@ mod tests {
         }
         assert_eq!(parsed.display, cfg.display);
         assert_eq!(parsed.update, cfg.update);
+        assert_eq!(parsed.insights, cfg.insights);
+        assert_eq!(parsed.pacing, cfg.pacing);
+        assert_eq!(parsed.fleet, cfg.fleet);
     }
 
     #[test]
@@ -754,6 +976,26 @@ mod tests {
             update: UpdateConfig {
                 dismissed_version: Some("0.1.18".to_string()),
                 dismiss_all: true,
+            },
+            insights: InsightsConfig {
+                enabled: true,
+                top_n: 8,
+            },
+            pacing: PacingConfig {
+                enabled: true,
+                active_session_min_tokens: 40_000,
+                history_days: 21,
+            },
+            fleet: FleetConfig {
+                enabled: true,
+                broker_url: "https://ntfy.example.com".to_string(),
+                machine_label: "Work-Linux".to_string(),
+                heartbeat_secs: 30,
+                stale_secs: 90,
+            },
+            activity: ActivityConfig {
+                enabled: true,
+                refresh_secs: 5,
             },
         };
         assert_round_trips(&cfg);

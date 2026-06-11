@@ -19,6 +19,7 @@ pub struct Lexicon {
     pub tab_models: &'static str,
     pub tab_plugins: &'static str,
     pub tab_forecast: &'static str,
+    pub tab_insights: &'static str,
 
     // ── Forecast status badges & subtext ───────────────────────────────────
     pub forecast_ok: &'static str,
@@ -28,6 +29,15 @@ pub struct Lexicon {
     pub forecast_projected_at_reset: &'static str,
     pub forecast_will_hit_100_fmt: fn(time: &str) -> String,
     pub forecast_warming_up: &'static str,
+
+    // ── Session budget gauge (F2 pacing) ───────────────────────────────────
+    pub pacing_title: &'static str,
+    pub pacing_ok: &'static str,
+    pub pacing_watch: &'static str,
+    pub pacing_over: &'static str,
+    pub pacing_insufficient: &'static str,
+    /// "Spend up to ~38% of this 5h session" — takes the recommended ceiling.
+    pub pacing_spend_up_to_fmt: fn(pct: f64) -> String,
 
     // ── Empty / loading ─────────────────────────────────────────────────────
     pub loading: &'static str,
@@ -67,6 +77,9 @@ fn polite_resets(when: &str) -> String {
 fn polite_will_hit_100(time: &str) -> String {
     format!("Will hit 100% at {time}")
 }
+fn polite_pacing_spend_up_to(pct: f64) -> String {
+    format!("Spend up to ~{pct:.0}% of this 5h session")
+}
 fn polite_check_updates(current: &str) -> String {
     format!("Check updates · v{current}")
 }
@@ -83,6 +96,9 @@ fn goblin_resets(when: &str) -> String {
 fn goblin_will_hit_100(time: &str) -> String {
     format!("Goose is cooked at {time}")
 }
+fn goblin_pacing_spend_up_to(pct: f64) -> String {
+    format!("Blow ~{pct:.0}% of this 5h, tops")
+}
 fn goblin_check_updates(current: &str) -> String {
     format!("Running ancient · v{current}")
 }
@@ -98,6 +114,7 @@ pub const POLITE: Lexicon = Lexicon {
     tab_models: "Models",
     tab_plugins: "Plugins",
     tab_forecast: "Forecast",
+    tab_insights: "Insights",
 
     forecast_ok: "On track",
     forecast_watch: "Watch",
@@ -106,6 +123,13 @@ pub const POLITE: Lexicon = Lexicon {
     forecast_projected_at_reset: "Projected at reset",
     forecast_will_hit_100_fmt: polite_will_hit_100,
     forecast_warming_up: "warming up — check back in a few minutes",
+
+    pacing_title: "Session budget",
+    pacing_ok: "On track",
+    pacing_watch: "Watch",
+    pacing_over: "Over",
+    pacing_insufficient: "—",
+    pacing_spend_up_to_fmt: polite_pacing_spend_up_to,
 
     loading: "Loading…",
     no_quota_data: "No quota data available.",
@@ -134,6 +158,7 @@ pub const GOBLIN: Lexicon = Lexicon {
     tab_models: "Slop Vendors",
     tab_plugins: "Hangers-on",
     tab_forecast: "Doom",
+    tab_insights: "Receipts",
 
     forecast_ok: "Fine, whatever",
     forecast_watch: "Bruh",
@@ -142,6 +167,13 @@ pub const GOBLIN: Lexicon = Lexicon {
     forecast_projected_at_reset: "What you'll burn",
     forecast_will_hit_100_fmt: goblin_will_hit_100,
     forecast_warming_up: "give it a minute, jeez",
+
+    pacing_title: "Burn budget",
+    pacing_ok: "Fine",
+    pacing_watch: "Bruh",
+    pacing_over: "Over it",
+    pacing_insufficient: "Idk yet",
+    pacing_spend_up_to_fmt: goblin_pacing_spend_up_to,
 
     loading: "hold on damn",
     no_quota_data: "Nothing. Empty. Dry.",
@@ -185,6 +217,7 @@ mod tests {
             ("tab_models", POLITE.tab_models, GOBLIN.tab_models),
             ("tab_plugins", POLITE.tab_plugins, GOBLIN.tab_plugins),
             ("tab_forecast", POLITE.tab_forecast, GOBLIN.tab_forecast),
+            ("tab_insights", POLITE.tab_insights, GOBLIN.tab_insights),
             ("forecast_ok", POLITE.forecast_ok, GOBLIN.forecast_ok),
             (
                 "forecast_watch",
@@ -210,6 +243,15 @@ mod tests {
                 "forecast_warming_up",
                 POLITE.forecast_warming_up,
                 GOBLIN.forecast_warming_up,
+            ),
+            ("pacing_title", POLITE.pacing_title, GOBLIN.pacing_title),
+            ("pacing_ok", POLITE.pacing_ok, GOBLIN.pacing_ok),
+            ("pacing_watch", POLITE.pacing_watch, GOBLIN.pacing_watch),
+            ("pacing_over", POLITE.pacing_over, GOBLIN.pacing_over),
+            (
+                "pacing_insufficient",
+                POLITE.pacing_insufficient,
+                GOBLIN.pacing_insufficient,
             ),
             ("loading", POLITE.loading, GOBLIN.loading),
             ("no_quota_data", POLITE.no_quota_data, GOBLIN.no_quota_data),

@@ -5,10 +5,16 @@ use chrono::NaiveDate;
 
 use super::{
     dates::{add_one_day, date_from_timestamp, n_days_ago, today},
+    insights::build_insights,
     scan::{compute_streaks, list_session_files, scan_files, ModelAccum, ScanAccum},
     stats_cache::StatsCache,
     AgentReader, DailyActivity, DailyModelTokens, ModelUsage, Period, Streaks, UsageSnapshot,
 };
+
+/// How many ranked rows the reader retains per Insights list. The UI slices
+/// this down to the user's `[insights] top_n`; keeping a generous cap here means
+/// raising `top_n` never requires a re-scan.
+const INSIGHTS_CAP: usize = 25;
 
 // ── ClaudeCodeReader ──────────────────────────────────────────────────────────
 
@@ -56,6 +62,16 @@ impl AgentReader for ClaudeCodeReader {
 /// Build a `UsageSnapshot` from a scan accumulator, optionally merging in a
 /// `StatsCache` baseline (used for the AllTime period).
 pub(crate) fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> UsageSnapshot {
+    // ── Insights (F3) ─────────────────────────────────────────────────────────
+    // Computed up-front, while `accum` still owns its per-project / per-session
+    // data (the field moves below consume the rest of the accumulator).
+    //
+    // Note: insights cover only the scanned window. For the AllTime period the
+    // StatsCache baseline carries no per-project / per-session breakdown, so
+    // insights there reflect the post-`lastComputedDate` delta scan. This is a
+    // known limitation documented in the tab footnote.
+    let insights = build_insights(&accum, INSIGHTS_CAP);
+
     // ── Start with scan data ──────────────────────────────────────────────────
     let mut model_usage: HashMap<String, ModelAccum> = accum.model_usage;
     let mut daily_msg: HashMap<String, u64> = accum.daily_message_counts;
@@ -226,6 +242,7 @@ pub(crate) fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> Us
         daily_activity: daily_activity_vec,
         first_session_date: first_date,
         last_session_date: last_date,
+        insights,
     }
 }
 
@@ -251,6 +268,7 @@ mod tests {
             "type": "assistant",
             "timestamp": ts,
             "isSidechain": false,
+            "cwd": "/Users/pedro/Downloads/my-proj",
             "message": {
                 "model": model,
                 "usage": {
@@ -265,7 +283,12 @@ mod tests {
     }
 
     fn user_entry(ts: &str) -> String {
-        serde_json::json!({ "type": "user", "timestamp": ts }).to_string()
+        serde_json::json!({
+            "type": "user",
+            "timestamp": ts,
+            "cwd": "/Users/pedro/Downloads/my-proj",
+        })
+        .to_string()
     }
 
     fn setup_claude_dir(base: &std::path::Path) -> std::path::PathBuf {

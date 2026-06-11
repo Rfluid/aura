@@ -20,7 +20,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use aura_core::{config::AppConfig, state::AppState};
+use aura_core::{
+    config::{AppConfig, FleetConfig},
+    net::{self, secret_store, transport::NtfyTransport, FleetParams, FleetSync},
+    quota::QuotaApi,
+    state::AppState,
+};
+use chrono::Utc;
 use clap::Parser;
 use gpui::{
     div, prelude::*, px, size, Application, Bounds, IntoElement, Render, TitlebarOptions,
@@ -67,6 +73,111 @@ pub(crate) fn win32_set_cloak(window: &gpui::Window, cloak: bool) {
 /// 150 ms is well under the human "instant" threshold (~200 ms) for the
 /// click → modal latency while costing essentially nothing CPU-wise.
 const MENU_POLL_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Process-level owner of the Fleet cross-machine sync.
+///
+/// Fleet must run for the whole process lifetime — not just while the modal
+/// window is open — so a passive monitor keeps publishing/polling 24/7. This
+/// manager lives in the always-running tray spawn loop (alongside the keepalive
+/// window), holds the single [`FleetSync`] (one sleeping `std::thread` that
+/// wakes every heartbeat cadence — default 45 s), and reconciles it against the
+/// current config.
+///
+/// Reconcile is driven from three points (see [`FleetManager::reconcile`] call
+/// sites in the spawn loop): once at **startup**, on each **dirty** signal
+/// (`runtime::take_fleet_dirty`, set by the modal's Pair/Leave actions), and on
+/// every tray **Show** after the config reload.
+struct FleetManager {
+    /// The running sync, or `None` when fleet is disabled or unpaired.
+    sync: Option<FleetSync>,
+    /// The `[fleet]` config the running `sync` was built from, so a config
+    /// change (broker/cadence/label) triggers a respawn. `None` when not
+    /// running.
+    last_fleet_cfg: Option<FleetConfig>,
+}
+
+impl FleetManager {
+    fn new() -> Self {
+        Self {
+            sync: None,
+            last_fleet_cfg: None,
+        }
+    }
+
+    /// (Re)start or stop the Fleet sync so it matches `config`.
+    ///
+    /// Desired = fleet enabled **and** a pairing secret exists in the keychain.
+    /// When desired and (not running, or the `[fleet]` config changed) it
+    /// (re)spawns the sync and publishes its `FleetState` to `runtime` for the
+    /// modal to read. When not desired and running it drops the sync (its
+    /// `Drop` joins the thread) and clears the shared state.
+    fn reconcile(&mut self, config: &AppConfig) {
+        let secret = match secret_store::get() {
+            Ok(secret) => secret,
+            Err(e) => {
+                eprintln!("aura: fleet keychain read failed: {e}");
+                None
+            }
+        };
+        let desired = config.fleet.enabled && secret.is_some();
+
+        if !desired {
+            if self.sync.take().is_some() {
+                // Dropping the sync joins and stops its thread; clear the shared
+                // state so the modal shows the enable-and-pair state.
+                crate::runtime::clear_fleet_state();
+                self.last_fleet_cfg = None;
+            }
+            return;
+        }
+
+        // Desired. Skip the respawn when already running with the same config.
+        let cfg_changed = self.last_fleet_cfg.as_ref() != Some(&config.fleet);
+        if self.sync.is_some() && !cfg_changed {
+            return;
+        }
+
+        // `desired` guarantees the secret is present.
+        let secret = secret.expect("desired implies a stored secret");
+        let machine_id = match secret_store::machine_id() {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("aura: fleet machine-id read failed: {e}");
+                return;
+            }
+        };
+        let params = FleetParams {
+            broker_url: config.fleet.broker_url.clone(),
+            heartbeat_secs: config.fleet.heartbeat_secs,
+            stale_secs: config.fleet.stale_secs,
+        };
+        let transport = Box::new(NtfyTransport::new(config.fleet.broker_url.clone()));
+
+        // Self-sufficient heartbeat source: the sync thread builds a fresh
+        // heartbeat each cadence by fetching the local Claude quota itself, so
+        // Fleet publishes with the modal closed. The closure is `Send + 'static`
+        // and owns only cloned data — no GPUI handles, no `&self`.
+        let claude_path = app::fleet_claude_config_path(config);
+        let label = app::fleet_machine_label(config);
+        let source_machine_id = machine_id.clone();
+        let heartbeat_source = Box::new(move || {
+            let quota = QuotaApi::new(claude_path.clone()).snapshot();
+            Some(net::build_heartbeat(
+                &quota,
+                source_machine_id.clone(),
+                label.clone(),
+                Utc::now(),
+            ))
+        });
+
+        // Replacing `self.sync` drops any previous sync first (joining its
+        // thread) before the new one is stored.
+        let sync = FleetSync::spawn(secret, machine_id, params, transport, heartbeat_source);
+        crate::runtime::set_fleet_state(sync.state());
+        self.sync = Some(sync);
+        self.last_fleet_cfg = Some(config.fleet.clone());
+    }
+}
 
 fn main() -> Result<()> {
     // Subcommand dispatch — handled before GPUI init so headless commands
@@ -153,11 +264,32 @@ fn main() -> Result<()> {
                 // we start watching for losses.
                 let mut just_opened: u8 = 0;
 
+                // Process-level Fleet manager. Held in this spawn-loop scope so
+                // it (and its background sync thread) lives for the whole
+                // process and is never dropped between modal open/close cycles.
+                let mut fleet = FleetManager::new();
+                // The most recent config seen by the loop. Updated on every tray
+                // Show; used so a dirty-triggered reconcile (from the modal's
+                // Pair/Leave actions) uses the current config, not the stale
+                // startup snapshot.
+                let mut latest_config = config.clone();
+                // Startup reconcile: start the sync now if fleet is already
+                // enabled + paired, so a passive monitor publishes from launch
+                // without waiting for the first tray Show.
+                fleet.reconcile(&latest_config);
+
                 loop {
                     // Poll: ksni / tray-icon both expose blocking
                     // crossbeam channels under the hood, so we drain
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
+
+                    // The modal's Pair/Leave actions mutate the keychain secret
+                    // and set the dirty flag; reconcile here so the sync starts /
+                    // stops without needing the user to reopen the modal.
+                    if runtime::take_fleet_dirty() {
+                        fleet.reconcile(&latest_config);
+                    }
 
                     if runtime::dismiss_on_focus_loss() && current.is_some() {
                         let lost_focus = if just_opened > 0 {
@@ -215,6 +347,13 @@ fn main() -> Result<()> {
                                             config.clone()
                                         });
                                 runtime::set_from_config(&fresh_config);
+
+                                // Keep the loop's config current and reconcile
+                                // Fleet against it: a config edit (e.g. enabling
+                                // fleet or changing the broker) takes effect on
+                                // this Show without a restart.
+                                latest_config = fresh_config.clone();
+                                fleet.reconcile(&latest_config);
 
                                 // If a window was open, tear down its monitor
                                 // and demote the activation policy before the

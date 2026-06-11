@@ -1,24 +1,31 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
+    activity::{ActivityMonitor, ClaudeSession, ProcView},
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     lexicon::{self, Lexicon},
+    net::{fleet::FleetRow, pairing::PairingSecret, secret_store},
     plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
     quota::{
-        forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
-        QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
+        forecast, pacing, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
+        GeminiQuota, PacingStatus, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow, SessionBudget,
     },
-    reader::{make_reader, Period, UsageSnapshot},
+    reader::{
+        make_reader, CacheEfficiency, InsightsSnapshot, Period, ProjectStat, SessionInsight,
+        UsageSnapshot,
+    },
     state::AppState,
     theme::Theme,
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, ScrollHandle,
-    SharedString, Window,
+    div, prelude::*, px, rgb, size, svg, Animation, AnimationExt, AnyElement, ClickEvent, Context,
+    Pixels, ScrollHandle, SharedString, Window,
 };
 
-use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
+use crate::format::{
+    compact_tokens, duration, hour_of_day, locale_uses_12h, system_locale, thousands,
+};
 use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
@@ -47,6 +54,11 @@ enum AgentSection {
     Forecast,
     Summary,
     Models,
+    Insights,
+    /// Cross-machine usage comparison. Only present when `[fleet].enabled`.
+    Fleet,
+    /// Live Claude Code process monitor. Only present when `[activity].enabled`.
+    Activity,
 }
 
 impl AgentSection {
@@ -56,6 +68,9 @@ impl AgentSection {
             Self::Forecast => lex.tab_forecast,
             Self::Summary => lex.tab_summary,
             Self::Models => lex.tab_models,
+            Self::Insights => lex.tab_insights,
+            Self::Fleet => "Fleet",
+            Self::Activity => "Activity",
         }
     }
 
@@ -65,16 +80,20 @@ impl AgentSection {
             Self::Forecast => "forecast",
             Self::Summary => "summary",
             Self::Models => "models",
+            Self::Insights => "insights",
+            Self::Fleet => "fleet",
+            Self::Activity => "activity",
         }
     }
 
     /// Whether this section filters data by the active period. Quota
     /// reports rolling 5h / 7d subscription windows fixed by the API, so
-    /// the period pills don't apply.
+    /// the period pills don't apply. Fleet is account-wide and live, and
+    /// Activity is a live process monitor, so both ignore the period too.
     fn uses_period(self) -> bool {
         match self {
-            Self::Quota | Self::Forecast => false,
-            Self::Summary | Self::Models => true,
+            Self::Quota | Self::Forecast | Self::Fleet | Self::Activity => false,
+            Self::Summary | Self::Models | Self::Insights => true,
         }
     }
 }
@@ -100,6 +119,10 @@ pub struct AuraView {
 
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    /// Token caps for the session-budget gauge, derived during refresh from the
+    /// quota windows + a local JSONL token sum. `None` when pacing is off or
+    /// usage is too thin to invert a reliable cap.
+    pacing_caps: Option<pacing::Caps>,
     forecast: Option<ForecastSnapshot>,
     /// Indexed by plugin name.
     plugin_panels: Vec<(String, PluginPanel)>,
@@ -133,6 +156,30 @@ pub struct AuraView {
     /// visible at the correct size with no visible flash.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     needs_uncloak: Rc<Cell<bool>>,
+
+    /// Pairing code shown transiently in the Fleet panel right after the user
+    /// clicks "Pair a machine" / "Show code". Cleared on panel close so it is
+    /// never persisted to the visible UI (screenshot-leak mitigation).
+    fleet_code: Option<String>,
+    /// One-line status / error for the Fleet panel ("Joined fleet", "Clipboard
+    /// empty", a decode error, etc.).
+    fleet_status: Option<String>,
+
+    /// Live Claude Code process monitor. Owns a long-lived `sysinfo::System`
+    /// so CPU% deltas compute correctly across ticks. Lazily created the first
+    /// time the Activity tab is sampled and dropped with the view when the
+    /// modal closes, so it costs nothing until used.
+    activity_monitor: Option<ActivityMonitor>,
+    /// The most recent Activity sample, rendered by `render_activity`.
+    activity_sessions: Vec<ClaudeSession>,
+    /// True once the monitor has a CPU baseline (after the first sample). Until
+    /// then the UI shows "measuring…" instead of a bogus 0% reading.
+    activity_primed: bool,
+    /// Monotonic token bumped each time the live Activity loop starts. The
+    /// self-rescheduling tick captures its generation and stops as soon as a
+    /// newer loop supersedes it (e.g. the user leaves and re-enters the tab),
+    /// guaranteeing exactly one live sampler at a time.
+    activity_tick: u64,
 }
 
 /// Bundle of results produced by the background refresh task. Errors that
@@ -147,6 +194,7 @@ struct RefreshResult {
     fallback_profile: Option<String>,
     snapshot: Option<UsageSnapshot>,
     quota: Option<QuotaSnapshot>,
+    pacing_caps: Option<pacing::Caps>,
     forecast: Option<ForecastSnapshot>,
     plugin_panels: Vec<(String, PluginPanel)>,
     error: Option<String>,
@@ -191,6 +239,7 @@ impl AuraView {
             active_plugin_section: None,
             snapshot: None,
             quota: None,
+            pacing_caps: None,
             forecast: None,
             plugin_panels: Vec::new(),
             update: None,
@@ -202,7 +251,17 @@ impl AuraView {
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
             body_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
+            fleet_code: None,
+            fleet_status: None,
+            activity_monitor: None,
+            activity_sessions: Vec::new(),
+            activity_primed: false,
+            activity_tick: 0,
         };
+        // Fleet runs at the process level (see `main::FleetManager`), not here —
+        // so it publishes/polls with the modal closed. The view only reads peers
+        // for rendering and signals the manager via `runtime::mark_fleet_dirty`.
+        //
         // Initial load: kick off the async refresh now so the spinner can
         // render on first paint instead of blocking construction.
         view.refresh(cx);
@@ -279,7 +338,14 @@ impl AuraView {
             // focus-loss check picks up the new dismiss_on_focus_loss
             // value on the next poll without a service restart.
             crate::runtime::set_from_config(&cfg);
+            // If the user toggled `[fleet]` (enable/disable/broker/label) since
+            // the last refresh, signal the process-level Fleet manager to
+            // reconcile so it (re)starts or stops the sync with the new params.
+            let fleet_changed = self.config.fleet != cfg.fleet;
             self.config = cfg;
+            if fleet_changed {
+                crate::runtime::mark_fleet_dirty();
+            }
         }
         if let Some(theme) = result.theme {
             self.theme = theme;
@@ -289,6 +355,7 @@ impl AuraView {
         }
         self.snapshot = result.snapshot;
         self.quota = result.quota;
+        self.pacing_caps = result.pacing_caps;
         self.forecast = result.forecast;
         self.plugin_panels = result.plugin_panels;
         self.error = result.error;
@@ -375,6 +442,7 @@ fn do_refresh(
                 snapshot: None,
                 quota: None,
                 forecast: None,
+                pacing_caps: None,
                 plugin_panels: Vec::new(),
                 error: Some(format!("Could not reload config: {e}")),
             };
@@ -404,6 +472,7 @@ fn do_refresh(
             fallback_profile,
             snapshot: None,
             quota: None,
+            pacing_caps: None,
             forecast: None,
             plugin_panels: Vec::new(),
             error: Some(format!("Profile `{resolved_profile}` not found in config")),
@@ -422,11 +491,60 @@ fn do_refresh(
 
     // Quota windows: per-agent source → unavailable, never `Err`.
     let agent_path = agent.resolved_config_path();
-    let quota = Some(match agent.kind {
-        AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
-        AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
-        AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
+    let mut quota = Some(match agent.kind {
+        AgentKind::ClaudeCode => QuotaApi::new(agent_path.clone()).snapshot(),
+        AgentKind::Codex => CodexQuota::new(agent_path.clone()).snapshot(),
+        AgentKind::Gemini => GeminiQuota::new(agent_path.clone()).snapshot(),
     });
+
+    // Budget pacing (F2, Claude Code only): when enabled and we have live API
+    // percentages, learn the active-session pattern from a local JSONL scan and
+    // attach it to the snapshot so `pacing::session_budget` can pace on it. This
+    // rides the existing refresh — no new timer/thread.
+    let mut pacing_caps: Option<pacing::Caps> = None;
+    if config.pacing.enabled && agent.kind == AgentKind::ClaudeCode {
+        if let Some(q) = quota.as_mut() {
+            if q.source == QuotaSource::Api {
+                let now = Utc::now();
+                let sessions = pacing::collect_session_tokens(
+                    &agent_path,
+                    now,
+                    config.pacing.history_days,
+                );
+                // The 5h "session" window's `resets_at` anchors the 5h grid the
+                // pattern buckets history onto.
+                let session_resets_at = q
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "Current session")
+                    .and_then(|w| w.resets_at)
+                    .unwrap_or(now);
+                q.pacing_pattern = Some(pacing::learn_pattern(
+                    &sessions,
+                    now,
+                    config.pacing.history_days,
+                    config.pacing.active_session_min_tokens,
+                    session_resets_at,
+                ));
+                // Token caps need both the quota windows and the JSONL token
+                // sums — compute them here where both are in scope. `None` when
+                // the windows are missing or usage is too thin to invert a cap.
+                if let (Some(weekly), Some(session)) = (
+                    q.windows
+                        .iter()
+                        .find(|w| w.label == "Current week (all models)")
+                        .cloned(),
+                    q.windows
+                        .iter()
+                        .find(|w| w.label == "Current session")
+                        .cloned(),
+                ) {
+                    pacing_caps =
+                        pacing::compute_caps(&agent_path, &weekly, &session, now).ok();
+                }
+            }
+        }
+    }
 
     // Forecast piggybacks on the just-loaded quota snapshot. Same refresh
     // cadence, no extra I/O.
@@ -445,6 +563,7 @@ fn do_refresh(
         fallback_profile,
         snapshot,
         quota,
+        pacing_caps,
         forecast,
         plugin_panels,
         error,
@@ -522,8 +641,149 @@ impl AuraView {
     fn set_agent_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
         if self.active_agent_section != section {
             self.active_agent_section = section;
+            // Leaving the Fleet tab hides any transiently-shown pairing code so
+            // it never lingers on screen.
+            if section != AgentSection::Fleet {
+                self.fleet_code = None;
+            }
+            // Bumping the generation token stops any running Activity sampler
+            // (its captured generation no longer matches). Entering the tab
+            // starts a fresh one; this guarantees a single live sampler and
+            // zero background cost whenever the tab isn't on screen.
+            self.activity_tick = self.activity_tick.wrapping_add(1);
+            if section == AgentSection::Activity {
+                self.start_activity_loop(cx);
+            }
             cx.notify();
         }
+    }
+
+    // ── Activity (live Claude Code process monitor) ─────────────────────────────
+
+    /// Begin (or restart) the live sampling loop for the Activity tab. Mirrors
+    /// the spinner-tick pattern (`spawn_spinner_tick`): a self-rescheduling
+    /// `cx.spawn` chain whose continuation is gated on a still-valid condition.
+    /// Here the gate is "the captured generation still matches AND the tab is
+    /// still Activity" — so the loop dies the instant the user switches tabs
+    /// or the modal closes (the view drops and `update` fails). The first
+    /// sample primes the CPU baseline; subsequent ones (spaced `refresh_secs`,
+    /// itself ≥ `MINIMUM_CPU_UPDATE_INTERVAL`) carry real CPU deltas.
+    fn start_activity_loop(&mut self, cx: &mut Context<Self>) {
+        // Reuse the monitor across visits so its CPU baseline survives — a
+        // re-entered tab then shows real CPU% immediately instead of
+        // "measuring…". A first-ever visit creates it and pays the one-tick
+        // priming cost.
+        if self.activity_monitor.is_none() {
+            self.activity_monitor = Some(ActivityMonitor::new());
+        }
+        let generation = self.activity_tick;
+        self.sample_activity(cx);
+        self.spawn_activity_tick(generation, cx);
+    }
+
+    /// Take one sample from the monitor into `activity_sessions` and mark the
+    /// baseline primed once the monitor reports it has one.
+    fn sample_activity(&mut self, cx: &mut Context<Self>) {
+        if let Some(monitor) = self.activity_monitor.as_mut() {
+            self.activity_sessions = monitor.sample();
+            self.activity_primed = monitor.is_primed();
+        }
+        cx.notify();
+    }
+
+    /// Schedule a single live re-sample after `refresh_secs`. Re-schedules
+    /// itself only while `generation` is still current and the Activity tab is
+    /// still active; otherwise the chain stops (zero background cost).
+    fn spawn_activity_tick(&self, generation: u64, cx: &mut Context<Self>) {
+        let refresh_secs = self.config.activity.refresh_secs.max(1);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(refresh_secs))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.activity_tick == generation
+                    && view.active_agent_section == AgentSection::Activity
+                {
+                    view.sample_activity(cx);
+                    view.spawn_activity_tick(generation, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    // ── Fleet ─────────────────────────────────────────────────────────────────
+    //
+    // The Fleet sync runs at the process level (see `main::FleetManager`), not
+    // here — so it publishes/polls 24/7 with the modal closed. The view's only
+    // jobs are to (a) read peers for rendering via `runtime::fleet_state()` and
+    // (b) mutate the keychain secret on pair/join/leave, then signal the manager
+    // to reconcile via `runtime::mark_fleet_dirty()`.
+
+    /// "Pair a machine": generate a fresh secret, store it, signal the manager
+    /// to (re)start the sync, and surface the code to copy onto the other
+    /// machine.
+    fn fleet_generate_code(&mut self, cx: &mut Context<Self>) {
+        let secret = PairingSecret::generate();
+        if let Err(e) = secret_store::set(&secret) {
+            self.fleet_status = Some(format!("Could not store secret: {e}"));
+            cx.notify();
+            return;
+        }
+        let code = secret.to_code();
+        // The process-level manager reconciles against the new secret on its
+        // next poll tick.
+        crate::runtime::mark_fleet_dirty();
+        self.fleet_code = Some(code);
+        self.fleet_status = Some("Code generated — copy it to the other machine.".to_string());
+        cx.notify();
+    }
+
+    /// Copy the currently-shown pairing code to the clipboard.
+    fn fleet_copy_code(&mut self, cx: &mut Context<Self>) {
+        if let Some(code) = &self.fleet_code {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()));
+            self.fleet_status = Some("Copied to clipboard.".to_string());
+            cx.notify();
+        }
+    }
+
+    /// "Join fleet": read a pairing code from the clipboard, derive the secret,
+    /// store it, and signal the manager to start syncing.
+    fn fleet_join_from_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            self.fleet_status = Some("Clipboard is empty — copy the code first.".to_string());
+            cx.notify();
+            return;
+        };
+        match PairingSecret::from_code(&text) {
+            Ok(secret) => {
+                if let Err(e) = secret_store::set(&secret) {
+                    self.fleet_status = Some(format!("Could not store secret: {e}"));
+                    cx.notify();
+                    return;
+                }
+                crate::runtime::mark_fleet_dirty();
+                self.fleet_code = None;
+                self.fleet_status = Some("Joined fleet.".to_string());
+            }
+            Err(e) => {
+                self.fleet_status = Some(format!("Invalid code: {e}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// "Leave fleet": delete the secret from the keychain and signal the manager
+    /// to stop syncing.
+    fn fleet_leave(&mut self, cx: &mut Context<Self>) {
+        match secret_store::delete() {
+            Ok(()) => self.fleet_status = Some("Left fleet.".to_string()),
+            Err(e) => self.fleet_status = Some(format!("Could not delete secret: {e}")),
+        }
+        crate::runtime::mark_fleet_dirty();
+        self.fleet_code = None;
+        cx.notify();
     }
 
     fn set_plugin(&mut self, name: String, cx: &mut Context<Self>) {
@@ -598,6 +858,11 @@ impl AuraView {
             .agents
             .iter()
             .find(|a| a.name == self.active_profile)
+    }
+
+    /// Kind of the currently-selected agent, if one is selected.
+    fn current_agent_kind(&self) -> Option<AgentKind> {
+        self.current_agent().map(|a| a.kind)
     }
 
     #[allow(dead_code)]
@@ -1179,12 +1444,33 @@ impl AuraView {
         let lex = lexicon::pick(self.config.display.goblin_mode);
         match self.mode {
             Mode::Agent => {
-                let sections = [
+                let mut sections = vec![
                     AgentSection::Quota,
                     AgentSection::Forecast,
                     AgentSection::Summary,
                     AgentSection::Models,
                 ];
+                // Insights is opt-in (`[insights] enabled`), so the tab only
+                // appears when the user has turned it on.
+                if self.config.insights.enabled {
+                    sections.push(AgentSection::Insights);
+                }
+                // The Fleet tab is hidden unless the user opted in via
+                // `[fleet].enabled`. Only meaningful for the Claude agent
+                // (account-wide rate-limit windows).
+                if self.config.fleet.enabled
+                    && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                {
+                    sections.push(AgentSection::Fleet);
+                }
+                // The Activity tab (live Claude Code process monitor) is hidden
+                // unless the user opted in via `[activity].enabled`. Only
+                // meaningful for the Claude agent.
+                if self.config.activity.enabled
+                    && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                {
+                    sections.push(AgentSection::Activity);
+                }
                 for s in sections {
                     let active = self.active_agent_section == s;
                     row = row.child(
@@ -1237,7 +1523,7 @@ impl AuraView {
         row.into_any_element()
     }
 
-    fn render_body(&self, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let lex = lexicon::pick(self.config.display.goblin_mode);
         let inner: AnyElement = if let Some(err) = &self.error {
             div()
@@ -1274,6 +1560,9 @@ impl AuraView {
                         &self.theme,
                         lex,
                         self.forecast.as_ref(),
+                        self.quota.as_ref(),
+                        self.pacing_caps,
+                        self.config.pacing.enabled,
                         accent,
                         self.spinner_frame,
                     ),
@@ -1285,6 +1574,41 @@ impl AuraView {
                         Some(snap) => render_models(&self.theme, snap, accent),
                         None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
+                    AgentSection::Insights => match self.snapshot.as_ref() {
+                        Some(snap) => render_insights(
+                            &self.theme,
+                            snap,
+                            accent,
+                            self.config.insights.top_n,
+                        ),
+                        None => render_loading(&self.theme, lex, self.spinner_frame),
+                    },
+                    AgentSection::Fleet => {
+                        // Defensive: the tab is hidden for non-Claude agents /
+                        // when disabled, but the selection can persist across a
+                        // profile switch. Fall back to the quota view rather
+                        // than showing an empty Fleet panel.
+                        if self.config.fleet.enabled
+                            && self.current_agent_kind() == Some(AgentKind::ClaudeCode)
+                        {
+                            self.render_fleet(accent, cx)
+                        } else {
+                            render_quota(
+                                &self.theme,
+                                lex,
+                                self.quota.as_ref(),
+                                accent,
+                                self.spinner_frame,
+                            )
+                        }
+                    }
+                    AgentSection::Activity => render_activity(
+                        &self.theme,
+                        &self.activity_sessions,
+                        self.activity_primed,
+                        self.config.activity.refresh_secs.max(1),
+                        accent,
+                    ),
                 },
                 Mode::Plugin => self.render_plugin_body(),
             }
@@ -1641,10 +1965,14 @@ fn format_reset(ts: DateTime<Utc>) -> String {
 
 // ── Forecast (projected end-of-window usage at current burn rate) ───────────
 
+#[allow(clippy::too_many_arguments)]
 fn render_forecast(
     theme: &Theme,
     lex: &Lexicon,
     forecast: Option<&ForecastSnapshot>,
+    quota: Option<&QuotaSnapshot>,
+    pacing_caps: Option<pacing::Caps>,
+    pacing_enabled: bool,
     accent: u32,
     spinner_frame: usize,
 ) -> AnyElement {
@@ -1675,7 +2003,149 @@ fn render_forecast(
         }
     }
 
+    // Session-budget gauge (F2) — appended below the projected windows when the
+    // feature is enabled. Computed from the live snapshot + learned pattern.
+    if pacing_enabled {
+        if let Some(q) = quota {
+            let budget = pacing::session_budget(q, pacing_caps, Utc::now());
+            col = col.child(render_session_budget(theme, lex, &budget, accent));
+        }
+    }
+
     col.into_any_element()
+}
+
+/// The per-session budget gauge (F2). Reuses the forecast card's bar/badge
+/// primitives: a header with a status badge, a usage-vs-ceiling bar, and a
+/// one-line rationale. `Insufficient` collapses to the warming-up note with no
+/// number.
+fn render_session_budget(
+    theme: &Theme,
+    lex: &Lexicon,
+    budget: &SessionBudget,
+    accent: u32,
+) -> impl IntoElement {
+    let (badge_text, badge_color) = match budget.status {
+        PacingStatus::Ok => (lex.pacing_ok, accent),
+        PacingStatus::Watch => (lex.pacing_watch, theme.colors.warning),
+        PacingStatus::Over => (lex.pacing_over, theme.colors.error),
+        PacingStatus::Insufficient => (lex.pacing_insufficient, theme.colors.text_dim),
+    };
+
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(lex.pacing_title)),
+        )
+        .child(
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(badge_color))
+                .text_xs()
+                .text_color(rgb(badge_color))
+                .child(SharedString::from(badge_text)),
+        );
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(header);
+
+    // No fabricated number when we lack history / live data.
+    let (Some(recommended), Some(used)) = (budget.recommended_pct, budget.session_used_pct) else {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(
+                    budget
+                        .note
+                        .clone()
+                        .unwrap_or_else(|| lex.forecast_warming_up.to_string()),
+                )),
+        );
+        return card;
+    };
+
+    card = card.child(
+        div()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from((lex.pacing_spend_up_to_fmt)(
+                recommended,
+            ))),
+    );
+
+    // Gauge: the recommended ceiling is the full track; the solid fill is the
+    // current 5h usage relative to that ceiling. Over budget fills the track
+    // and shows an overflow marker.
+    let ceiling = recommended.max(f64::EPSILON);
+    let used_frac = (used / ceiling).clamp(0.0, 1.0) as f32;
+    let bar_color = match budget.status {
+        PacingStatus::Over => theme.colors.error,
+        PacingStatus::Watch => theme.colors.warning,
+        _ => accent,
+    };
+
+    let bar = div()
+        .h(px(8.0))
+        .flex_1()
+        .bg(rgb(theme.colors.surface_hi))
+        .rounded_md()
+        .flex()
+        .flex_row()
+        .child(
+            div()
+                .h(px(8.0))
+                .w(gpui::relative(used_frac))
+                .bg(rgb(bar_color))
+                .rounded_md(),
+        );
+
+    let mut bar_row = div().flex().flex_row().items_center().gap_2().child(bar);
+    if budget.status == PacingStatus::Over {
+        bar_row = bar_row.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.error))
+                .child("↗"),
+        );
+    }
+    bar_row = bar_row.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "{:.0}% / {:.0}%",
+                used, recommended
+            ))),
+    );
+    card = card.child(bar_row);
+
+    if let Some(note) = &budget.note {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(note.clone())),
+        );
+    }
+
+    card
 }
 
 fn render_forecast_window(
@@ -1979,23 +2449,145 @@ fn render_model_row(
         )
 }
 
+/// Hover card for a single bar in the "Tokens per day" chart. Built fresh on
+/// each hover so its entrance animation replays. Colors are captured as resolved
+/// `u32`s so the view doesn't need to borrow the theme.
+struct DailyBarTooltip {
+    date: SharedString,
+    total: SharedString,
+    /// Per-model breakdown for the day: (short model name, compact tokens).
+    models: Vec<(SharedString, SharedString)>,
+    bg: u32,
+    border: u32,
+    text: u32,
+    text_dim: u32,
+    accent: u32,
+}
+
+impl Render for DailyBarTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .bg(rgb(self.bg))
+            .border_1()
+            .border_color(rgb(self.border))
+            .rounded_md()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(self.text_dim))
+                    .child(self.date.clone()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(self.text))
+                    .child(self.total.clone()),
+            );
+        for (model, tokens) in &self.models {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .gap_3()
+                    .text_xs()
+                    .child(div().text_color(rgb(self.accent)).child(model.clone()))
+                    .child(div().text_color(rgb(self.text_dim)).child(tokens.clone())),
+            );
+        }
+        // Fade + rise into place over ~160ms (ease-out cubic).
+        col.with_animation(
+            "daily-bar-tooltip-in",
+            Animation::new(Duration::from_millis(160)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+            |this, delta| this.opacity(delta).mt(px(6.0 * (1.0 - delta))),
+        )
+    }
+}
+
 fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
-    let days: Vec<(String, u64)> = snap
+    struct DayBar {
+        date: String,
+        total: u64,
+        models: Vec<(String, u64)>,
+    }
+
+    let days: Vec<DayBar> = snap
         .daily_tokens
         .iter()
-        .map(|d| (d.date.clone(), d.by_model.values().sum::<u64>()))
+        .map(|d| {
+            let total = d.by_model.values().sum::<u64>();
+            let mut models: Vec<(String, u64)> =
+                d.by_model.iter().map(|(m, n)| (m.clone(), *n)).collect();
+            models.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            DayBar {
+                date: d.date.clone(),
+                total,
+                models,
+            }
+        })
         .collect();
 
-    let max = days.iter().map(|(_, n)| *n).max().unwrap_or(0);
+    let max = days.iter().map(|d| d.total).max().unwrap_or(0);
+
+    // Captured into each bar's hover/tooltip closures.
+    let surface_hi = theme.colors.surface_hi;
+    let border = theme.colors.border;
+    let text = theme.colors.text;
+    let text_dim = theme.colors.text_dim;
+    // Brighten the accent ~28% toward white for the hover state.
+    let accent_hi = {
+        let lift = |shift: u32| {
+            let c = ((accent >> shift) & 0xff) as f32;
+            ((c + (255.0 - c) * 0.28).round() as u32).min(255)
+        };
+        (lift(16) << 16) | (lift(8) << 8) | lift(0)
+    };
 
     let mut bars = div().flex().flex_row().items_end().gap_1().h(px(56.0));
-    for (_, n) in &days {
+    for (i, d) in days.iter().enumerate() {
         let height = if max > 0 {
-            (*n as f32 / max as f32 * 48.0).max(2.0)
+            (d.total as f32 / max as f32 * 48.0).max(2.0)
         } else {
             2.0
         };
-        bars = bars.child(div().flex_1().h(px(height)).bg(rgb(accent)).rounded_sm());
+        let date = d.date.clone();
+        let total = d.total;
+        let models = d.models.clone();
+        bars = bars.child(
+            div()
+                .id(SharedString::from(format!("daily-bar-{i}")))
+                .flex_1()
+                .h(px(height))
+                .bg(rgb(accent))
+                .rounded_sm()
+                .hover(move |s| s.bg(rgb(accent_hi)))
+                .tooltip(move |_window, cx| {
+                    let models_fmt: Vec<(SharedString, SharedString)> = models
+                        .iter()
+                        .take(3)
+                        .map(|(m, n)| {
+                            let short = m.strip_prefix("claude-").unwrap_or(m);
+                            (SharedString::from(short.to_string()), compact_tokens(*n).into())
+                        })
+                        .collect();
+                    cx.new(|_| DailyBarTooltip {
+                        date: date.clone().into(),
+                        total: format!("{} tokens", compact_tokens(total)).into(),
+                        models: models_fmt,
+                        bg: surface_hi,
+                        border,
+                        text,
+                        text_dim,
+                        accent,
+                    })
+                    .into()
+                }),
+        );
     }
 
     div()
@@ -2015,6 +2607,319 @@ fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl 
                 .child("Tokens per day"),
         )
         .child(bars)
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+/// Render the Insights tab: top projects, top sessions (with mode badges),
+/// ultracode ROI, and cache efficiency. `top_n` slices the already-ranked lists
+/// from the snapshot.
+fn render_insights(
+    theme: &Theme,
+    snap: &UsageSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> AnyElement {
+    let ins = &snap.insights;
+    let mut col = div().flex().flex_col().px_4().py_3().gap_4();
+
+    col = col.child(render_insights_projects(theme, ins, accent, top_n));
+    col = col.child(render_insights_sessions(theme, ins, accent, top_n));
+    col = col.child(render_ultracode_roi(theme, ins, accent));
+    col = col.child(render_cache_efficiency(theme, snap, accent));
+
+    // Heuristic footnote — ultracode is inferred from session content.
+    col = col.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text_dim))
+            .child("ⓘ ultracode is inferred from session content"),
+    );
+
+    col.into_any_element()
+}
+
+/// Section heading shared by the Insights cards.
+fn insights_heading(theme: &Theme, text: &str) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(rgb(theme.colors.text_dim))
+        .child(SharedString::from(text.to_string()))
+}
+
+/// Wrapper card matching the Models tab's surface/border styling.
+fn insights_card(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+}
+
+fn empty_hint(theme: &Theme, text: &str) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(rgb(theme.colors.text_dim))
+        .child(SharedString::from(text.to_string()))
+}
+
+fn render_insights_projects(
+    theme: &Theme,
+    ins: &InsightsSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> impl IntoElement {
+    let mut card = insights_card(theme).child(insights_heading(theme, "TOP PROJECTS"));
+
+    let projects: &[ProjectStat] = slice_top(&ins.top_projects, top_n);
+    if projects.is_empty() {
+        return card.child(empty_hint(theme, "No project activity in this period."));
+    }
+
+    let max = projects.iter().map(|p| p.tokens).max().unwrap_or(0);
+    for p in projects {
+        card = card.child(render_project_row(theme, p, max, accent));
+    }
+    card
+}
+
+fn render_project_row(
+    theme: &Theme,
+    project: &ProjectStat,
+    max: u64,
+    accent: u32,
+) -> impl IntoElement {
+    let bar_pct = if max > 0 {
+        (project.tokens as f64 / max as f64 * 100.0).clamp(2.0, 100.0)
+    } else {
+        2.0
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .text_color(rgb(theme.colors.text))
+                        .child(SharedString::from(project.name.clone())),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(compact_tokens(project.tokens))),
+                ),
+        )
+        .child(
+            div()
+                .h(px(4.0))
+                .w_full()
+                .bg(rgb(theme.colors.surface_hi))
+                .rounded_md()
+                .child(
+                    div()
+                        .h(px(4.0))
+                        .w(gpui::relative(bar_pct as f32 / 100.0))
+                        .bg(rgb(accent))
+                        .rounded_md(),
+                ),
+        )
+}
+
+fn render_insights_sessions(
+    theme: &Theme,
+    ins: &InsightsSnapshot,
+    accent: u32,
+    top_n: usize,
+) -> impl IntoElement {
+    let mut card = insights_card(theme).child(insights_heading(theme, "TOP SESSIONS"));
+
+    let sessions: &[SessionInsight] = slice_top(&ins.top_sessions, top_n);
+    if sessions.is_empty() {
+        return card.child(empty_hint(theme, "No sessions in this period."));
+    }
+
+    for s in sessions {
+        card = card.child(render_session_row(theme, s, accent));
+    }
+    card
+}
+
+fn render_session_row(theme: &Theme, s: &SessionInsight, accent: u32) -> impl IntoElement {
+    // Left: "18.2M · project". Right: mode badges. (Duration is intentionally
+    // omitted — it was wall-clock incl. idle gaps and misled on reopened sessions.)
+    let summary = format!("{} · {}", compact_tokens(s.tokens), s.project);
+
+    let mut badges = div().flex().flex_row().flex_shrink_0().gap_1();
+    badges = badges.child(mode_badge(theme, s.tier.label(), accent, false));
+    if s.is_ultracode {
+        badges = badges.child(mode_badge(theme, "ultracode", accent, true));
+    }
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_sm()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(summary)),
+        )
+        .child(badges)
+}
+
+/// A small mode badge. The tier badge uses the dim surface; the ultracode chip
+/// uses the accent fill so it stands out. Colors come from theme tokens only.
+fn mode_badge(theme: &Theme, label: &str, accent: u32, filled: bool) -> impl IntoElement {
+    let (bg, fg) = if filled {
+        (accent, theme.on_accent_text(accent))
+    } else {
+        (theme.colors.surface_hi, theme.colors.text_dim)
+    };
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .text_xs()
+        .rounded_md()
+        .bg(rgb(bg))
+        .text_color(rgb(fg))
+        .child(SharedString::from(label.to_string()))
+}
+
+/// Whether heavy/ultracode sessions are actually heavier, by average tokens.
+/// `ultracode` detection is heuristic — see the tab footnote.
+fn render_ultracode_roi(theme: &Theme, ins: &InsightsSnapshot, accent: u32) -> impl IntoElement {
+    let roi = &ins.ultracode_roi;
+    let mut card = insights_card(theme).child(insights_heading(theme, "ULTRACODE ROI"));
+
+    if roi.ultracode_sessions == 0 && roi.normal_sessions == 0 {
+        return card.child(empty_hint(theme, "No sessions in this period."));
+    }
+
+    // Two group rows: ultracode (accent) and normal (dim).
+    let group_row = |label: &str, sessions: u32, avg: u64, filled: bool| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(mode_badge(theme, label, accent, filled))
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .text_color(rgb(theme.colors.text))
+                    .child(SharedString::from(format!(
+                        "{sessions} sessions · avg {}",
+                        compact_tokens(avg)
+                    ))),
+            )
+    };
+    card = card.child(group_row(
+        "ultracode",
+        roi.ultracode_sessions,
+        roi.ultracode_avg_tokens,
+        true,
+    ));
+    card = card.child(group_row(
+        "normal",
+        roi.normal_sessions,
+        roi.normal_avg_tokens,
+        false,
+    ));
+
+    // Multiplier line, omitted when there are no normal sessions to divide by.
+    if let Some(mult) = roi.multiplier() {
+        card = card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(format!(
+                    "ultracode sessions are {mult:.1}× heavier on average"
+                ))),
+        );
+    }
+
+    card
+}
+
+/// Share of model context served from cache — a proxy for prompt-reuse
+/// efficiency. Built from the period-scoped snapshot cache totals.
+fn render_cache_efficiency(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl IntoElement {
+    let eff = CacheEfficiency::new(snap.total_cache_read_tokens, snap.total_cache_write_tokens);
+    let mut card = insights_card(theme).child(insights_heading(theme, "CACHE EFFICIENCY"));
+
+    let Some(ratio) = eff.hit_ratio_pct() else {
+        return card.child(empty_hint(theme, "No cache activity yet."));
+    };
+
+    // Headline: "95% of context served from cache".
+    card = card.child(
+        div()
+            .text_sm()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "{ratio:.0}% of context served from cache"
+            ))),
+    );
+
+    // Read/write hit bar (accent = reuse, dim = fresh writes).
+    let frac = (ratio / 100.0) as f32;
+    card = card.child(
+        div()
+            .flex()
+            .flex_row()
+            .h(px(6.0))
+            .w_full()
+            .rounded_md()
+            .bg(rgb(theme.colors.surface_hi))
+            .child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(frac))
+                    .bg(rgb(accent))
+                    .rounded_md(),
+            ),
+    );
+
+    // Raw read/write counts.
+    card = card.child(
+        div()
+            .text_xs()
+            .text_color(rgb(theme.colors.text_dim))
+            .child(SharedString::from(format!(
+                "cache read: {} · cache write: {}",
+                compact_tokens(eff.read_tokens),
+                compact_tokens(eff.write_tokens)
+            ))),
+    );
+
+    card
+}
+
+/// Take the first `top_n` of an already-ranked slice (treats `0` as "all").
+fn slice_top<T>(items: &[T], top_n: usize) -> &[T] {
+    let n = if top_n == 0 { items.len() } else { top_n };
+    &items[..n.min(items.len())]
 }
 
 // ── Plugin section rendering ─────────────────────────────────────────────────
@@ -2296,6 +3201,179 @@ impl AuraView {
         backdrop.child(card).into_any_element()
     }
 
+    /// Render the Fleet tab: the account sanity line, one row per machine with
+    /// 5h / weekly share bars and a freshness dot, then the pairing sub-panel.
+    fn render_fleet(&self, accent: u32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+        // ── Account sanity line ───────────────────────────────────────────────
+        // Peers are read from the process-level manager's shared `FleetState`
+        // (it runs whether or not this modal is open). `None` means the manager
+        // has no running sync — fleet disabled or unpaired.
+        let fleet_state = crate::runtime::fleet_state();
+        let running = fleet_state.is_some();
+        let (rows, account, reachable) = match &fleet_state {
+            Some(state) => {
+                // Recover from a poisoned lock rather than panicking the UI —
+                // the data is still readable and a hostile broker must never
+                // be able to take down the modal.
+                let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                let now = Utc::now();
+                (
+                    guard.rows(now, self.config.fleet.stale_secs),
+                    guard.account_pcts(),
+                    guard.broker_reachable,
+                )
+            }
+            None => (Vec::new(), None, true),
+        };
+
+        if let Some((session_pct, weekly_pct)) = account {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_4()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(format!("5h session: {session_pct:.0}%")))
+                    .child(SharedString::from(format!("Weekly: {weekly_pct:.0}%"))),
+            );
+        }
+
+        if !reachable {
+            col = col.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.warning))
+                    .child("Broker unreachable — retrying."),
+            );
+        }
+
+        // ── Machine rows ──────────────────────────────────────────────────────
+        if rows.is_empty() {
+            col = col.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(if running {
+                        "Waiting for machines… pair another machine to compare."
+                    } else {
+                        "Fleet is not paired yet. Pair a machine to begin."
+                    }),
+            );
+        } else {
+            for row in &rows {
+                col = col.child(render_fleet_row(theme, row, accent));
+            }
+        }
+
+        // ── Pairing sub-panel ─────────────────────────────────────────────────
+        col = col.child(self.render_fleet_pairing(cx));
+
+        col.into_any_element()
+    }
+
+    /// The generate / join / leave controls plus the transient code display.
+    fn render_fleet_pairing(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let surface_hi = theme.colors.surface_hi;
+        // "Paired" tracks whether the process-level manager has a running sync.
+        // After a pair/join the manager reconciles on its next poll tick (~150
+        // ms), so the Leave button appears almost immediately.
+        let paired = crate::runtime::fleet_state().is_some();
+
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mt_2()
+            .pt_3()
+            .border_t_1()
+            .border_color(rgb(theme.colors.border));
+
+        // Transient code: shown only right after generating, never persisted.
+        if let Some(code) = &self.fleet_code {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(rgb(theme.colors.surface))
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.colors.text_dim))
+                            .child("Pairing code (paste on the other machine):"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.colors.text))
+                            .child(SharedString::from(code.clone())),
+                    )
+                    .child(
+                        fleet_button("fleet-copy-code", "Copy code", theme).on_click(
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_copy_code(cx)),
+                        ),
+                    ),
+            );
+        }
+
+        // Status line.
+        if let Some(status) = &self.fleet_status {
+            panel = panel.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(status.clone())),
+            );
+        }
+
+        // Action row.
+        let mut actions = div().flex().flex_row().flex_wrap().gap_2();
+        actions = actions.child(
+            fleet_button("fleet-pair", "Pair a machine", theme)
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_generate_code(cx))),
+        );
+        actions = actions.child(
+            fleet_button("fleet-join", "Join from clipboard", theme)
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .on_click(
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_join_from_clipboard(cx)),
+                ),
+        );
+        if paired {
+            actions = actions.child(
+                fleet_button("fleet-leave", "Leave fleet", theme)
+                    .hover(move |d| d.bg(rgb(surface_hi)))
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.fleet_leave(cx))),
+            );
+        }
+        panel = panel.child(actions);
+
+        panel.into_any_element()
+    }
+
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let backdrop = div()
             .id("settings-backdrop")
@@ -2399,6 +3477,380 @@ const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
 
 fn open_url(url: &str) {
     crate::platform::open_url(url);
+}
+
+// ── Fleet helpers ─────────────────────────────────────────────────────────────
+
+/// One machine row: a freshness dot, the label (with a "you" tag), and the
+/// 5h + weekly share bars. Stale peers render dimmed.
+fn render_fleet_row(theme: &Theme, row: &FleetRow, accent: u32) -> impl IntoElement {
+    let label_color = if row.is_stale {
+        theme.colors.text_dim
+    } else {
+        theme.colors.text
+    };
+    let dot_color = if row.is_stale {
+        theme.colors.text_dim
+    } else {
+        accent
+    };
+
+    let label = if row.is_self {
+        format!("{} (you)", row.label)
+    } else {
+        row.label.clone()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    // Freshness dot.
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded_full()
+                        .bg(rgb(dot_color)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(label_color))
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(fleet_freshness_label(row))),
+                ),
+        )
+        .child(fleet_share_bar(theme, "5h", row.session_share, accent))
+        .child(fleet_share_bar(theme, "wk", row.weekly_share, accent))
+}
+
+/// A single labelled share bar. `share` is a 0.0–1.0 fraction, or `None` when
+/// the machine is stale / reported no tokens (rendered as a dashed em).
+fn fleet_share_bar(theme: &Theme, tag: &str, share: Option<f64>, accent: u32) -> impl IntoElement {
+    let pct_label = match share {
+        Some(s) => format!("{:.0}%", s * 100.0),
+        None => "—".to_string(),
+    };
+    let fraction = share.unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(20.0))
+                .text_xs()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(tag.to_string())),
+        )
+        .child(
+            div()
+                .h(px(8.0))
+                .flex_1()
+                .bg(rgb(theme.colors.surface_hi))
+                .rounded_md()
+                .child(
+                    div()
+                        .h(px(8.0))
+                        .w(gpui::relative(fraction))
+                        .bg(rgb(accent))
+                        .rounded_md(),
+                ),
+        )
+        .child(
+            div()
+                .w(px(36.0))
+                .text_xs()
+                .text_color(rgb(theme.colors.text))
+                .child(SharedString::from(pct_label)),
+        )
+}
+
+/// "updated 8s ago" / "updated 3m ago" freshness string for a peer row.
+fn fleet_freshness_label(row: &FleetRow) -> String {
+    let secs = row.age_secs.max(0);
+    if secs < 60 {
+        format!("updated {secs}s ago")
+    } else {
+        format!("updated {}m ago", secs / 60)
+    }
+}
+
+/// A small bordered text button used in the Fleet pairing sub-panel. Caller
+/// chains `.on_click(...)` (and any `.hover(...)`).
+fn fleet_button(id: &'static str, label: &'static str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .text_xs()
+        .text_color(rgb(theme.colors.text))
+        .bg(rgb(theme.colors.surface))
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(label)
+}
+
+/// The system hostname, used as the default Fleet machine label. Falls back to
+/// `"this machine"` when the env vars aren't set (rare).
+pub fn hostname_label() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| "this machine".to_string())
+}
+
+/// Config directory the Fleet heartbeat reads Claude quota from: the first
+/// configured Claude Code agent's resolved path, or the default `~/.claude` when
+/// none is configured. Returned by value so the result can move into the
+/// `Send + 'static` heartbeat-source closure. Shared by the modal view and the
+/// process-level Fleet manager so both read the same path.
+pub fn fleet_claude_config_path(config: &AppConfig) -> PathBuf {
+    config
+        .agents
+        .iter()
+        .find(|a| a.kind == AgentKind::ClaudeCode)
+        .map(|a| a.resolved_config_path())
+        .unwrap_or_else(|| {
+            AgentConfig {
+                name: String::new(),
+                kind: AgentKind::ClaudeCode,
+                config_path: None,
+                color: None,
+            }
+            .resolved_config_path()
+        })
+}
+
+/// This machine's display label: the configured `[fleet].machine_label`
+/// override, or the system hostname when blank. Shared by the modal view and
+/// the process-level Fleet manager.
+pub fn fleet_machine_label(config: &AppConfig) -> String {
+    let configured = config.fleet.machine_label.trim();
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    hostname_label()
+}
+
+// ── Activity (live Claude Code process monitor) ─────────────────────────────────
+
+/// Render the live Activity tab: one card per Claude Code session (root +
+/// subtree) sorted by total CPU%, each with its heaviest child processes, plus
+/// a footer of account-wide totals. `primed` is false on the very first sample
+/// (no CPU baseline yet) — in that case CPU numbers render as "measuring…".
+fn render_activity(
+    theme: &Theme,
+    sessions: &[ClaudeSession],
+    primed: bool,
+    refresh_secs: u64,
+    accent: u32,
+) -> AnyElement {
+    let mut col = div().flex().flex_col().px_4().py_3().gap_3();
+
+    // ── Header: "ACTIVITY · live    ⟳ 3s" ─────────────────────────────────────
+    col = col.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child("ACTIVITY · live"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(SharedString::from(format!("⟳ {refresh_secs}s"))),
+            ),
+    );
+
+    if sessions.is_empty() {
+        return col
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .bg(rgb(theme.colors.surface))
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child("No Claude Code processes running."),
+            )
+            .into_any_element();
+    }
+
+    for session in sessions {
+        col = col.child(render_activity_session(theme, session, primed, accent));
+    }
+
+    // ── Footer: total CPU% · RAM · session count ──────────────────────────────
+    let total_cpu: f32 = sessions.iter().map(|s| s.total_cpu).sum();
+    let total_mem: u64 = sessions.iter().map(|s| s.total_mem_bytes).sum();
+    let count = sessions.len();
+    let cpu_label = if primed {
+        format!("{total_cpu:.0}% CPU")
+    } else {
+        "measuring…".to_string()
+    };
+    let session_word = if count == 1 { "session" } else { "sessions" };
+    col = col.child(
+        div()
+            .pt_2()
+            .border_t_1()
+            .border_color(rgb(theme.colors.border))
+            .text_xs()
+            .text_color(rgb(theme.colors.text))
+            .child(SharedString::from(format!(
+                "Total Claude Code: {cpu_label} · {} · {count} {session_word}",
+                format_mem_bytes(total_mem),
+            ))),
+    );
+
+    col.into_any_element()
+}
+
+/// One session card: header row (status dot · project · session · totals) plus
+/// the heaviest child rows beneath it.
+fn render_activity_session(
+    theme: &Theme,
+    session: &ClaudeSession,
+    primed: bool,
+    accent: u32,
+) -> impl IntoElement {
+    let title = match &session.session_id {
+        Some(id) => format!("{} · {id}…", session.project),
+        None => session.project.clone(),
+    };
+    let cpu_mem = if primed {
+        format!(
+            "{:.0}% CPU · {}",
+            session.total_cpu,
+            format_mem_bytes(session.total_mem_bytes)
+        )
+    } else {
+        format!("measuring… · {}", format_mem_bytes(session.total_mem_bytes))
+    };
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .px_3()
+        .py_3()
+        .bg(rgb(theme.colors.surface))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme.colors.border))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    // Live-session dot, accent-coloured.
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded_full()
+                        .bg(rgb(accent)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(theme.colors.text))
+                        .child(SharedString::from(title)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(cpu_mem)),
+                ),
+        );
+
+    for child in &session.children {
+        card = card.child(render_activity_child(theme, child, primed));
+    }
+    card
+}
+
+/// One culprit child row: "↳ node mcp-server-figma    180% · 0.8 GB".
+fn render_activity_child(theme: &Theme, child: &ProcView, primed: bool) -> impl IntoElement {
+    let metrics = if primed {
+        format!("{:.0}% · {}", child.cpu, format_mem_bytes(child.mem_bytes))
+    } else {
+        format!("measuring… · {}", format_mem_bytes(child.mem_bytes))
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .text_xs()
+        .child(
+            div()
+                .flex_1()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(format!("↳ {}", child.label))),
+        )
+        .child(
+            div()
+                .text_color(rgb(theme.colors.text_dim))
+                .child(SharedString::from(metrics)),
+        )
+}
+
+/// Human-readable RAM: bytes → "812 MB" / "2.1 GB". Uses binary units (GiB/MiB)
+/// under the conventional GB/MB labels, matching how Activity Monitor and
+/// `top` report process RSS.
+fn format_mem_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.0} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 // ── Helpers: icons, buttons, color math ──────────────────────────────────────
