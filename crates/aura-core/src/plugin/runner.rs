@@ -21,6 +21,11 @@ const TIMEOUT_MS: u64 = 500;
 #[cfg(test)]
 const TIMEOUT_MS: u64 = 5_000;
 
+// Actions run off the render path and may legitimately block on user
+// interaction (e.g. a plugin opening a native file-picker dialog), so
+// they get a far more generous budget than panel refreshes.
+const ACTION_TIMEOUT_MS: u64 = 180_000;
+
 pub struct PluginRunner;
 
 fn period_arg(period: Period) -> &'static str {
@@ -103,14 +108,38 @@ impl PluginRunner {
     /// back to the legacy flat `{title, lines, error}` shape for older plugins.
     /// Failures are surfaced as a `PluginPanel` with `error` set.
     pub fn run_with_period(config: &PluginConfig, period: Period) -> PluginPanel {
+        Self::invoke(config, &[], TIMEOUT_MS, period)
+    }
+
+    /// Spawn `config.command action <id> --period <p>` — fired when the user
+    /// clicks a [`super::PluginButton`]. The plugin performs the action and
+    /// prints a refreshed panel. Generous timeout: actions may block on user
+    /// interaction (native pickers).
+    pub fn run_action(config: &PluginConfig, action: &str, period: Period) -> PluginPanel {
+        Self::invoke(
+            config,
+            &["action".to_string(), action.to_string()],
+            ACTION_TIMEOUT_MS,
+            period,
+        )
+    }
+
+    fn invoke(
+        config: &PluginConfig,
+        leading_args: &[String],
+        timeout_ms: u64,
+        period: Period,
+    ) -> PluginPanel {
         let (tx, rx) = mpsc::channel();
         let cmd = resolve_command(&config.command);
         let period_str = period_arg(period).to_string();
+        let leading_args = leading_args.to_vec();
 
         let path_env = augmented_path();
         thread::spawn(move || {
             let mut builder = Command::new(&cmd);
             builder
+                .args(&leading_args)
                 .arg("--period")
                 .arg(&period_str)
                 .env("PATH", path_env)
@@ -128,7 +157,7 @@ impl PluginRunner {
             let _ = tx.send(builder.output());
         });
 
-        let output = match rx.recv_timeout(Duration::from_millis(TIMEOUT_MS)) {
+        let output = match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 return PluginPanel::from_error(
@@ -139,7 +168,7 @@ impl PluginRunner {
             Err(_) => {
                 return PluginPanel::from_error(
                     &config.name,
-                    format!("`{}` timed out after {TIMEOUT_MS}ms", config.command),
+                    format!("`{}` timed out after {timeout_ms}ms", config.command),
                 );
             }
         };
@@ -250,6 +279,23 @@ EOF
         assert_eq!(panel.sections.len(), 2);
         assert_eq!(panel.sections[0].id, "overview");
         assert_eq!(panel.sections[1].id, "table");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_action_passes_action_args() {
+        let dir = tempdir().unwrap();
+        // Echo the received args back through the panel title so we can
+        // assert the exact invocation shape: `action <id> --period <p>`.
+        let script = write_script(
+            dir.path(),
+            r#"printf '{"title":"%s %s %s %s","sections":[{"id":"s","label":"S","type":"lines","lines":[]}]}' "$1" "$2" "$3" "$4"
+"#,
+        );
+
+        let panel = PluginRunner::run_action(&cfg(&script), "mute:on", Period::Last7Days);
+        assert!(panel.error.is_none());
+        assert_eq!(panel.title, "action mute:on --period 7d");
     }
 
     #[test]

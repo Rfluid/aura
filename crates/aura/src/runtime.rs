@@ -27,9 +27,25 @@ static DISMISS_ON_FOCUS_LOSS: AtomicBool = AtomicBool::new(true);
 /// startup and on every refresh.
 static SHOW_IN_APP_SWITCHER: AtomicBool = AtomicBool::new(false);
 
+/// True while a plugin button action is executing. Plugin actions may
+/// open dialogs (e.g. native file pickers) that take focus away from the
+/// modal; the poll loop's focus-loss check must not dismiss the modal
+/// mid-action or the user returns from the picker to a closed window.
+static PLUGIN_ACTION_INFLIGHT: AtomicBool = AtomicBool::new(false);
+
 /// Returns the latest snapshot of `display.dismiss_on_focus_loss`.
 pub fn dismiss_on_focus_loss() -> bool {
     DISMISS_ON_FOCUS_LOSS.load(Ordering::Relaxed)
+}
+
+/// See [`PLUGIN_ACTION_INFLIGHT`].
+pub fn plugin_action_inflight() -> bool {
+    PLUGIN_ACTION_INFLIGHT.load(Ordering::Relaxed)
+}
+
+/// Set by `AuraView::run_plugin_action` for the duration of the action.
+pub fn set_plugin_action_inflight(inflight: bool) {
+    PLUGIN_ACTION_INFLIGHT.store(inflight, Ordering::Relaxed);
 }
 
 /// Returns the latest snapshot of `display.show_in_app_switcher`.
