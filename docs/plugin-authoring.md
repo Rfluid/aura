@@ -105,7 +105,7 @@ fields:
 | `label`       | string  | —       | Tab label                                      |
 | `uses_period` | bool    | `true`  | Set `false` to hide the period pill row        |
 
-### Interactive controls (aura ≥ 0.1.26)
+### Interactive controls
 
 A `controls` section makes a panel interactive. Each control is a row
 with a label, an optional dim `hint` line, and a set of pill buttons:
