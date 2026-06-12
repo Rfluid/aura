@@ -45,7 +45,7 @@ pub struct PluginRow {
 pub struct PluginButton {
     /// Action identifier handed back to the plugin verbatim.
     pub id: String,
-    /// Pill text.
+    /// Pill text. May be empty when `icon` is set (icon-only pill).
     pub label: String,
     /// Render as the current selection (accent background).
     #[serde(default)]
@@ -53,6 +53,16 @@ pub struct PluginButton {
     /// Render in the error color (destructive actions).
     #[serde(default)]
     pub danger: bool,
+    /// Optional SVG icon rendered before the label: an embedded asset
+    /// name (`icons/close.svg`), an absolute path, or a `~/` path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Two-click confirmation. When set, the first click arms the
+    /// button (it re-renders with this label in the error color) and
+    /// only a second click fires the action. Clicking anything else
+    /// disarms. Use for destructive actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
 }
 
 /// One labeled row of buttons in a `Controls` section.
@@ -63,6 +73,11 @@ pub struct PluginControl {
     /// Optional dim second line under the label (e.g. a path or status).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Nesting depth. Rows with `indent > 0` render inset under the
+    /// previous shallower row with a vertical guide bar, making the
+    /// parent/child relationship visible (e.g. events under a profile).
+    #[serde(default)]
+    pub indent: u8,
     /// Buttons rendered after the label. May be empty (status-only row).
     #[serde(default)]
     pub buttons: Vec<PluginButton>,
@@ -211,9 +226,11 @@ mod tests {
             "controls": [{
                 "label": "Peh",
                 "hint": "hooks: Stop",
+                "indent": 1,
                 "buttons": [
                     {"id": "agent:Peh:tags", "label": "tags", "active": true},
-                    {"id": "hooks:Peh:remove", "label": "Remove", "danger": true}
+                    {"id": "hooks:Peh:remove", "label": "Remove", "danger": true,
+                     "icon": "icons/close.svg", "confirm": "Sure?"}
                 ]
             }]
         }"#;
@@ -222,10 +239,14 @@ mod tests {
             panic!("expected Controls, got {:?}", section.content);
         };
         assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].indent, 1);
         assert_eq!(controls[0].buttons[0].id, "agent:Peh:tags");
         assert!(controls[0].buttons[0].active);
         assert!(!controls[0].buttons[0].danger);
+        assert!(controls[0].buttons[0].confirm.is_none());
         assert!(controls[0].buttons[1].danger);
+        assert_eq!(controls[0].buttons[1].icon.as_deref(), Some("icons/close.svg"));
+        assert_eq!(controls[0].buttons[1].confirm.as_deref(), Some("Sure?"));
         let back = serde_json::to_string(&section).unwrap();
         let again: PluginSection = serde_json::from_str(&back).unwrap();
         assert_eq!(section, again);

@@ -121,6 +121,10 @@ pub struct AuraView {
     /// auto-dismiss so plugins can open dialogs (e.g. file pickers)
     /// without the modal closing under them.
     action_inflight: bool,
+    /// Action id of the plugin button currently armed for confirmation
+    /// (buttons with a `confirm` label need two clicks). Cleared by any
+    /// other button click, by firing an action, and on refresh.
+    armed_action: Option<String>,
     /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
     spinner_frame: usize,
     error: Option<String>,
@@ -204,6 +208,7 @@ impl AuraView {
             show_settings_panel: false,
             is_loading: false,
             action_inflight: false,
+            armed_action: None,
             spinner_frame: 0,
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
@@ -323,6 +328,7 @@ impl AuraView {
         self.forecast = result.forecast;
         self.plugin_panels = result.plugin_panels;
         self.error = result.error;
+        self.armed_action = None;
 
         // Initialize the active plugin selection if absent or stale.
         if self.active_plugin.is_none() {
@@ -379,6 +385,7 @@ impl AuraView {
         if self.action_inflight {
             return;
         }
+        self.armed_action = None;
         let Some(name) = self.active_plugin.clone() else {
             return;
         };
@@ -409,8 +416,15 @@ impl AuraView {
         .detach();
     }
 
+    /// First click on a `confirm` button: arm it and wait for the second.
+    fn arm_plugin_action(&mut self, action_id: String, cx: &mut Context<Self>) {
+        self.armed_action = Some(action_id);
+        cx.notify();
+    }
+
     fn apply_action_result(&mut self, name: String, panel: PluginPanel, cx: &mut Context<Self>) {
         self.action_inflight = false;
+        self.armed_action = None;
         match self.plugin_panels.iter_mut().find(|(n, _)| n == &name) {
             Some(slot) => slot.1 = panel,
             None => self.plugin_panels.push((name.clone(), panel)),
@@ -1479,7 +1493,10 @@ impl AuraView {
 
     /// Interactive `Controls` section: one card per control, label (plus
     /// optional dim hint) on the left, action pills wrapping on the right.
-    /// Clicks fire [`Self::run_plugin_action`] with the button's id.
+    /// Rows with `indent > 0` render inset with a vertical guide bar so
+    /// children read as belonging to the row above. Clicks fire
+    /// [`Self::run_plugin_action`]; buttons with a `confirm` label arm on
+    /// the first click and fire on the second.
     fn render_plugin_controls(
         &self,
         section_id: &str,
@@ -1488,7 +1505,7 @@ impl AuraView {
     ) -> AnyElement {
         let theme = &self.theme;
         let accent = self.current_accent();
-        let mut col = div().flex().flex_col().px_4().py_3().gap_2();
+        let mut col = div().flex().flex_col().px_4().py_3().gap_1p5();
 
         for (ci, control) in controls.iter().enumerate() {
             let mut label_col = div().flex().flex_col().gap_0p5().min_w_0().child(
@@ -1510,55 +1527,109 @@ impl AuraView {
                 .flex()
                 .flex_row()
                 .flex_wrap()
+                .items_center()
                 .justify_end()
                 .gap_1()
                 .flex_shrink_0()
                 .max_w(px(WINDOW_WIDTH * 0.6));
             for (bi, button) in control.buttons.iter().enumerate() {
-                let action_id = button.id.clone();
-                pills = pills.child(
-                    div()
-                        .id(SharedString::from(format!("ctl-{section_id}-{ci}-{bi}")))
-                        .flex_shrink_0()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .text_xs()
-                        .when(button.active, |d| {
-                            d.bg(rgb(Theme::blend(accent, theme.colors.bg, 0.75)))
-                                .text_color(rgb(theme.colors.text))
-                        })
-                        .when(!button.active && !button.danger, |d| {
-                            d.bg(rgb(theme.colors.surface_hi))
-                                .text_color(rgb(theme.colors.text_dim))
-                        })
-                        .when(!button.active && button.danger, |d| {
-                            d.bg(rgb(theme.colors.surface_hi))
-                                .text_color(rgb(theme.colors.error))
-                        })
-                        .child(SharedString::from(button.label.clone()))
-                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                            view.run_plugin_action(action_id.clone(), cx);
-                        })),
-                );
-            }
-
-            col = col.child(
-                div()
+                let armed = self.armed_action.as_deref() == Some(button.id.as_str());
+                let label = match (&button.confirm, armed) {
+                    (Some(confirm), true) => confirm.clone(),
+                    _ => button.label.clone(),
+                };
+                let fg = if armed {
+                    theme.colors.bg
+                } else if button.active {
+                    theme.colors.text
+                } else if button.danger {
+                    theme.colors.error
+                } else {
+                    theme.colors.text_dim
+                };
+                // Pin the pill height and center its content so glyph-only
+                // labels and icons sit on the same line as text pills.
+                let mut pill = div()
+                    .id(SharedString::from(format!("ctl-{section_id}-{ci}-{bi}")))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(theme.colors.surface))
+                    .justify_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .h(px(22.0))
+                    .px_2()
                     .rounded_md()
-                    .border_1()
-                    .border_color(rgb(theme.colors.border))
-                    .child(label_col)
-                    .child(pills),
-            );
+                    .text_xs()
+                    .when(armed, |d| d.bg(rgb(theme.colors.error)))
+                    .when(!armed && button.active, |d| {
+                        d.bg(rgb(Theme::blend(accent, theme.colors.bg, 0.75)))
+                    })
+                    .when(!armed && !button.active, |d| {
+                        d.bg(rgb(theme.colors.surface_hi))
+                    })
+                    .text_color(rgb(fg));
+                if let Some(icon) = &button.icon {
+                    pill = pill.child(svg_icon_dynamic(
+                        SharedString::from(icon.clone()),
+                        fg,
+                        10.0,
+                    ));
+                }
+                if !label.is_empty() {
+                    pill = pill.child(SharedString::from(label));
+                }
+
+                let action_id = button.id.clone();
+                let needs_confirm = button.confirm.is_some() && !armed;
+                pills = pills.child(pill.on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
+                        if needs_confirm {
+                            view.arm_plugin_action(action_id.clone(), cx);
+                        } else {
+                            view.run_plugin_action(action_id.clone(), cx);
+                        }
+                    },
+                )));
+            }
+
+            let card = div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .bg(rgb(theme.colors.surface))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(theme.colors.border))
+                .child(label_col)
+                .child(pills);
+
+            if control.indent == 0 {
+                col = col.child(card);
+            } else {
+                // Inset row: indent + a vertical accent guide tying the
+                // child to its parent row above.
+                col = col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .ml(px(control.indent as f32 * 14.0))
+                        .gap_1p5()
+                        .child(
+                            div()
+                                .w(px(2.0))
+                                .flex_none()
+                                .rounded_md()
+                                .bg(rgb(Theme::blend(accent, theme.colors.bg, 0.45))),
+                        )
+                        .child(card),
+                );
+            }
         }
         col.into_any_element()
     }
