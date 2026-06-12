@@ -130,11 +130,25 @@ with a label, an optional dim `hint` line, and a set of pill buttons:
 }
 ```
 
-- `active: true` renders the pill in the accent color — use it to show
-  the current selection of a mutually-exclusive group.
-- `danger: true` renders the label in the error color — use it for
-  destructive actions.
-- `buttons` may be empty; the row then just shows label + hint.
+**`PluginControl`** fields:
+
+| Field     | Type             | Default | Notes                                                |
+| --------- | ---------------- | ------- | ---------------------------------------------------- |
+| `label`   | string           | —       | Row label                                            |
+| `hint`    | string \| null   | `null`  | Dim second line (a path, a status)                   |
+| `indent`  | number           | `0`     | Nesting depth; inset + guide bar under parent row    |
+| `buttons` | PluginButton[]   | `[]`    | May be empty (status-only row)                       |
+
+**`PluginButton`** fields:
+
+| Field     | Type             | Default | Notes                                                |
+| --------- | ---------------- | ------- | ---------------------------------------------------- |
+| `id`      | string           | —       | Opaque action id sent back to the plugin             |
+| `label`   | string           | —       | Pill text; may be empty when `icon` is set           |
+| `active`  | bool             | `false` | Accent background (current selection)                |
+| `danger`  | bool             | `false` | Error-color label (destructive)                      |
+| `icon`    | string \| null   | `null`  | SVG before the label: embedded asset (`icons/close.svg`), abs or `~/` path |
+| `confirm` | string \| null   | `null`  | Two-click confirm: first click shows this label armed in the error color, second fires; any other click disarms |
 
 When the user clicks a button, the host re-invokes your binary as:
 
