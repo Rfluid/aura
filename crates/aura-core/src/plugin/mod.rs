@@ -245,7 +245,10 @@ mod tests {
         assert!(!controls[0].buttons[0].danger);
         assert!(controls[0].buttons[0].confirm.is_none());
         assert!(controls[0].buttons[1].danger);
-        assert_eq!(controls[0].buttons[1].icon.as_deref(), Some("icons/close.svg"));
+        assert_eq!(
+            controls[0].buttons[1].icon.as_deref(),
+            Some("icons/close.svg")
+        );
         assert_eq!(controls[0].buttons[1].confirm.as_deref(), Some("Sure?"));
         let back = serde_json::to_string(&section).unwrap();
         let again: PluginSection = serde_json::from_str(&back).unwrap();

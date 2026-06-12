@@ -1570,11 +1570,7 @@ impl AuraView {
                     })
                     .text_color(rgb(fg));
                 if let Some(icon) = &button.icon {
-                    pill = pill.child(svg_icon_dynamic(
-                        SharedString::from(icon.clone()),
-                        fg,
-                        10.0,
-                    ));
+                    pill = pill.child(svg_icon_dynamic(SharedString::from(icon.clone()), fg, 10.0));
                 }
                 if !label.is_empty() {
                     pill = pill.child(SharedString::from(label));
