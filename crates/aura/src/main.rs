@@ -159,7 +159,10 @@ fn main() -> Result<()> {
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
 
-                    if runtime::dismiss_on_focus_loss() && current.is_some() {
+                    if runtime::dismiss_on_focus_loss()
+                        && current.is_some()
+                        && !runtime::plugin_action_inflight()
+                    {
                         let lost_focus = if just_opened > 0 {
                             just_opened -= 1;
                             false

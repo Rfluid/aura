@@ -3,7 +3,7 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     lexicon::{self, Lexicon},
-    plugin::{PluginContent, PluginPanel, PluginRunner, PluginSection},
+    plugin::{PluginContent, PluginControl, PluginPanel, PluginRunner, PluginSection},
     quota::{
         forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
         QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
@@ -115,6 +115,12 @@ pub struct AuraView {
     show_more_modal: bool,
     show_settings_panel: bool,
     is_loading: bool,
+    /// A plugin action (button click) is being executed. Unlike
+    /// `is_loading` this doesn't blank the whole body — only the active
+    /// plugin's panel shows a spinner — and it suppresses the focus-loss
+    /// auto-dismiss so plugins can open dialogs (e.g. file pickers)
+    /// without the modal closing under them.
+    action_inflight: bool,
     /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
     spinner_frame: usize,
     error: Option<String>,
@@ -197,6 +203,7 @@ impl AuraView {
             show_more_modal: false,
             show_settings_panel: false,
             is_loading: false,
+            action_inflight: false,
             spinner_frame: 0,
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
@@ -353,7 +360,7 @@ impl AuraView {
                 .timer(Duration::from_millis(SPINNER_TICK_MS))
                 .await;
             let _ = this.update(cx, |view, cx| {
-                if view.is_loading {
+                if view.is_loading || view.action_inflight {
                     view.spinner_frame = (view.spinner_frame + 1) % SPINNER_FRAMES.len();
                     cx.notify();
                     view.spawn_spinner_tick(cx);
@@ -361,6 +368,67 @@ impl AuraView {
             });
         })
         .detach();
+    }
+
+    /// Execute a plugin button click: re-invoke the active plugin as
+    /// `<cmd> action <id> --period <p>` on the background executor and
+    /// swap in the panel it returns. While in flight the plugin body
+    /// shows a spinner and the focus-loss auto-dismiss is suppressed
+    /// (the plugin may open a dialog that takes focus).
+    fn run_plugin_action(&mut self, action_id: String, cx: &mut Context<Self>) {
+        if self.action_inflight {
+            return;
+        }
+        let Some(name) = self.active_plugin.clone() else {
+            return;
+        };
+        let Some(plugin_cfg) = self.config.plugins.iter().find(|p| p.name == name).cloned() else {
+            return;
+        };
+
+        self.action_inflight = true;
+        crate::runtime::set_plugin_action_inflight(true);
+        cx.notify();
+        self.spawn_spinner_tick(cx);
+
+        let period = self.active_period;
+        cx.spawn(async move |this, cx| {
+            let panel = cx
+                .background_executor()
+                .spawn(async move { PluginRunner::run_action(&plugin_cfg, &action_id, period) })
+                .await;
+
+            // Clear the suppression even if the view is gone (window
+            // closed mid-action) so the next open behaves normally.
+            crate::runtime::set_plugin_action_inflight(false);
+            this.update(cx, |view, cx| {
+                view.apply_action_result(name, panel, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_action_result(&mut self, name: String, panel: PluginPanel, cx: &mut Context<Self>) {
+        self.action_inflight = false;
+        match self.plugin_panels.iter_mut().find(|(n, _)| n == &name) {
+            Some(slot) => slot.1 = panel,
+            None => self.plugin_panels.push((name.clone(), panel)),
+        }
+        // The refreshed panel may have dropped the active section.
+        let section_known = self
+            .active_plugin_section
+            .as_deref()
+            .zip(self.plugin_panels.iter().find(|(n, _)| n == &name))
+            .is_some_and(|(id, (_, panel))| panel.section(id).is_some());
+        if !section_known {
+            self.active_plugin_section = self
+                .plugin_panels
+                .iter()
+                .find(|(n, _)| n == &name)
+                .and_then(|(_, panel)| panel.sections.first().map(|s| s.id.clone()));
+        }
+        cx.notify();
     }
 }
 
@@ -1281,7 +1349,7 @@ impl AuraView {
         row.into_any_element()
     }
 
-    fn render_body(&self, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let lex = lexicon::pick(self.config.display.goblin_mode);
         let inner: AnyElement = if let Some(err) = &self.error {
             div()
@@ -1330,7 +1398,7 @@ impl AuraView {
                         None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
                 },
-                Mode::Plugin => self.render_plugin_body(),
+                Mode::Plugin => self.render_plugin_body(cx),
             }
         };
 
@@ -1357,8 +1425,13 @@ impl AuraView {
             .into_any_element()
     }
 
-    fn render_plugin_body(&self) -> AnyElement {
+    fn render_plugin_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let lex = lexicon::pick(self.config.display.goblin_mode);
+        if self.action_inflight {
+            // A button click is running (possibly blocked on a dialog the
+            // plugin opened); show progress where the panel body was.
+            return render_loading(&self.theme, lex, self.spinner_frame);
+        }
         let Some(panel) = self.current_plugin_panel() else {
             return div()
                 .flex()
@@ -1394,9 +1467,100 @@ impl AuraView {
         let section_id = self.active_plugin_section.as_deref().unwrap_or("");
         let section = panel.section(section_id).or_else(|| panel.sections.first());
         match section {
-            Some(s) => render_plugin_section(&self.theme, s, self.current_accent()),
+            Some(s) => match &s.content {
+                PluginContent::Controls { controls } => {
+                    self.render_plugin_controls(&s.id, controls, cx)
+                }
+                _ => render_plugin_section(&self.theme, s, self.current_accent()),
+            },
             None => render_loading(&self.theme, lex, self.spinner_frame),
         }
+    }
+
+    /// Interactive `Controls` section: one card per control, label (plus
+    /// optional dim hint) on the left, action pills wrapping on the right.
+    /// Clicks fire [`Self::run_plugin_action`] with the button's id.
+    fn render_plugin_controls(
+        &self,
+        section_id: &str,
+        controls: &[PluginControl],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = &self.theme;
+        let accent = self.current_accent();
+        let mut col = div().flex().flex_col().px_4().py_3().gap_2();
+
+        for (ci, control) in controls.iter().enumerate() {
+            let mut label_col = div().flex().flex_col().gap_0p5().min_w_0().child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text))
+                    .child(SharedString::from(control.label.clone())),
+            );
+            if let Some(hint) = &control.hint {
+                label_col = label_col.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(hint.clone())),
+                );
+            }
+
+            let mut pills = div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .justify_end()
+                .gap_1()
+                .flex_shrink_0()
+                .max_w(px(WINDOW_WIDTH * 0.6));
+            for (bi, button) in control.buttons.iter().enumerate() {
+                let action_id = button.id.clone();
+                pills = pills.child(
+                    div()
+                        .id(SharedString::from(format!("ctl-{section_id}-{ci}-{bi}")))
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .text_xs()
+                        .when(button.active, |d| {
+                            d.bg(rgb(Theme::blend(accent, theme.colors.bg, 0.75)))
+                                .text_color(rgb(theme.colors.text))
+                        })
+                        .when(!button.active && !button.danger, |d| {
+                            d.bg(rgb(theme.colors.surface_hi))
+                                .text_color(rgb(theme.colors.text_dim))
+                        })
+                        .when(!button.active && button.danger, |d| {
+                            d.bg(rgb(theme.colors.surface_hi))
+                                .text_color(rgb(theme.colors.error))
+                        })
+                        .child(SharedString::from(button.label.clone()))
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                            view.run_plugin_action(action_id.clone(), cx);
+                        })),
+                );
+            }
+
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(theme.colors.surface))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.colors.border))
+                    .child(label_col)
+                    .child(pills),
+            );
+        }
+        col.into_any_element()
     }
 }
 
@@ -2231,6 +2395,21 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
             .text_color(rgb(theme.colors.text))
             .child(SharedString::from(text.clone()))
             .into_any_element(),
+        // Interactive sections need click listeners and are rendered by
+        // `AuraView::render_plugin_controls`; this path only exists for
+        // exhaustiveness (it isn't reached from `render_plugin_body`).
+        PluginContent::Controls { controls } => {
+            let mut col = div().flex().flex_col().px_4().py_3().gap_2();
+            for control in controls {
+                col = col.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.colors.text_dim))
+                        .child(SharedString::from(control.label.clone())),
+                );
+            }
+            col.into_any_element()
+        }
     }
 }
 

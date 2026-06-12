@@ -38,6 +38,36 @@ pub struct PluginRow {
     pub progress: Option<f64>,
 }
 
+/// A clickable pill inside a `Controls` section. Clicking it makes the
+/// host re-invoke the plugin as `<cmd> action <id> --period <p>`; the
+/// plugin performs the operation and prints a refreshed panel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginButton {
+    /// Action identifier handed back to the plugin verbatim.
+    pub id: String,
+    /// Pill text.
+    pub label: String,
+    /// Render as the current selection (accent background).
+    #[serde(default)]
+    pub active: bool,
+    /// Render in the error color (destructive actions).
+    #[serde(default)]
+    pub danger: bool,
+}
+
+/// One labeled row of buttons in a `Controls` section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginControl {
+    /// Left-hand label for the row.
+    pub label: String,
+    /// Optional dim second line under the label (e.g. a path or status).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Buttons rendered after the label. May be empty (status-only row).
+    #[serde(default)]
+    pub buttons: Vec<PluginButton>,
+}
+
 /// What kind of content a section holds. Tagged on the wire as
 /// `{"type": "lines", ...}` / `{"type": "table", ...}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -52,6 +82,8 @@ pub enum PluginContent {
     },
     /// Free-form text block (preformatted). Useful for ASCII charts.
     Text { text: String },
+    /// Interactive rows of action buttons (see [`PluginButton`]).
+    Controls { controls: Vec<PluginControl> },
 }
 
 impl Default for PluginContent {
@@ -169,6 +201,34 @@ mod tests {
             uses_period,
             content: PluginContent::default(),
         }
+    }
+
+    #[test]
+    fn controls_section_roundtrips() {
+        let json = r#"{
+            "id": "agents", "label": "Agents", "uses_period": false,
+            "type": "controls",
+            "controls": [{
+                "label": "Peh",
+                "hint": "hooks: Stop",
+                "buttons": [
+                    {"id": "agent:Peh:tags", "label": "tags", "active": true},
+                    {"id": "hooks:Peh:remove", "label": "Remove", "danger": true}
+                ]
+            }]
+        }"#;
+        let section: PluginSection = serde_json::from_str(json).unwrap();
+        let PluginContent::Controls { controls } = &section.content else {
+            panic!("expected Controls, got {:?}", section.content);
+        };
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].buttons[0].id, "agent:Peh:tags");
+        assert!(controls[0].buttons[0].active);
+        assert!(!controls[0].buttons[0].danger);
+        assert!(controls[0].buttons[1].danger);
+        let back = serde_json::to_string(&section).unwrap();
+        let again: PluginSection = serde_json::from_str(&back).unwrap();
+        assert_eq!(section, again);
     }
 
     #[test]

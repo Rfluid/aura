@@ -1,8 +1,8 @@
 ---
 title: Plugin authoring
 status: stable
-version: 0.1.0
-last_updated: 2026-05-23
+version: 0.2.0
+last_updated: 2026-06-12
 source_refs:
   - crates/aura-core/src/plugin/mod.rs
   - crates/aura-core/src/plugin/runner.rs
@@ -73,11 +73,12 @@ fields:
 
 **Section content variants** (tagged by `type`):
 
-| `type`   | Extra fields              | Renders as                         |
-| -------- | ------------------------- | ---------------------------------- |
-| `lines`  | `lines: PluginLine[]`     | Key/value rows                     |
-| `table`  | `headers`, `rows`         | Tabular with header row            |
-| `text`   | `text: string`            | Preformatted text block            |
+| `type`     | Extra fields                | Renders as                         |
+| ---------- | --------------------------- | ---------------------------------- |
+| `lines`    | `lines: PluginLine[]`       | Key/value rows                     |
+| `table`    | `headers`, `rows`           | Tabular with header row            |
+| `text`     | `text: string`              | Preformatted text block            |
+| `controls` | `controls: PluginControl[]` | Interactive button rows (see below)|
 
 **`PluginLine`** fields:
 
@@ -103,6 +104,61 @@ fields:
 | `id`          | string  | —       | Stable identifier (preserved on tab switch)    |
 | `label`       | string  | —       | Tab label                                      |
 | `uses_period` | bool    | `true`  | Set `false` to hide the period pill row        |
+
+### Interactive controls (aura ≥ 0.1.26)
+
+A `controls` section makes a panel interactive. Each control is a row
+with a label, an optional dim `hint` line, and a set of pill buttons:
+
+```json
+{
+  "id": "agents",
+  "label": "Agents",
+  "uses_period": false,
+  "type": "controls",
+  "controls": [
+    {
+      "label": "Peh",
+      "hint": "hooks: Stop, Notification",
+      "buttons": [
+        { "id": "agent:Peh:tags", "label": "tags", "active": true },
+        { "id": "agent:Peh:off",  "label": "Off" },
+        { "id": "hooks:Peh:remove", "label": "Remove", "danger": true }
+      ]
+    }
+  ]
+}
+```
+
+- `active: true` renders the pill in the accent color — use it to show
+  the current selection of a mutually-exclusive group.
+- `danger: true` renders the label in the error color — use it for
+  destructive actions.
+- `buttons` may be empty; the row then just shows label + hint.
+
+When the user clicks a button, the host re-invokes your binary as:
+
+```bash
+<your-binary> action <id> --period <all|7d|30d>
+```
+
+Perform the operation, then print the **full refreshed panel JSON** on
+stdout exactly as for a normal invocation (print `{"title": ...,
+"error": "..."}` to surface a failure; the next refresh recovers).
+
+Two differences from panel refreshes:
+
+- The budget is **180 s**, not 500 ms — an action may legitimately block
+  on user interaction, e.g. opening a `zenity` / `kdialog` file picker.
+- While the action runs, the focus-loss auto-dismiss is suspended, so a
+  dialog your plugin opens can take focus without closing the modal.
+
+Action ids are opaque to the host: pick any encoding you like and parse
+it yourself. Test actions headlessly with:
+
+```bash
+aura plugin run "My Plugin" --action "agent:Peh:off"
+```
 
 ### Reporting errors
 

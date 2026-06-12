@@ -62,6 +62,10 @@ enum PluginCommand {
         /// Reporting period passed via `--period` to the plugin.
         #[arg(long, value_enum, default_value_t = PeriodArg::All)]
         period: PeriodArg,
+        /// Fire a button action (`<cmd> action <id> --period <p>`) instead
+        /// of a plain panel refresh.
+        #[arg(long)]
+        action: Option<String>,
     },
 }
 
@@ -82,7 +86,11 @@ impl PluginCli {
                 println!("{}", plugin::user_plugins_dir().display());
                 Ok(())
             }
-            PluginCommand::Run { name, period } => run_plugin(&name, period.into()),
+            PluginCommand::Run {
+                name,
+                period,
+                action,
+            } => run_plugin(&name, period.into(), action.as_deref()),
         }
     }
 }
@@ -182,7 +190,7 @@ fn run_list(format: OutputFormat) -> Result<()> {
     }
 }
 
-fn run_plugin(name: &str, period: aura_core::reader::Period) -> Result<()> {
+fn run_plugin(name: &str, period: aura_core::reader::Period, action: Option<&str>) -> Result<()> {
     let config =
         AppConfig::load_with_discovery(&AppConfig::default_path()).context("load config")?;
     let plugin_cfg = config
@@ -190,6 +198,9 @@ fn run_plugin(name: &str, period: aura_core::reader::Period) -> Result<()> {
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case(name))
         .ok_or_else(|| anyhow!("no plugin named '{name}' (try `aura plugin list`)"))?;
-    let panel = PluginRunner::run_with_period(plugin_cfg, period);
+    let panel = match action {
+        Some(id) => PluginRunner::run_action(plugin_cfg, id, period),
+        None => PluginRunner::run_with_period(plugin_cfg, period),
+    };
     print_json(&panel)
 }
