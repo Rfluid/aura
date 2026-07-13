@@ -20,6 +20,7 @@ mod quota;
 mod resolve;
 mod state;
 mod theme;
+mod update;
 mod usage;
 
 use anyhow::Result;
@@ -72,6 +73,12 @@ pub enum Command {
     /// Emit a shell completion script.
     Completions(completions::CompletionsCli),
 
+    /// Update Aura in place: run the uninstall + install scripts. Inside an
+    /// Aura source checkout this rebuilds from source; anywhere else it
+    /// streams the scripts from GitHub. Trailing args are forwarded to both
+    /// scripts (e.g. `aura update --mode release`).
+    Update(update::UpdateCli),
+
     /// Compatibility alias for `aura config setup`. Kept so the existing
     /// installer scripts (`install.sh`, `install.ps1`) keep working.
     #[command(hide = true, name = "setup-config")]
@@ -89,6 +96,7 @@ pub fn dispatch(command: Command) -> Result<()> {
         Command::Quota(args) => args.run(),
         Command::Doctor(args) => args.run(),
         Command::Completions(args) => args.run::<Cli>(),
+        Command::Update(args) => args.run(),
         Command::SetupConfig => config::run_setup(),
     }
 }
