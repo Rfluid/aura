@@ -19,6 +19,7 @@ use gpui::{
 };
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
+use crate::selectable_text::{sel, SelectionScope};
 use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
@@ -26,6 +27,13 @@ use crate::updater::{self, UpdateInfo};
 /// Aliased to the single source of truth in `placement` so the open-time
 /// bounds and the auto-fit resize can never disagree on width.
 const WINDOW_WIDTH: f32 = crate::placement::MODAL_W;
+
+/// Build a `SelectableText` element id from a formatted string. `ElementId`
+/// only converts from `SharedString`/`&'static str`, not `String`, so keyed
+/// ids (e.g. `sid(format!("quota-label-{}", w.label))`) route through here.
+fn sid(s: String) -> SharedString {
+    SharedString::from(s)
+}
 
 /// Braille spinner frames. Matches the `cli-spinners` "dots" preset
 /// (see `.design/loading.md`). 10 frames, advanced every 80ms while
@@ -779,6 +787,9 @@ impl AuraView {
 
 impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Publish the selection tint (themed accent at ~20% alpha) so
+        // `SelectableText` highlights track the active theme. Cheap + idempotent.
+        crate::selectable_text::set_selection_tint(cx, (self.theme.colors.accent << 8) | 0x33);
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
         // `display.auto_resize` governs the content-fit auto-resize that grows /
@@ -1153,7 +1164,7 @@ impl AuraView {
             return div()
                 .text_xs()
                 .text_color(rgb(self.theme.colors.text_dim))
-                .child(lex.no_plugins_configured)
+                .child(sel("empty-no-plugins", lex.no_plugins_configured))
                 .into_any_element();
         }
         let mut picker = div()
@@ -1376,7 +1387,7 @@ impl AuraView {
                 .child(
                     div()
                         .text_color(rgb(self.theme.colors.error))
-                        .child(err.clone()),
+                        .child(sel("app-error", err.clone())),
                 )
                 .into_any_element()
         } else if self.is_loading {
@@ -1457,7 +1468,7 @@ impl AuraView {
                 .child(
                     div()
                         .text_color(rgb(self.theme.colors.text_dim))
-                        .child(lex.no_plugin_selected),
+                        .child(sel("empty-no-plugin-selected", lex.no_plugin_selected)),
                 )
                 .into_any_element();
         };
@@ -1473,7 +1484,7 @@ impl AuraView {
                 .child(
                     div()
                         .text_color(rgb(self.theme.colors.error))
-                        .child(SharedString::from(err.clone())),
+                        .child(sel("plugin-error", err.clone())),
                 )
                 .into_any_element();
         }
@@ -1677,7 +1688,7 @@ fn render_loading(theme: &Theme, lex: &Lexicon, spinner_frame: usize) -> AnyElem
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(lex.loading),
+                .child(sel("loading", lex.loading)),
         )
         .into_any_element()
 }
@@ -1701,7 +1712,7 @@ fn render_quota(
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(SharedString::from((lex.subscription_fmt)(sub))),
+                .child(sel("quota-subscription", (lex.subscription_fmt)(sub))),
         );
     }
 
@@ -1721,7 +1732,7 @@ fn render_quota(
                     .bg(rgb(theme.colors.surface))
                     .text_color(rgb(theme.colors.text_dim))
                     .text_xs()
-                    .child(lex.no_quota_data),
+                    .child(sel("quota-no-data", lex.no_quota_data)),
             );
         }
     } else {
@@ -1781,13 +1792,13 @@ fn render_fallback_warning(theme: &Theme, quota: &QuotaSnapshot) -> AnyElement {
                     div()
                         .text_xs()
                         .text_color(rgb(theme.colors.warning))
-                        .child(SharedString::from(kind)),
+                        .child(sel("quota-warn-kind", kind)),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(rgb(theme.colors.text_dim))
-                        .child(SharedString::from(note)),
+                        .child(sel("quota-warn-note", note)),
                 ),
         )
         .into_any_element()
@@ -1819,11 +1830,10 @@ fn render_quota_window(
         .rounded_md()
         .border_1()
         .border_color(rgb(theme.colors.border))
-        .child(
-            div()
-                .text_color(rgb(theme.colors.text))
-                .child(SharedString::from(w.label.clone())),
-        );
+        .child(div().text_color(rgb(theme.colors.text)).child(sel(
+            sid(format!("quota-label-{}", w.label)),
+            w.label.clone(),
+        )));
 
     // The progress bar is meaningful only when we have a real percentage. For
     // fallback windows (local token counts), show the count without an empty
@@ -1854,14 +1864,14 @@ fn render_quota_window(
                     div()
                         .text_xs()
                         .text_color(rgb(theme.colors.text))
-                        .child(SharedString::from(pct_label)),
+                        .child(sel(sid(format!("quota-pct-{}", w.label)), pct_label)),
                 ),
         )
     } else {
         row.child(
             div()
                 .text_color(rgb(theme.colors.text))
-                .child(SharedString::from(pct_label)),
+                .child(sel(sid(format!("quota-pctc-{}", w.label)), pct_label)),
         )
     };
 
@@ -1870,7 +1880,10 @@ fn render_quota_window(
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(SharedString::from((lex.resets_fmt)(&label))),
+                .child(sel(
+                    sid(format!("quota-reset-{}", w.label)),
+                    (lex.resets_fmt)(&label),
+                )),
         );
     }
 
@@ -1940,9 +1953,10 @@ fn render_forecast(
                 .bg(rgb(theme.colors.surface))
                 .text_color(rgb(theme.colors.text_dim))
                 .text_xs()
-                .child(
+                .child(sel(
+                    "forecast-empty",
                     "No forecast available — quota source did not report any projectable windows.",
-                ),
+                )),
         );
     } else {
         for w in &forecast.windows {
@@ -1974,7 +1988,7 @@ fn render_forecast_window(
         .child(
             div()
                 .text_color(rgb(theme.colors.text))
-                .child(SharedString::from(w.label.clone())),
+                .child(sel(sid(format!("fc-label-{}", w.label)), w.label.clone())),
         )
         .child(
             div()
@@ -1985,7 +1999,7 @@ fn render_forecast_window(
                 .border_color(rgb(badge_color))
                 .text_xs()
                 .text_color(rgb(badge_color))
-                .child(SharedString::from(badge_text)),
+                .child(sel(sid(format!("fc-badge-{}", w.label)), badge_text)),
         );
 
     let mut card = div()
@@ -2005,7 +2019,10 @@ fn render_forecast_window(
             div()
                 .text_xs()
                 .text_color(rgb(theme.colors.text_dim))
-                .child(lex.forecast_warming_up),
+                .child(sel(
+                    sid(format!("fc-warming-{}", w.label)),
+                    lex.forecast_warming_up,
+                )),
         );
         return card;
     }
@@ -2068,7 +2085,7 @@ fn render_forecast_window(
         div()
             .text_xs()
             .text_color(rgb(theme.colors.text))
-            .child(SharedString::from(projected_label)),
+            .child(sel(sid(format!("fc-proj-{}", w.label)), projected_label)),
     );
     card = card.child(bar_row);
 
@@ -2086,7 +2103,7 @@ fn render_forecast_window(
         div()
             .text_xs()
             .text_color(rgb(theme.colors.text_dim))
-            .child(SharedString::from(subtext)),
+            .child(sel(sid(format!("fc-sub-{}", w.label)), subtext)),
     );
 
     card
@@ -2166,7 +2183,7 @@ fn stat_card(theme: &Theme, label: &str, value: &str) -> impl IntoElement {
         .child(
             div()
                 .text_color(rgb(theme.colors.text))
-                .child(SharedString::from(value.to_string())),
+                .child(sel(sid(format!("stat-{label}")), value.to_string())),
         )
 }
 
@@ -2225,17 +2242,16 @@ fn render_model_row(
                 .child(
                     div()
                         .text_color(rgb(theme.colors.text))
-                        .child(SharedString::from(model.to_string())),
+                        .child(sel(sid(format!("model-name-{model}")), model.to_string())),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(rgb(theme.colors.text_dim))
-                        .child(SharedString::from(format!(
-                            "{:.1}% · {}",
-                            pct,
-                            thousands(tokens)
-                        ))),
+                        .child(sel(
+                            sid(format!("model-stat-{model}")),
+                            format!("{:.1}% · {}", pct, thousands(tokens)),
+                        )),
                 ),
         )
         .child(
@@ -2297,8 +2313,13 @@ fn render_daily_chart(theme: &Theme, snap: &UsageSnapshot, accent: u32) -> impl 
 fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) -> AnyElement {
     match &section.content {
         PluginContent::Lines { lines } => {
+            // Each plugin section gets its own selection scope, so a selection
+            // made in one section is independent of others (they never render
+            // simultaneously today, but this keeps sections decoupled if the
+            // layout ever shows more than one at once).
+            let scope = SelectionScope::Named(section.id.clone().into());
             let mut col = div().flex().flex_col().px_4().py_3().gap_2();
-            for line in lines {
+            for (ix, line) in lines.iter().enumerate() {
                 let mut card = div()
                     .flex()
                     .flex_col()
@@ -2319,14 +2340,26 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
                             div()
                                 .text_xs()
                                 .text_color(rgb(theme.colors.text_dim))
-                                .child(SharedString::from(line.label.clone())),
+                                .child(
+                                    sel(
+                                        sid(format!("{}-line-l{ix}", section.id)),
+                                        line.label.clone(),
+                                    )
+                                    .in_scopes([scope.clone()]),
+                                ),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .when(line.highlight, |d| d.text_color(rgb(accent)))
                                 .when(!line.highlight, |d| d.text_color(rgb(theme.colors.text)))
-                                .child(SharedString::from(line.value.clone())),
+                                .child(
+                                    sel(
+                                        sid(format!("{}-line-v{ix}", section.id)),
+                                        line.value.clone(),
+                                    )
+                                    .in_scopes([scope.clone()]),
+                                ),
                         ),
                 );
 
@@ -2386,6 +2419,7 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
                 })
                 .collect();
 
+            let scope = SelectionScope::Named(section.id.clone().into());
             let mut col = div().flex().flex_col().px_4().py_3().gap_1();
 
             // Header row
@@ -2421,7 +2455,7 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
             col = col.child(header_row);
 
             // Data rows
-            for row in rows {
+            for (ri, row) in rows.iter().enumerate() {
                 let mut r = div()
                     .flex()
                     .flex_row()
@@ -2440,7 +2474,10 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
                             .when(row.highlight, |d| d.text_color(rgb(accent)))
                             .when(!row.highlight, |d| d.text_color(rgb(theme.colors.text)))
                             .when(right, |d| d.text_right())
-                            .child(SharedString::from(cell.clone())),
+                            .child(
+                                sel(sid(format!("{}-cell-{ri}-{i}", section.id)), cell.clone())
+                                    .in_scopes([scope.clone()]),
+                            ),
                     );
                 }
                 if has_progress {
@@ -2460,7 +2497,10 @@ fn render_plugin_section(theme: &Theme, section: &PluginSection, accent: u32) ->
             .py_3()
             .text_xs()
             .text_color(rgb(theme.colors.text))
-            .child(SharedString::from(text.clone()))
+            .child(
+                sel(sid(format!("{}-text", section.id)), text.clone())
+                    .in_scopes([SelectionScope::Named(section.id.clone().into())]),
+            )
             .into_any_element(),
         // Interactive sections need click listeners and are rendered by
         // `AuraView::render_plugin_controls`; this path only exists for

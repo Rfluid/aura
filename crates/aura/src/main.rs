@@ -9,6 +9,7 @@ mod format;
 mod placement;
 mod platform;
 mod runtime;
+mod selectable_text;
 mod tray;
 mod updater;
 mod work_area;
