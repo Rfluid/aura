@@ -32,6 +32,7 @@ has_tool() { command -v "$1" &>/dev/null; }
 declare -A HINTS
 HINTS[rustfmt]="cargo fmt --all was run automatically — review and stage any resulting changes"
 HINTS[clippy]="fix the reported lint failures; run: cargo clippy --workspace --all-targets --locked -- -D warnings"
+HINTS[selectable_text]="route copyable text through crate::selectable_text::sel; run: bash scripts/check-selectable-text.sh"
 HINTS[test]="fix the failing tests; run: cargo test --workspace --locked"
 HINTS[cargo_audit]="upgrade the vulnerable dependency or ignore an accepted advisory explicitly"
 HINTS[gitleaks]="remove the secret from history; see: git-filter-repo or BFG"
@@ -115,7 +116,7 @@ gate_ok() {
     done
 }
 
-banner "Wave 1 — parallel: rustfmt | clippy | test | gitleaks"
+banner "Wave 1 — parallel: rustfmt | clippy | test | selectable_text | gitleaks"
 
 launch rustfmt bash -c '
     cargo fmt --all
@@ -128,6 +129,7 @@ launch rustfmt bash -c '
 
 launch clippy cargo clippy --workspace --all-targets --locked -- -D warnings
 launch test cargo test --workspace --locked
+launch selectable_text bash scripts/check-selectable-text.sh
 
 if has_tool gitleaks; then
     launch gitleaks gitleaks detect --source . -v
@@ -135,10 +137,10 @@ else
     mark_skip gitleaks "not installed — https://github.com/gitleaks/gitleaks#installing"
 fi
 
-banner "Gate — rustfmt | clippy | test"
-wait_for rustfmt clippy test
+banner "Gate — rustfmt | clippy | test | selectable_text"
+wait_for rustfmt clippy test selectable_text
 
-if gate_ok rustfmt clippy test; then
+if gate_ok rustfmt clippy test selectable_text; then
     banner "Wave 2 — cargo_audit"
     if cargo audit --version >/dev/null 2>&1; then
         launch cargo_audit cargo audit
