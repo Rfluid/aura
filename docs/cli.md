@@ -37,6 +37,7 @@ consume aura's data without scraping human output.
 | `aura quota` | Subscription rate-limit windows for an agent profile. |
 | `aura doctor` | Resolved paths + detection diagnostics. |
 | `aura completions <shell>` | Emit a shell completion script. |
+| `aura update [args…]` | Update in place via the install/uninstall scripts. |
 | `aura --version` | Print version. |
 | `aura --help` | Print help; works on every subcommand too. |
 
@@ -164,3 +165,20 @@ aura completions fish > ~/.config/fish/completions/aura.fish
 aura completions powershell > _aura.ps1
 aura completions elvish > aura.elv
 ```
+
+## `aura update`
+
+Update Aura in place by re-running the uninstall + install scripts.
+
+```text
+aura update                        # detect checkout vs. remote automatically
+aura update --mode release         # forwarded args, e.g. install channel
+aura update --version v1.2.3       # pin a release
+```
+
+Inside an Aura source checkout (cwd has `install.sh`, `uninstall.sh`, and
+`Cargo.toml`) this runs the local `./uninstall.sh` then `./install.sh`,
+rebuilding from source. Anywhere else it streams both scripts from GitHub
+(the README's two-curl flow). Any trailing arguments are forwarded verbatim
+to both scripts; `uninstall.sh` ignores install-only flags it doesn't
+understand.
