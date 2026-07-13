@@ -1,0 +1,28 @@
+# cargo-audit configuration.
+#
+# The advisories ignored below all originate from our vendored gpui fork
+# (vendor/gpui, a Zed fork) and its transitive dependency graph. No released
+# gpui version currently bumps these crates, so we cannot resolve them from
+# our side without patching the fork. They are accepted risks, tracked here so
+# both `scripts/pre-pr.sh` and CI (quality-and-security.yml) stay green.
+#
+# Re-audit whenever the vendored gpui is updated and drop any entry that no
+# longer appears in `cargo audit`.
+[advisories]
+ignore = [
+    # crossbeam-epoch: invalid pointer deref in fmt::Pointer for Atomic/Shared.
+    # gpui -> image -> rayon -> crossbeam-deque -> crossbeam-epoch
+    "RUSTSEC-2026-0204",
+
+    # quick-xml: quadratic run time checking a start tag for duplicate attrs.
+    # gpui (x11/wayland) -> xcb / wayland-scanner -> quick-xml
+    "RUSTSEC-2026-0194",
+
+    # quick-xml: unbounded namespace-declaration allocation (memory-exhaustion DoS).
+    # gpui (x11/wayland) -> xcb / wayland-scanner -> quick-xml
+    "RUSTSEC-2026-0195",
+
+    # quinn-proto: remote memory exhaustion via unbounded out-of-order reassembly.
+    # gpui -> gpui_http_client -> zed-reqwest -> quinn -> quinn-proto
+    "RUSTSEC-2026-0185",
+]
