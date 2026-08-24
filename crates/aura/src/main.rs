@@ -9,7 +9,6 @@ mod format;
 mod placement;
 mod platform;
 mod runtime;
-mod selectable_text;
 mod tray;
 mod updater;
 mod work_area;
@@ -121,6 +120,11 @@ fn main() -> Result<()> {
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
+            // Selectable labels deliberately have no focus handle, so install
+            // the crate's observer-based bridge for copy/select-all/escape and
+            // shift+arrow extension when no focused control claimed the key.
+            gpui_selectable_text::register_keyboard_bridge(cx).detach();
+
             // GPUI forces NSApplicationActivationPolicyRegular in
             // did_finish_launching; reapply the user's preference here so it
             // sticks. `runtime::set_from_config` (called at startup before

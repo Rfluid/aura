@@ -32,7 +32,7 @@ has_tool() { command -v "$1" &>/dev/null; }
 declare -A HINTS
 HINTS[rustfmt]="cargo fmt --all was run automatically — review and stage any resulting changes"
 HINTS[clippy]="fix the reported lint failures; run: cargo clippy --workspace --all-targets --locked -- -D warnings"
-HINTS[selectable_text]="route copyable text through crate::selectable_text::sel; run: bash scripts/check-selectable-text.sh"
+HINTS[selectable_text]="route copyable text through gpui_selectable_text::SelectableText; run: bash scripts/check-selectable-text.sh"
 HINTS[test]="fix the failing tests; run: cargo test --workspace --locked"
 HINTS[cargo_audit]="upgrade the vulnerable dependency or ignore an accepted advisory explicitly"
 HINTS[gitleaks]="remove the secret from history; see: git-filter-repo or BFG"

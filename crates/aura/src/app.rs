@@ -14,12 +14,12 @@ use aura_core::{
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, Pixels, ScrollHandle,
-    SharedString, Window,
+    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, ElementId, Pixels,
+    ScrollHandle, SharedString, Window,
 };
+use gpui_selectable_text::{set_selection_theme, SelectableText, SelectionScope, SelectionStyle};
 
 use crate::format::{duration, hour_of_day, locale_uses_12h, system_locale, thousands};
-use crate::selectable_text::{sel, SelectionScope};
 use crate::updater::{self, UpdateInfo};
 
 /// Fixed window width. The window grows vertically to fit content (see
@@ -33,6 +33,12 @@ const WINDOW_WIDTH: f32 = crate::placement::MODAL_W;
 /// ids (e.g. `sid(format!("quota-label-{}", w.label))`) route through here.
 fn sid(s: String) -> SharedString {
     SharedString::from(s)
+}
+
+/// Keep call sites as compact as a bare string child while delegating all
+/// selection behavior to `gpui-selectable-text`.
+fn sel(id: impl Into<ElementId>, text: impl Into<SharedString>) -> SelectableText {
+    SelectableText::new(id, text)
 }
 
 /// Braille spinner frames. Matches the `cli-spinners` "dots" preset
@@ -787,9 +793,12 @@ impl AuraView {
 
 impl Render for AuraView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Publish the selection tint (themed accent at ~20% alpha) so
-        // `SelectableText` highlights track the active theme. Cheap + idempotent.
-        crate::selectable_text::set_selection_tint(cx, (self.theme.colors.accent << 8) | 0x33);
+        // Publish the themed accent at ~20% alpha. The crate resolves this
+        // during paint, so runtime theme changes retint live selections.
+        set_selection_theme(
+            cx,
+            SelectionStyle::from_background(rgba((self.theme.colors.accent << 8) | 0x33)),
+        );
         let last_height = self.last_window_height.clone();
         let body_scroll = self.body_scroll.clone();
         // `display.auto_resize` governs the content-fit auto-resize that grows /

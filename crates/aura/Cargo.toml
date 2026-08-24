@@ -17,6 +17,7 @@ clap.workspace          = true
 clap_complete.workspace = true
 dirs.workspace          = true
 gpui                    = { version = "0.2", features = ["runtime_shaders"] }
+gpui-selectable-text    = "0.1"
 raw-window-handle       = "0.6"
 resvg                   = { version = "0.47", default-features = false }
 semver.workspace        = true
@@ -74,4 +75,3 @@ windows = { version = "0.61", features = [
 # objc 0.2 macros (msg_send!, class!, sel_impl!) emit #[cfg(cargo-clippy)]
 # internally. Register it as expected so the unexpected_cfgs lint stays quiet.
 unexpected_cfgs = "allow"
-
