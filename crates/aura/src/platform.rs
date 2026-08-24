@@ -23,23 +23,34 @@
 //! somewhere they can act on the file, instead of a silent no-op.
 
 use std::path::Path;
+use std::sync::mpsc::Receiver;
+use std::sync::{Mutex, OnceLock};
 
 // ── Single-instance guard ───────────────────────────────────────────────────
 
+/// Receives one `()` per second-instance launch that pinged us after losing
+/// the single-instance race. Populated only on the winning (first) instance,
+/// by `unix_lock::acquire` / `windows_mutex::acquire`.
+static ACTIVATION_RX: OnceLock<Mutex<Receiver<()>>> = OnceLock::new();
+
 /// Try to acquire the per-user single-instance lock. Returns `true` if this
 /// process is now the sole Aura instance, `false` if another Aura is already
-/// running (in which case `main()` should exit silently — the running tray
-/// icon will service the next click).
+/// running (in which case `main()` should exit silently — the running
+/// instance is pinged as part of losing this race and will show its window
+/// on the next poll of [`try_recv_activation`]).
 ///
 /// Mechanism per platform:
 ///
 /// - **Unix (Linux, macOS, BSD)**: an exclusive `flock()` on a file in
 ///   `$XDG_RUNTIME_DIR` (Linux/BSD) or `$TMPDIR` (macOS). The lock is held
 ///   for the process lifetime — we intentionally leak the file descriptor so
-///   the kernel releases it on exit.
+///   the kernel releases it on exit. The winner also listens on a Unix
+///   domain socket next to the lock file; a loser connects to it as a
+///   "someone tried to launch me again" signal.
 /// - **Windows**: a named mutex (`Local\AuraSingleInstance`) created via
 ///   `CreateMutexW`. `ERROR_ALREADY_EXISTS` from the same call signals
 ///   another instance owns it. The handle is leaked for the same reason.
+///   The winner also listens on a named pipe for the same signal.
 pub fn acquire_single_instance() -> bool {
     #[cfg(unix)]
     {
@@ -55,10 +66,31 @@ pub fn acquire_single_instance() -> bool {
     }
 }
 
+/// Non-blocking poll for a re-launch ping from a second instance that lost
+/// the single-instance race. Drains every pending ping and returns `true` if
+/// at least one arrived — callers only care that *a* relaunch happened, not
+/// how many. Called from GPUI's async task alongside `tray::try_recv_event`.
+pub fn try_recv_activation() -> bool {
+    let Some(mtx) = ACTIVATION_RX.get() else {
+        return false;
+    };
+    let Ok(rx) = mtx.lock() else {
+        return false;
+    };
+    let mut pinged = false;
+    while rx.try_recv().is_ok() {
+        pinged = true;
+    }
+    pinged
+}
+
 #[cfg(unix)]
 mod unix_lock {
+    use super::ACTIVATION_RX;
     use std::os::fd::AsRawFd;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
+    use std::sync::mpsc;
 
     pub fn acquire() -> bool {
         let path = lock_path();
@@ -92,10 +124,59 @@ mod unix_lock {
             // SIGKILL / panic). std::mem::forget is fine — the kernel,
             // not Drop, releases the lock.
             std::mem::forget(file);
+            spawn_activation_listener();
             true
         } else {
+            ping_running_instance();
             false
         }
+    }
+
+    /// Winner side: bind the activation socket and forward one `()` per
+    /// accepted connection into `ACTIVATION_RX`. Best-effort — if the
+    /// socket can't be bound, second-instance launches just go back to
+    /// exiting silently (today's behaviour), so failures here aren't fatal.
+    fn spawn_activation_listener() {
+        let path = socket_path();
+        // A previous run's socket file survives an unclean shutdown
+        // (SIGKILL). We hold the flock, so we know we're the only
+        // instance — safe to clear the stale file before binding.
+        let _ = std::fs::remove_file(&path);
+
+        let listener = match UnixListener::bind(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "aura: activation socket bind failed at {}: {e}",
+                    path.display()
+                );
+                return;
+            }
+        };
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let _ = ACTIVATION_RX.set(std::sync::Mutex::new(rx));
+
+        std::thread::Builder::new()
+            .name("aura-activation-listener".into())
+            .spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    drop(stream);
+                    if tx.send(()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok();
+    }
+
+    /// Loser side: connect to the winner's activation socket to signal
+    /// "someone tried to launch Aura again". A connection alone is the
+    /// signal — no payload needed. Failure (stale socket, no listener) is
+    /// silently ignored: the process still exits the same way it did
+    /// before this existed.
+    fn ping_running_instance() {
+        let _ = UnixStream::connect(socket_path());
     }
 
     /// $XDG_RUNTIME_DIR is per-user and on tmpfs (cleaned at logout) on
@@ -105,17 +186,30 @@ mod unix_lock {
     /// Linux to `/tmp`. The fallback is multi-user on /tmp, so we include
     /// the UID in the filename to avoid stealing each other's lock.
     fn lock_path() -> PathBuf {
+        base_dir().join("aura.lock")
+    }
+
+    /// Same directory as the lock file, for the activation socket.
+    fn socket_path() -> PathBuf {
+        base_dir().join("aura.sock")
+    }
+
+    fn base_dir() -> PathBuf {
         if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
-            return PathBuf::from(d).join("aura.lock");
+            return PathBuf::from(d);
         }
-        // SAFETY: getuid() is always safe — no inputs, no errno.
-        let uid = unsafe { libc::getuid() };
-        std::env::temp_dir().join(format!("aura-{uid}.lock"))
+        std::env::temp_dir()
     }
 }
 
 #[cfg(target_os = "windows")]
 mod windows_mutex {
+    use super::ACTIVATION_RX;
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    const PIPE_NAME: &str = r"\\.\pipe\AuraActivation";
+
     pub fn acquire() -> bool {
         use windows::core::w;
         use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -123,16 +217,96 @@ mod windows_mutex {
         match unsafe { CreateMutexW(None, false, w!("Local\\AuraSingleInstance")) } {
             Ok(h) => {
                 if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    ping_running_instance();
                     return false;
                 }
                 // HANDLE is Copy; Win32 keeps it open until process exit.
                 let _ = h;
+                spawn_activation_listener();
                 true
             }
             Err(e) => {
                 eprintln!("aura: single-instance check failed: {e}");
                 true
             }
+        }
+    }
+
+    /// Winner side: repeatedly open the named pipe as a server and forward
+    /// one `()` per connecting client into `ACTIVATION_RX`. Best-effort,
+    /// same rationale as the Unix listener.
+    fn spawn_activation_listener() {
+        let (tx, rx) = mpsc::channel::<()>();
+        let _ = ACTIVATION_RX.set(std::sync::Mutex::new(rx));
+
+        std::thread::Builder::new()
+            .name("aura-activation-listener".into())
+            .spawn(move || loop {
+                match named_pipe_server::wait_for_client(PIPE_NAME) {
+                    Ok(()) => {
+                        if tx.send(()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            })
+            .ok();
+    }
+
+    /// Loser side: connect to the winner's named pipe to signal a
+    /// relaunch. Failure is silently ignored — same fallback as Unix.
+    fn ping_running_instance() {
+        use std::time::Duration;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(PIPE_NAME)
+        {
+            let mut buf = [0u8; 1];
+            // Touch the pipe so the server's ConnectNamedPipe wait unblocks;
+            // we don't care about the contents.
+            let _ = f.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Thin wrapper around the Win32 named-pipe server API — `std::fs`
+    /// has no server-side named-pipe support. The client side (loser
+    /// process) just opens the pipe path with `std::fs::OpenOptions`,
+    /// which Windows treats like any other `CreateFileW` target.
+    mod named_pipe_server {
+        use windows::core::HSTRING;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE, PIPE_WAIT,
+        };
+
+        pub fn wait_for_client(name: &str) -> Result<(), ()> {
+            let name = HSTRING::from(name);
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    &name,
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_WAIT,
+                    1,
+                    64,
+                    64,
+                    0,
+                    None,
+                )
+            };
+            if handle.is_invalid() {
+                return Err(());
+            }
+            let connected = unsafe { ConnectNamedPipe(handle, None) };
+            let result = if connected.is_ok() { Ok(()) } else { Err(()) };
+            unsafe {
+                let _ = DisconnectNamedPipe(handle);
+                let _ = CloseHandle(handle);
+            }
+            result
         }
     }
 }

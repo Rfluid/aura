@@ -77,10 +77,10 @@ fn main() -> Result<()> {
         return cli::dispatch(command);
     }
 
-    // Single-instance guard: if another Aura is already running, exit
-    // silently — the running tray icon will service the next click. The
-    // lock is held (intentionally leaked) for the lifetime of the process;
-    // the OS releases it on exit. See `platform::acquire_single_instance`.
+    // Single-instance guard: if another Aura is already running, ping it
+    // (see `platform::try_recv_activation` below) and exit. The lock is
+    // held (intentionally leaked) for the lifetime of the process; the OS
+    // releases it on exit. See `platform::acquire_single_instance`.
     if !platform::acquire_single_instance() {
         return Ok(());
     }
@@ -200,6 +200,44 @@ fn main() -> Result<()> {
                                         window.remove_window()
                                     });
                                 });
+                            }
+                        }
+                    }
+
+                    // A second `aura` launch (e.g. from the app-search
+                    // launcher) lost the single-instance race and pinged us
+                    // instead of silently exiting into nothing. Treat it as
+                    // "show the window" — but don't toggle an already-open
+                    // one closed the way a tray click would; just focus it.
+                    if platform::try_recv_activation() {
+                        if let Some(handle) = &current {
+                            let _ = cx.update(|cx| {
+                                let _ = handle.update(cx, |_view, window, _cx| {
+                                    window.activate_window()
+                                });
+                            });
+                        } else {
+                            let fresh_config = AppConfig::load_with_discovery(&config_path)
+                                .unwrap_or_else(|e| {
+                                    eprintln!(
+                                        "aura: config reload failed ({e}); using cached snapshot"
+                                    );
+                                    config.clone()
+                                });
+                            runtime::set_from_config(&fresh_config);
+
+                            current =
+                                toggle(cx, None, fresh_config, config_path.clone(), None).await;
+
+                            if current.is_some() {
+                                just_opened = 4; // ~600 ms at 150 ms/poll
+                                #[cfg(target_os = "macos")]
+                                {
+                                    outside_clicked.store(false, Ordering::Relaxed);
+                                    click_monitor = Some(platform::install_click_outside_monitor(
+                                        Arc::clone(&outside_clicked),
+                                    ));
+                                }
                             }
                         }
                     }
