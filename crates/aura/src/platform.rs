@@ -278,9 +278,9 @@ mod windows_mutex {
     mod named_pipe_server {
         use windows::core::HSTRING;
         use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE, PIPE_WAIT,
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_TYPE_BYTE, PIPE_WAIT,
         };
 
         pub fn wait_for_client(name: &str) -> Result<(), ()> {
