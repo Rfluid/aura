@@ -490,6 +490,21 @@ fn toggle_window(
     // Whether the modal auto-fits its content height is a separate axis,
     // governed by `display.auto_resize` in app.rs (see on_children_prepainted) —
     // independent of chrome, so the auto-fit works in both modes.
+    //
+    // window_decorations must be `Some(..)` in both branches, not `None` for
+    // the chromeless case: GPUI's `request_decorations` defaults a `None` to
+    // `WindowDecorations::Server` (see gpui `window.rs`). Both Linux backends
+    // (this branch runs on X11 and Wayland alike — no per-backend split here)
+    // override `request_decorations`, so that default actively asks for
+    // server-side chrome: on X11 it writes an explicit `_MOTIF_WM_HINTS`
+    // "show decorations" hint, on Wayland it requests SSD via the
+    // xdg-decoration protocol. Some WMs/compositors (KWin observed) honor
+    // that over the `_NET_WM_WINDOW_TYPE_NOTIFICATION` borderless hint from
+    // `WindowKind::PopUp`, so the titlebar reappears even though
+    // `window_chrome` is false. Requesting `Client` explicitly writes the
+    // "hide decorations" hint/request instead. (macOS and Windows don't
+    // override `request_decorations` at all — this field is a no-op there;
+    // chrome is controlled by `titlebar`/`kind` alone on those platforms.)
     let (titlebar, is_resizable, window_decorations) = if config.display.window_chrome {
         (
             Some(TitlebarOptions::default()),
@@ -497,7 +512,7 @@ fn toggle_window(
             Some(WindowDecorations::Server),
         )
     } else {
-        (None, false, None)
+        (None, false, Some(WindowDecorations::Client))
     };
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
