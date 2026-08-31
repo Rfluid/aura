@@ -48,7 +48,7 @@ ksni = { version = "0.3", default-features = false, features = ["blocking", "asy
 # GPUI exposes no move API, so we issue a ConfigureWindow ourselves against the
 # XCB window id (see platform::set_window_origin). Already in the tree via gpui.
 # No-op on Wayland, where the compositor owns surface placement.
-x11rb = "0.13"
+x11rb = "0.14"
 
 [target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
