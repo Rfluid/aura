@@ -110,7 +110,8 @@ running a CLI command.
 - **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap.
 - **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin. First-party plugins (incl. RTK Gains for [RTK](https://github.com/rtk) token-savings) are installed separately.
-- **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit.
+- **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit; Escape closes.
+- **A real indicator, not a launcher** — the tooltip carries live quota usage and the icon turns red near the limit, without opening anything.
 - **Tray-native** — uses [`ksni`](https://github.com/iovxw/ksni) on Linux for direct StatusNotifierItem (Plasma / GNOME / sway / etc.) and `tray-icon` on macOS / Windows for AppKit / Win32 menu-bar integration.
 
 ## Plugins
@@ -259,8 +260,15 @@ moment you log in:
 
 **Left-click** the tray icon to open Aura's modal; left-click again to
 close. **Middle-click** does the same. **Right-click** for an explicit menu
-with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open). `just stop` / `systemctl --user stop aura` (Linux) and
-`just stop-windows` (Windows) are equivalent CLI exits.
+with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
+**Escape** closes the modal, as does clicking anywhere outside it.
+`just stop` / `systemctl --user stop aura` (Linux) and `just stop-windows`
+(Windows) are equivalent CLI exits.
+
+Hovering the icon shows the active profile's current quota
+(`Claude · 5h 72% · week 31%`), and the icon turns red once a quota window
+passes 90%. Set `display.tray_status = false` to turn that off — see
+[Configuration](docs/configuration.md).
 
 Grab a prebuilt release archive (next section) or build from source with
 Cargo (Rust 1.80+).

@@ -27,6 +27,14 @@ static DISMISS_ON_FOCUS_LOSS: AtomicBool = AtomicBool::new(true);
 /// startup and on every refresh.
 static SHOW_IN_APP_SWITCHER: AtomicBool = AtomicBool::new(false);
 
+/// Set when the user presses Escape with the modal open and nothing else
+/// claimed the key. Drained by the poll loop, which owns the window handle.
+///
+/// A flag rather than a direct close because the keystroke observer runs with
+/// an `&mut App` and no access to the loop's `current` handle — the same
+/// reason tray clicks take the long way round through a channel.
+static DISMISS_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 /// True while a plugin button action is executing. Plugin actions may
 /// open dialogs (e.g. native file pickers) that take focus away from the
 /// modal; the poll loop's focus-loss check must not dismiss the modal
@@ -36,6 +44,16 @@ static PLUGIN_ACTION_INFLIGHT: AtomicBool = AtomicBool::new(false);
 /// Returns the latest snapshot of `display.dismiss_on_focus_loss`.
 pub fn dismiss_on_focus_loss() -> bool {
     DISMISS_ON_FOCUS_LOSS.load(Ordering::Relaxed)
+}
+
+/// Ask the poll loop to close the modal (Escape was pressed).
+pub fn request_dismiss() {
+    DISMISS_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Consume a pending dismiss request, if any.
+pub fn take_dismiss_request() -> bool {
+    DISMISS_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
 /// See [`PLUGIN_ACTION_INFLIGHT`].

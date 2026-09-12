@@ -169,6 +169,32 @@ pub fn fields() -> &'static [FieldDescriptor] {
             example: "false",
         },
         FieldDescriptor {
+            key: "display.tray_status",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "true",
+            summary: "Keep the tray icon's tooltip and color in sync with quota usage.",
+            description: "Keep the tray icon's tooltip up to date with the active profile's \
+                quota, and tint the icon when a window is nearly exhausted (90%). Default true \
+                — that is what makes the icon an indicator rather than a button. While the \
+                modal is closed this costs one quota lookup every \
+                display.tray_status_interval_secs, which for API-backed agents is a network \
+                request. Set false to update the tooltip only when the modal refreshes.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "display.tray_status_interval_secs",
+            type_label: "u64",
+            allowed: &[],
+            default: "1200",
+            summary: "Seconds between background tray-status refreshes.",
+            description: "Seconds between background tray-status refreshes. Ignored when \
+                display.tray_status is false. Default 1200 (20 minutes). Values below 30 are \
+                clamped up to 30 so a typo cannot turn the indicator into a hot loop against a \
+                rate-limited quota endpoint.",
+            example: "1200",
+        },
+        FieldDescriptor {
             key: "update.dismissed_version",
             type_label: "string?",
             allowed: &[],
@@ -352,6 +378,8 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .map(|n| n.to_string())
             .unwrap_or_else(|| "(unset)".to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "display.tray_status" => cfg.display.tray_status.to_string(),
+        "display.tray_status_interval_secs" => cfg.display.tray_status_interval_secs.to_string(),
         "update.dismissed_version" => cfg
             .update
             .dismissed_version
@@ -381,6 +409,10 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.auto_resize" => cfg.display.auto_resize = parse_opt_bool(key, raw)?,
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
+        "display.tray_status" => cfg.display.tray_status = parse_bool(key, raw)?,
+        "display.tray_status_interval_secs" => {
+            cfg.display.tray_status_interval_secs = parse_u64(key, raw)?
+        }
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
         _ => return Err(unknown_key(key)),
@@ -427,6 +459,14 @@ fn parse_opt_bool(key: &str, raw: &str) -> Result<Option<bool>, SchemaError> {
         return Ok(None);
     }
     parse_bool(key, raw).map(Some)
+}
+
+fn parse_u64(key: &str, raw: &str) -> Result<u64, SchemaError> {
+    raw.parse::<u64>().map_err(|_| SchemaError::InvalidType {
+        key: key.to_string(),
+        expected: "a non-negative integer",
+        value: raw.to_string(),
+    })
 }
 
 fn parse_opt_u32(key: &str, raw: &str) -> Result<Option<u32>, SchemaError> {
@@ -537,6 +577,8 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.auto_resize" => return cfg.display.auto_resize.map(|b| b.to_string()),
         "display.max_height" => return cfg.display.max_height.map(|n| n.to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
+        "display.tray_status" => cfg.display.tray_status.to_string(),
+        "display.tray_status_interval_secs" => cfg.display.tray_status_interval_secs.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         _ => return None,
@@ -750,6 +792,8 @@ mod tests {
                 auto_resize: Some(false),
                 max_height: Some(500),
                 goblin_mode: true,
+                tray_status: false,
+                tray_status_interval_secs: 900,
             },
             update: UpdateConfig {
                 dismissed_version: Some("0.1.18".to_string()),

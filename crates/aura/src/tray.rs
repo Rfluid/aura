@@ -10,10 +10,13 @@
 //! single-click activation natively via AppKit / Win32.
 //!
 //! Both backends feed a unified [`TrayEvent`] stream that `main.rs` drains
-//! from the GPUI side via [`try_recv_event`].
+//! from the GPUI side via [`try_recv_event`], and both accept live state
+//! pushes through [`set_status`] / [`apply_pending_status`] so the icon can
+//! act as a real indicator instead of a static launcher.
+//!
+//! Middle-click (`secondary_activate` on SNI) opens the modal too.
 
-#[cfg(target_os = "linux")]
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
@@ -36,9 +39,14 @@ const ICON_SIZE_MAX: u32 = 64;
 
 /// Aura purple — must stay in sync with `app.rs::COLOR_ACCENT` so the tray
 /// icon matches the in-app brand color. Unused on macOS outside tests, where
-/// the icon is a template image instead (see `ICON_COLOR_TEMPLATE`).
+/// the normal-state icon is a template image instead (see
+/// `ICON_COLOR_TEMPLATE`).
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 const ICON_COLOR: &str = "#8b5cf6";
+
+/// Icon color for the "needs attention" state (quota nearly exhausted).
+/// Matches the danger color used by the modal's progress bars.
+const ICON_COLOR_ATTENTION: &str = "#ef4444";
 
 /// macOS template images are drawn from their alpha channel alone — AppKit
 /// recolors them for the current menu-bar appearance (light / dark / clicked
@@ -46,6 +54,9 @@ const ICON_COLOR: &str = "#8b5cf6";
 /// PNG readable if anything ever inspects it directly.
 #[cfg(target_os = "macos")]
 const ICON_COLOR_TEMPLATE: &str = "#000000";
+
+/// Tooltip body used until the first [`set_status`] lands.
+const DEFAULT_SUMMARY: &str = "Click to open Agent Usage Reporter";
 
 /// User-driven actions that originate from the tray icon and end up
 /// driving the GPUI side. We keep the enum small — "show the modal" or
@@ -73,13 +84,104 @@ pub enum TrayEvent {
     Quit,
 }
 
+/// Live indicator state. Pushed from whatever loaded fresh usage data (the
+/// modal's refresh, or `main.rs`'s background poll) and applied to the icon on
+/// the main thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayStatus {
+    /// One short line describing current usage, e.g. `"Claude · 5h 72%"`.
+    /// Shown as the tooltip body on every platform.
+    pub summary: String,
+    /// Whether to emphasise the icon. Drives `NeedsAttention` +
+    /// `AttentionIconPixmap` on StatusNotifierItem hosts and a red icon
+    /// variant on macOS / Windows.
+    pub attention: bool,
+}
+
+impl Default for TrayStatus {
+    fn default() -> Self {
+        Self {
+            summary: DEFAULT_SUMMARY.to_string(),
+            attention: false,
+        }
+    }
+}
+
+/// Status pushed by [`set_status`] but not yet applied to the icon.
+///
+/// The indirection exists because AppKit requires `NSStatusItem` mutation on
+/// the main thread, and the callers that *have* fresh data (the refresh
+/// worker, the background poll) run off it. `main.rs`'s poll loop drains this
+/// on the GPUI main thread via [`apply_pending_status`].
+static PENDING_STATUS: Mutex<Option<TrayStatus>> = Mutex::new(None);
+
+/// Queue `status` for application to the tray icon. Safe to call from any
+/// thread; a no-op if the tray failed to install.
+pub fn set_status(status: TrayStatus) {
+    if let Ok(mut pending) = PENDING_STATUS.lock() {
+        *pending = Some(status);
+    }
+}
+
 /// Opaque handle returned by [`install`]. Must be kept alive for the
 /// lifetime of the app — dropping it removes the icon.
 pub struct TrayHandle {
     #[cfg(target_os = "linux")]
-    _ksni: ksni::blocking::Handle<linux::AuraTray>,
+    ksni: ksni::blocking::Handle<linux::AuraTray>,
     #[cfg(not(target_os = "linux"))]
-    _icon: tray_icon::TrayIcon,
+    icon: tray_icon::TrayIcon,
+    /// Last status actually pushed to the backend. Lets
+    /// [`apply_pending_status`] skip redundant D-Bus / AppKit traffic when the
+    /// poll produces the same numbers as last time.
+    applied: TrayStatus,
+}
+
+impl TrayHandle {
+    /// Apply any status queued by [`set_status`]. Call from the GPUI main
+    /// thread only (AppKit requirement on macOS).
+    pub fn apply_pending_status(&mut self) {
+        let Some(next) = PENDING_STATUS.lock().ok().and_then(|mut p| p.take()) else {
+            return;
+        };
+        if next == self.applied {
+            return;
+        }
+        self.push_status(&next);
+        self.applied = next;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn push_status(&mut self, status: &TrayStatus) {
+        let status = status.clone();
+        // `update` returns None once the service has shut down; nothing useful
+        // to do about it here — the process is on its way out.
+        let _ = self.ksni.update(move |tray: &mut linux::AuraTray| {
+            tray.status = status;
+        });
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn push_status(&mut self, status: &TrayStatus) {
+        let _ = self.icon.set_tooltip(Some(non_linux::tooltip(status)));
+        let Ok(icon) = non_linux::state_icon(status.attention) else {
+            return;
+        };
+        // `set_icon` on macOS keeps the *previous* template flag, which would
+        // leave the red attention icon getting alpha-recolored back to the
+        // menu-bar foreground — i.e. invisible as a warning. The paired setter
+        // swaps image and flag together. It is a no-op off macOS, hence the
+        // split.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = self
+                .icon
+                .set_icon_with_as_template(Some(icon), non_linux::is_template(status.attention));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = self.icon.set_icon(Some(icon));
+        }
+    }
 }
 
 /// Non-blocking poll. Returns the next pending [`TrayEvent`] or `None`.
@@ -139,9 +241,8 @@ fn render_logo_rgba(size: u32, color: &str) -> Result<Vec<u8>> {
 mod linux {
     use super::*;
     use ksni::blocking::TrayMethods;
-    use ksni::{Icon, MenuItem};
+    use ksni::{Icon, MenuItem, Status};
     use std::sync::mpsc::{self, Receiver, Sender};
-    use std::sync::Mutex;
 
     /// Channel used by `activate()` (primary-click), `secondary_activate()`
     /// (middle-click) and the fallback "Show Aura" menu item to signal the
@@ -153,9 +254,11 @@ mod linux {
     pub(super) struct AuraTray {
         tx: Sender<TrayEvent>,
         icons: Vec<Icon>,
+        attention_icons: Vec<Icon>,
         /// Freedesktop icon name, or empty when no themed `aura` icon is
         /// installed. See [`themed_icon_name`].
         icon_name: String,
+        pub(super) status: TrayStatus,
     }
 
     impl ksni::Tray for AuraTray {
@@ -181,10 +284,31 @@ mod linux {
             self.icons.clone()
         }
 
+        fn attention_icon_name(&self) -> String {
+            // No separate themed asset ships for the attention state, so
+            // always fall through to the pixmap below.
+            String::new()
+        }
+
+        fn attention_icon_pixmap(&self) -> Vec<Icon> {
+            self.attention_icons.clone()
+        }
+
+        /// `NeedsAttention` tells the host to emphasise the item (Plasma
+        /// un-hides it from the overflow group and animates it) and to switch
+        /// to `attention_icon_pixmap`.
+        fn status(&self) -> Status {
+            if self.status.attention {
+                Status::NeedsAttention
+            } else {
+                Status::Active
+            }
+        }
+
         fn tool_tip(&self) -> ksni::ToolTip {
             ksni::ToolTip {
                 title: "Aura".into(),
-                description: "Click to open Agent Usage Reporter".into(),
+                description: self.status.summary.clone(),
                 icon_name: String::new(),
                 icon_pixmap: Vec::new(),
             }
@@ -194,6 +318,7 @@ mod linux {
         /// user's left-click here, which is exactly the wifi-style UX
         /// we want. `x` / `y` are the icon's position in screen coords
         /// — we forward them so the modal can anchor near the icon.
+        ///
         fn activate(&mut self, x: i32, y: i32) {
             let _ = self.tx.send(TrayEvent::Show { hint: Some((x, y)) });
         }
@@ -321,7 +446,9 @@ mod linux {
         let tray = AuraTray {
             tx,
             icons: icon_set(ICON_COLOR)?,
+            attention_icons: icon_set(ICON_COLOR_ATTENTION)?,
             icon_name: themed_icon_name(),
+            status: TrayStatus::default(),
         };
 
         // `assume_sni_available(true)` is load-bearing, not a nicety.
@@ -344,7 +471,10 @@ mod linux {
             .spawn()
             .context("ksni spawn (register on D-Bus)")?;
 
-        Ok(TrayHandle { _ksni: handle })
+        Ok(TrayHandle {
+            ksni: handle,
+            applied: TrayStatus::default(),
+        })
     }
 
     pub(super) fn try_recv() -> Option<TrayEvent> {
@@ -375,7 +505,7 @@ mod non_linux {
     /// we have keeps the backing store dense enough for a 2× menu bar and lets
     /// `NSImage::setSize` do the (high-quality) downscale.
     #[cfg(target_os = "macos")]
-    fn macos_icon_size() -> u32 {
+    pub(super) fn macos_icon_size() -> u32 {
         ICON_SIZES.iter().copied().max().unwrap_or(ICON_SIZE_MAX)
     }
 
@@ -384,7 +514,7 @@ mod non_linux {
     /// which already accounts for the system DPI — is visibly sharper than
     /// handing Windows a 64 px icon to squeeze into 16.
     #[cfg(target_os = "windows")]
-    fn windows_icon_size() -> u32 {
+    pub(super) fn windows_icon_size() -> u32 {
         use windows::Win32::UI::HiDpi::GetDpiForSystem;
         use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetricsForDpi, SM_CXSMICON};
 
@@ -419,12 +549,17 @@ mod non_linux {
         }
     }
 
-    /// Icon color.
+    /// Icon color for the current state.
     ///
-    /// macOS gets a template image (alpha-only, recolored by AppKit) so it
-    /// matches every other menu-bar item in light mode, dark mode and while
-    /// the item is click-highlighted.
-    fn icon_color() -> &'static str {
+    /// macOS gets a template image (alpha-only, recolored by AppKit) in the
+    /// normal state so it matches every other menu-bar item in light mode,
+    /// dark mode and while the item is click-highlighted. The attention state
+    /// deliberately opts out of template rendering — the whole point is to be
+    /// the one item in the bar that isn't the menu-bar's foreground color.
+    fn icon_color(attention: bool) -> &'static str {
+        if attention {
+            return ICON_COLOR_ATTENTION;
+        }
         #[cfg(target_os = "macos")]
         {
             ICON_COLOR_TEMPLATE
@@ -435,19 +570,26 @@ mod non_linux {
         }
     }
 
-    /// Whether the icon should be handed to AppKit as a template image.
-    /// Always false off macOS (the flag is ignored there).
-    fn is_template() -> bool {
-        cfg!(target_os = "macos")
+    /// Whether the icon for `attention` should be handed to AppKit as a
+    /// template image. Always false off macOS (the flag is ignored there).
+    pub(super) fn is_template(attention: bool) -> bool {
+        cfg!(target_os = "macos") && !attention
     }
 
-    fn state_icon() -> Result<Icon> {
+    pub(super) fn state_icon(attention: bool) -> Result<Icon> {
         let size = icon_size();
-        let rgba = render_logo_rgba(size, icon_color())?;
+        let rgba = render_logo_rgba(size, icon_color(attention))?;
         Icon::from_rgba(rgba, size, size).context("Icon::from_rgba")
     }
 
+    /// Tooltip text: the app name plus whatever the latest status says.
+    pub(super) fn tooltip(status: &TrayStatus) -> String {
+        format!("Aura — {}", status.summary)
+    }
+
     pub(super) fn install() -> Result<TrayHandle> {
+        let status = TrayStatus::default();
+
         let menu = Menu::new();
         let show = MenuItem::with_id(MenuId::new(MENU_ID_SHOW), "Show Aura", true, None);
         // Cmd+Q / Ctrl+Q is what users reach for to close a menu-bar app, and
@@ -462,12 +604,12 @@ mod non_linux {
         menu.append(&quit).context("menu append Quit")?;
 
         let tray = TrayIconBuilder::new()
-            .with_icon(state_icon()?)
+            .with_icon(state_icon(status.attention)?)
             // Template rendering makes the icon track the menu bar's
             // appearance (light / dark / highlighted) the way every native
             // status item does. macOS-only; ignored on Windows.
-            .with_icon_as_template(is_template())
-            .with_tooltip("Aura — Agent Usage Reporter")
+            .with_icon_as_template(is_template(status.attention))
+            .with_tooltip(tooltip(&status))
             .with_menu(Box::new(menu))
             // Primary-click activates directly; menu is right-click only.
             .with_menu_on_left_click(false)
@@ -475,7 +617,10 @@ mod non_linux {
             .build()
             .context("building tray icon")?;
 
-        Ok(TrayHandle { _icon: tray })
+        Ok(TrayHandle {
+            icon: tray,
+            applied: status,
+        })
     }
 
     fn quit_accel() -> Option<tray_icon::menu::accelerator::Accelerator> {
@@ -543,5 +688,20 @@ mod tests {
         // metric, which is only the *closest* one if the list is ordered.
         assert!(ICON_SIZES.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(ICON_SIZES.iter().copied().max(), Some(ICON_SIZE_MAX));
+    }
+
+    #[test]
+    fn the_attention_icon_differs_from_the_normal_one() {
+        // A same-colored "attention" icon would make NeedsAttention invisible.
+        let normal = render_logo_rgba(32, ICON_COLOR).expect("render");
+        let attention = render_logo_rgba(32, ICON_COLOR_ATTENTION).expect("render");
+        assert_ne!(normal, attention);
+    }
+
+    #[test]
+    fn the_default_status_is_not_an_attention_state() {
+        let status = TrayStatus::default();
+        assert!(!status.attention);
+        assert_eq!(status.summary, DEFAULT_SUMMARY);
     }
 }

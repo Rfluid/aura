@@ -344,6 +344,17 @@ impl AuraView {
         self.error = result.error;
         self.armed_action = None;
 
+        // Keep the tray icon in step with what the modal is showing. This is
+        // the cheap half of the indicator: the quota snapshot was just loaded
+        // for the UI, so reusing it costs nothing and is always fresher than
+        // whatever the background poll last managed.
+        if self.config.display.tray_status {
+            crate::tray::set_status(crate::tray_status::summarize(
+                &self.active_profile,
+                self.quota.as_ref(),
+            ));
+        }
+
         // Initialize the active plugin selection if absent or stale.
         if self.active_plugin.is_none() {
             self.active_plugin = self.plugin_panels.first().map(|(name, _)| name.clone());

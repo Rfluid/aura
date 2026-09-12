@@ -6,6 +6,7 @@ last_updated: 2026-09-12
 last_verified: 2026-09-12
 source_refs:
   - crates/aura/src/tray.rs
+  - crates/aura/src/tray_status.rs
   - crates/aura/src/main.rs
   - crates/aura/src/platform.rs
   - crates/aura/src/work_area.rs
@@ -74,6 +75,30 @@ The brand SVG is rasterised at every size in `tray::ICON_SIZES`
 | macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. Rendered black and flagged `with_icon_as_template(true)` so AppKit recolors it for light / dark / click-highlight like every native status item. |
 | Windows | one raster at `SM_CXSMICON` for the current DPI | `Shell_NotifyIcon` blits rather than resamples, so rendering straight at the target size beats handing Win32 a 64 px icon to squeeze into 16. Odd DPI values snap up to the next size we rasterise. |
 
+### Live indicator state
+
+A tray icon that only opens a window is a button. `tray_status::summarize`
+turns a `QuotaSnapshot` into a one-line tooltip (`"Claude · 5h 72% · week 31%"`)
+and an attention flag (any window ≥ 90%), which drives `NeedsAttention` +
+`AttentionIconPixmap` on SNI and a red icon elsewhere.
+
+Two producers feed `tray::set_status`:
+
+1. `app.rs::apply_refresh_result` — free, since the modal just loaded a
+   snapshot anyway.
+2. `tray_status::spawn_poll` — a detached thread on a long interval
+   (`display.tray_status_interval_secs`, default 1200 s, floored at 30 s) for
+   the stretches when the modal is closed. Blocking HTTP, hence a thread
+   rather than a GPUI task.
+
+Both only *queue*; `TrayHandle::apply_pending_status` applies on the GPUI main
+thread from the poll loop, because AppKit refuses `NSStatusItem` mutation from
+anywhere else. It also diffs against the last applied value, so a poll that
+produces identical numbers costs no D-Bus or AppKit traffic.
+
+Set `display.tray_status = false` to disable both the background poll and the
+updates.
+
 ## Modal positioning
 
 `main.rs::compute_modal_bounds()` decides where the modal opens; the choice
@@ -91,10 +116,25 @@ is OS-specific because that's where the tray icon lives:
   force the position (`Window matches: WM_CLASS = aura` → Position =
   Apply Initially). See the README "Modal placement on Wayland" section.
 
-## Click-outside auto-dismiss
+## Dismissal
 
-The main poll loop polls `cx.active_window()` every 150 ms; when it returns
-`None` (no GPUI window is the OS-foreground window) the modal is closed.
+Two ways out, both handled by the same poll loop because it owns the window
+handle.
+
+**Escape.** A keystroke observer registered in the `run` closure closes the
+modal, which is the convention for a tray popup on every desktop. The
+selectable-text bridge is installed with `clear_on_escape: false` and Escape is
+handled in one place instead, because the two meanings have to be ordered:
+Escape clears a live text selection, and only closes the popup when there is
+nothing to clear. As two independent keystroke observers the outcome would
+depend on subscriber iteration order, and a single Escape could clear *and*
+close. Unlike focus loss, Escape is honoured regardless of
+`dismiss_on_focus_loss` or an in-flight plugin action — it is an explicit
+instruction.
+
+**Click-outside.** The main poll loop polls `cx.active_window()` every 150 ms;
+when it returns `None` (no GPUI window is the OS-foreground window) the modal
+is closed.
 
 A grace period of four polls (~600 ms) starts each time the modal opens,
 because:

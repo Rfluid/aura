@@ -148,6 +148,8 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 | `auto_resize` | bool? | `true` \| `false` | unset (auto-fit) | Auto-resize the modal to fit its content height. `false` = fixed-size. Works with or without chrome. |
 | `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `auto_resize` is false. |
 | `goblin_mode` | bool | `true` \| `false` | `false` | Swap UI copy for the aggressive "Goblin Mode" variant. |
+| `tray_status` | bool | `true` \| `false` | `true` | Keep the tray tooltip in sync with quota usage and tint the icon past 90%. |
+| `tray_status_interval_secs` | u64 | — | `1200` | Seconds between background tray-status refreshes; clamped up to 30. |
 
 ### `[update]`
 
@@ -252,6 +254,16 @@ show_in_app_switcher = false
 
 # Swap UI copy for the aggressive "Goblin Mode" variant. Default false.
 goblin_mode = false
+
+# Keep the tray icon's tooltip in sync with the active profile's quota, and
+# tint the icon red once a window passes 90%. Default true. While the modal is
+# closed this costs one quota lookup per interval below (a network request for
+# the API-backed agents); set false to update only when the modal refreshes.
+tray_status = true
+
+# Seconds between background tray-status refreshes. Ignored when tray_status is
+# false. Values below 30 are clamped up to 30.
+tray_status_interval_secs = 1200
 
 # ── Update ───────────────────────────────────────────────────────────────────
 
