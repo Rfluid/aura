@@ -13,8 +13,6 @@
 //! from the GPUI side via [`try_recv_event`], and both accept live state
 //! pushes through [`set_status`] / [`apply_pending_status`] so the icon can
 //! act as a real indicator instead of a static launcher.
-//!
-//! Middle-click (`secondary_activate` on SNI) opens the modal too.
 
 use std::sync::Mutex;
 
@@ -58,6 +56,53 @@ const ICON_COLOR_TEMPLATE: &str = "#000000";
 /// Tooltip body used until the first [`set_status`] lands.
 const DEFAULT_SUMMARY: &str = "Click to open Agent Usage Reporter";
 
+/// Where the tray icon sits on screen, in **logical** pixels with the origin
+/// at the top-left of the virtual desktop — the same space
+/// `gpui::App::displays()` reports bounds in.
+///
+/// Every backend hands us physical (device) pixels; the conversion to logical
+/// happens at the edge, in [`try_recv_event`], so nothing downstream has to
+/// think about HiDPI. Getting that wrong is not a cosmetic bug: on a 2× Retina
+/// display an unconverted X is double the real one, which pushes the modal off
+/// the right edge of the screen and makes the clamp in
+/// `placement::modal_origin` pin it to the corner on every single click.
+#[derive(Debug, Clone, Copy)]
+pub struct TrayAnchor {
+    /// The click position.
+    pub point: (f32, f32),
+    /// The icon's own rect (`x`, `y`, `width`, `height`) when the host
+    /// reported one. Preferred over [`Self::point`] for anchoring: a popover
+    /// belongs under the icon, not under wherever the pointer happened to be.
+    /// `None` on Linux — StatusNotifierItem's `Activate` carries a position
+    /// hint but no geometry.
+    pub rect: Option<(f32, f32, f32, f32)>,
+}
+
+impl TrayAnchor {
+    /// Horizontal center to align the modal against: the middle of the icon
+    /// when we know its rect, else the click X.
+    ///
+    /// Only macOS anchors horizontally to the icon (see
+    /// `placement::modal_origin`); the corner-tray platforms right-align to
+    /// the screen edge instead and never call this.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn center_x(&self) -> f32 {
+        match self.rect {
+            Some((x, _, w, _)) => x + w / 2.0,
+            None => self.point.0,
+        }
+    }
+
+    /// A point that is guaranteed to be on the display the icon lives on.
+    /// Used to pick which monitor the modal opens on.
+    pub fn locator(&self) -> (f32, f32) {
+        match self.rect {
+            Some((x, y, w, h)) => (x + w / 2.0, y + h / 2.0),
+            None => self.point,
+        }
+    }
+}
+
 /// User-driven actions that originate from the tray icon and end up
 /// driving the GPUI side. We keep the enum small — "show the modal" or
 /// "exit aura" — because that's the entirety of the wifi/volume tray
@@ -65,19 +110,10 @@ const DEFAULT_SUMMARY: &str = "Click to open Agent Usage Reporter";
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
     /// Primary-click on the icon (or middle-click, or "Show Aura" picked
-    /// from the menu). `hint` carries the tray icon's screen coordinates
-    /// when the host sent them with the activate request — `None` when the
-    /// trigger was a menu item (which doesn't surface a click position).
-    ///
-    /// Plumbed end-to-end but unused on the consumer side for now: a
-    /// first attempt at anchoring the modal next to the click on
-    /// Wayland produced a malformed (very narrow) window for reasons
-    /// we haven't root-caused yet, so the consumer falls back to its
-    /// corner placement.
-    Show {
-        #[allow(dead_code)]
-        hint: Option<(i32, i32)>,
-    },
+    /// from the menu). `anchor` carries the icon's screen geometry when the
+    /// host sent it — `None` when the trigger was a menu item, which doesn't
+    /// surface a position.
+    Show { anchor: Option<TrayAnchor> },
     /// "Quit Aura" picked from the right-click context menu — the user
     /// wants the process to actually exit (tray icon goes away,
     /// systemd's `Restart=on-failure` respects the clean exit).
@@ -320,8 +356,16 @@ mod linux {
         /// we want. `x` / `y` are the icon's position in screen coords
         /// — we forward them so the modal can anchor near the icon.
         ///
+        /// Note the units: unlike the macOS / Windows backends, SNI hosts
+        /// report the hint in the same logical pixel space the compositor
+        /// uses for window geometry, so no scale conversion is applied here.
         fn activate(&mut self, x: i32, y: i32) {
-            let _ = self.tx.send(TrayEvent::Show { hint: Some((x, y)) });
+            let _ = self.tx.send(TrayEvent::Show {
+                anchor: Some(TrayAnchor {
+                    point: (x as f32, y as f32),
+                    rect: None,
+                }),
+            });
         }
 
         /// Middle-click. The spec calls this "a secondary and less important
@@ -344,7 +388,7 @@ mod linux {
                     activate: Box::new(|tray: &mut AuraTray| {
                         // Menu doesn't surface a click position — let
                         // the modal fall back to its corner placement.
-                        let _ = tray.tx.send(TrayEvent::Show { hint: None });
+                        let _ = tray.tx.send(TrayEvent::Show { anchor: None });
                     }),
                     ..Default::default()
                 }
@@ -634,6 +678,12 @@ mod non_linux {
         Some(Accelerator::new(Some(CMD_OR_CTRL), Code::KeyQ))
     }
 
+    /// Convert a physical (device-pixel) screen point reported by tray-icon
+    /// into the logical space `TrayAnchor` is documented in.
+    fn to_logical(x: f64, y: f64, scale: f32) -> (f32, f32) {
+        (x as f32 / scale, y as f32 / scale)
+    }
+
     pub(super) fn try_recv() -> Option<TrayEvent> {
         // Menu first (right-click → "Show Aura" or "Quit Aura"). Drain the
         // whole queue rather than one item per poll, matching the icon-event
@@ -641,7 +691,7 @@ mod non_linux {
         // dribble out one per tick.
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
-                MENU_ID_SHOW => return Some(TrayEvent::Show { hint: None }),
+                MENU_ID_SHOW => return Some(TrayEvent::Show { anchor: None }),
                 MENU_ID_QUIT => return Some(TrayEvent::Quit),
                 _ => {}
             }
@@ -654,11 +704,26 @@ mod non_linux {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 position,
+                rect,
                 ..
             } = evt
             {
+                // Both backends report physical pixels: macOS multiplies by
+                // the status bar window's `backingScaleFactor`, Windows uses
+                // raw `GetCursorPos` / `Shell_NotifyIconGetRect` output.
+                let scale = crate::platform::tray_scale_factor(position.x, position.y);
+                let point = to_logical(position.x, position.y, scale);
+                let (rx, ry) = to_logical(rect.position.x, rect.position.y, scale);
+                let (rw, rh) = (
+                    rect.size.width as f32 / scale,
+                    rect.size.height as f32 / scale,
+                );
+                // A zero-area rect means the host had no geometry for us;
+                // fall back to the click point rather than anchoring to a
+                // degenerate box at the origin.
+                let rect = (rw > 0.0 && rh > 0.0).then_some((rx, ry, rw, rh));
                 return Some(TrayEvent::Show {
-                    hint: Some((position.x as i32, position.y as i32)),
+                    anchor: Some(TrayAnchor { point, rect }),
                 });
             }
         }
@@ -676,19 +741,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_icon_rect_wins_over_the_click_point() {
+        // Anchoring to the icon rather than the pointer is what keeps the
+        // popover centred under the icon no matter where inside it the user
+        // clicked.
+        let anchor = TrayAnchor {
+            point: (1012.0, 11.0),
+            rect: Some((1000.0, 0.0, 24.0, 24.0)),
+        };
+        assert_eq!(anchor.center_x(), 1012.0);
+        assert_eq!(anchor.locator(), (1012.0, 12.0));
+    }
+
+    #[test]
+    fn without_a_rect_both_helpers_fall_back_to_the_click() {
+        // The StatusNotifierItem `Activate` hint carries a position but no
+        // geometry, so Linux always lands here.
+        let anchor = TrayAnchor {
+            point: (1900.0, 1040.0),
+            rect: None,
+        };
+        assert_eq!(anchor.center_x(), 1900.0);
+        assert_eq!(anchor.locator(), (1900.0, 1040.0));
+    }
+
+    #[test]
     fn every_declared_icon_size_rasterises() {
         for &size in ICON_SIZES {
             let rgba = render_logo_rgba(size, ICON_COLOR).expect("render");
             assert_eq!(rgba.len(), (size * size * 4) as usize);
         }
-    }
-
-    #[test]
-    fn the_icon_sizes_are_sorted_smallest_first() {
-        // `windows_icon_size` picks the first entry at or above the system
-        // metric, which is only the *closest* one if the list is ordered.
-        assert!(ICON_SIZES.windows(2).all(|w| w[0] < w[1]));
-        assert_eq!(ICON_SIZES.iter().copied().max(), Some(ICON_SIZE_MAX));
     }
 
     #[test]

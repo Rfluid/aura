@@ -68,9 +68,12 @@ windows = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
-    # GetDpiForSystem + GetSystemMetricsForDpi — pick the tray icon's raster
-    # size from SM_CXSMICON at the current DPI instead of letting
-    # Shell_NotifyIcon downscale for us.
+    # MonitorFromPoint, for the per-monitor DPI lookup that converts
+    # tray-icon's physical click coordinates to logical pixels.
+    "Win32_Graphics_Gdi",
+    # GetDpiForMonitor / GetDpiForSystem + GetSystemMetricsForDpi — that same
+    # conversion, plus picking the tray icon's raster size from SM_CXSMICON at
+    # the current DPI instead of letting Shell_NotifyIcon downscale for us.
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_System_Pipes",

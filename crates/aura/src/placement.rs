@@ -19,8 +19,22 @@
 //!    measured content height. Only [`Anchor::Bottom`] actually repositions
 //!    (see [`Anchor::needs_reposition`] and `platform::reposition_after_resize`
 //!    / `platform::set_window_origin`).
+//!
+//! ## Which monitor
+//!
+//! Both entry points work against *a* display, not "the primary display".
+//! [`modal_display`] picks the one the tray icon actually lives on (from the
+//! [`TrayAnchor`] the backend reported) and falls back to the primary when
+//! there's no anchor or no match. The chosen display's id rides along on
+//! `AuraView` so the auto-fit callback keeps measuring against the same
+//! screen it opened on — otherwise a modal opened on a secondary monitor
+//! would be height-capped by the *primary* monitor's taskbar.
 
-use gpui::{point, px, size, Bounds, Pixels, Point, Size};
+use std::rc::Rc;
+
+use gpui::{point, px, size, App, Bounds, DisplayId, Pixels, PlatformDisplay, Point, Size};
+
+use crate::tray::TrayAnchor;
 
 /// Fixed modal width. The window grows vertically to fit content (see
 /// `app.rs::on_children_prepainted`), so only the height is dynamic.
@@ -103,21 +117,60 @@ pub fn modal_size() -> Size<Pixels> {
     size(px(MODAL_W), px(MODAL_H))
 }
 
+// ── Display selection ────────────────────────────────────────────────────────
+
+/// The display the modal should open on: the one containing the tray icon,
+/// else the primary.
+///
+/// Returns the display's id alongside its bounds so the caller can hand the id
+/// to `AuraView` and have the auto-fit callback re-resolve the same screen
+/// later (displays can be unplugged while the modal is open, hence an id and
+/// not a captured `Rc`).
+pub fn modal_display(cx: &App, anchor: Option<TrayAnchor>) -> Option<(DisplayId, Bounds<Pixels>)> {
+    if let Some(anchor) = anchor {
+        let (x, y) = anchor.locator();
+        let locator = point(px(x), px(y));
+        if let Some(display) = cx
+            .displays()
+            .into_iter()
+            .find(|d| crate::platform::display_bounds(d).contains(&locator))
+        {
+            return Some((display.id(), crate::platform::display_bounds(&display)));
+        }
+    }
+    let primary = cx.primary_display()?;
+    Some((primary.id(), crate::platform::display_bounds(&primary)))
+}
+
+/// Bounds of the display `id`, or the primary display's when that id is gone
+/// (monitor unplugged since the modal opened).
+pub fn display_bounds_or_primary(cx: &App, id: Option<DisplayId>) -> Option<Bounds<Pixels>> {
+    let display: Rc<dyn PlatformDisplay> = id
+        .and_then(|id| cx.find_display(id))
+        .or_else(|| cx.primary_display())?;
+    Some(crate::platform::display_bounds(&display))
+}
+
+// ── Geometry ─────────────────────────────────────────────────────────────────
+
 /// Desired top-left of the modal, in the same logical-pixel space
-/// `App::primary_display` uses (origin at the display's top-left, Y
+/// `App::displays` uses (origin at the virtual desktop's top-left, Y
 /// increasing downward), for a window whose content is `content_h` pixels
 /// tall under `anchor`.
 ///
-/// Horizontal placement: macOS centres on the tray-icon click (the tray lives
-/// in the menu bar), so `hint` is the click X; every other platform's tray
-/// sits in a screen corner, so the modal right-aligns and `hint` is ignored.
+/// Horizontal placement: macOS centres the modal on the status item (the tray
+/// lives in the menu bar, and a menu-bar popover hangs directly beneath its
+/// item), so `tray` supplies the centre. Windows and Linux put the tray in a
+/// screen corner and their native flyouts — the volume and network panels —
+/// right-align to the screen edge rather than tracking the icon, so those
+/// platforms ignore `tray` horizontally.
 ///
 /// Vertical placement follows `anchor` (see [`Anchor`]). `Anchor::None` uses
 /// the platform-natural corner — top (below the menu bar) on macOS, bottom on
 /// Windows/Linux — and is never repositioned afterwards.
 pub fn modal_origin(
     display: Bounds<Pixels>,
-    hint: Option<(i32, i32)>,
+    tray: Option<TrayAnchor>,
     content_h: f32,
     anchor: Anchor,
 ) -> Point<Pixels> {
@@ -128,14 +181,14 @@ pub fn modal_origin(
 
     #[cfg(target_os = "macos")]
     let x = {
-        let icon_x = hint
-            .map(|(x, _)| x as f32)
+        let icon_x = tray
+            .map(|t| t.center_x())
             .unwrap_or(screen_right - MODAL_W / 2.0);
-        (icon_x - MODAL_W / 2.0).clamp(screen_left, screen_right - MODAL_W)
+        (icon_x - MODAL_W / 2.0).clamp(screen_left, (screen_right - MODAL_W).max(screen_left))
     };
     #[cfg(not(target_os = "macos"))]
     let x = {
-        let _ = hint;
+        let _ = tray;
         (screen_right - MODAL_W - SCREEN_GAP).max(screen_left)
     };
 
@@ -177,17 +230,115 @@ pub fn modal_origin(
     point(px(x), px(y))
 }
 
+/// Re-express an absolute screen origin in the coordinate space
+/// `WindowOptions::window_bounds` uses on this platform.
+///
+/// The two GPUI backends disagree, and the disagreement is invisible on a
+/// single-monitor machine — which is exactly why it is worth spelling out:
+///
+/// * **macOS** treats the origin as **display-relative**. `open_window` adds
+///   the target `NSScreen`'s frame origin back on
+///   (`vendor/gpui/src/platform/mac/window.rs`), so handing it an absolute
+///   coordinate would double the offset and throw the modal onto the wrong
+///   screen — or off the desktop entirely.
+/// * **Windows and X11** take the origin **absolute**, in the same virtual
+///   desktop space `display.bounds()` reports.
+///
+/// Note this conversion applies only to window *creation*. The post-resize
+/// move in `app.rs` goes through `platform::set_window_origin`, which drives
+/// `setFrameTopLeftPoint` / `ConfigureWindow` / `SetWindowPos` — all of which
+/// are absolute on every platform — so that path keeps using
+/// [`modal_origin`]'s output unchanged.
+fn to_window_origin(absolute: Point<Pixels>, display: Bounds<Pixels>) -> Point<Pixels> {
+    #[cfg(target_os = "macos")]
+    {
+        point(absolute.x - display.origin.x, absolute.y - display.origin.y)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = display;
+        absolute
+    }
+}
+
 /// The modal's full bounds at open: [`modal_size`] anchored at
-/// [`modal_origin`] for the full [`MODAL_H`]. Falls back to screen-centred
-/// when there is no primary display.
+/// [`modal_origin`] for the full [`MODAL_H`], plus the id of the display it
+/// landed on. Falls back to screen-centred when there is no display at all.
+///
+/// The returned id must be passed to `WindowOptions::display_id`, not just
+/// stored: without it GPUI validates and places the window against the
+/// *primary* monitor. On Windows that is load-bearing — `open_window` checks
+/// the requested bounds against that monitor and silently substitutes its
+/// default (centred) bounds when they don't fit, which is precisely what a
+/// secondary-monitor origin looks like.
 pub fn modal_bounds(
-    cx: &mut gpui::App,
-    hint: Option<(i32, i32)>,
+    cx: &mut App,
+    tray: Option<TrayAnchor>,
     anchor: Anchor,
-) -> Bounds<Pixels> {
+) -> (Bounds<Pixels>, Option<DisplayId>) {
     let size = modal_size();
-    let Some(display) = cx.primary_display() else {
-        return Bounds::centered(None, size, cx);
+    let Some((id, display)) = modal_display(cx, tray) else {
+        return (Bounds::centered(None, size, cx), None);
     };
-    Bounds::new(modal_origin(display.bounds(), hint, MODAL_H, anchor), size)
+    let absolute = modal_origin(display, tray, MODAL_H, anchor);
+    (
+        Bounds::new(to_window_origin(absolute, display), size),
+        Some(id),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::size;
+
+    fn display(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn window_origin_is_absolute_off_macos() {
+        // Windows and X11 place windows in virtual-desktop coordinates, so a
+        // secondary monitor at x=1920 keeps its absolute origin.
+        let secondary = display(1920.0, 0.0, 1920.0, 1080.0);
+        let absolute = point(px(2400.0), px(900.0));
+        let converted = to_window_origin(absolute, secondary);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(converted, absolute);
+        }
+        // macOS re-adds the screen frame origin inside `open_window`, so what
+        // we hand it must be relative to that screen.
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(converted, point(px(480.0), px(900.0)));
+        }
+    }
+
+    #[test]
+    fn window_origin_round_trips_on_the_primary_display() {
+        // The primary display starts at the virtual origin, so both
+        // conventions agree there — which is why the difference stays
+        // invisible until a second monitor is plugged in.
+        let primary = display(0.0, 0.0, 2560.0, 1440.0);
+        let absolute = point(px(2032.0), px(1200.0));
+        assert_eq!(to_window_origin(absolute, primary), absolute);
+    }
+
+    #[test]
+    fn anchor_parsing_falls_back_to_the_os_default() {
+        assert_eq!(Anchor::from_config("bottom"), Anchor::Bottom);
+        assert_eq!(Anchor::from_config("  TOP "), Anchor::Top);
+        assert_eq!(Anchor::from_config("none"), Anchor::None);
+        // Legacy value from older configs, plus outright nonsense.
+        assert_eq!(Anchor::from_config("auto"), Anchor::os_default());
+        assert_eq!(Anchor::from_config(""), Anchor::os_default());
+    }
+
+    #[test]
+    fn only_the_bottom_anchor_repositions_after_a_resize() {
+        assert!(Anchor::Bottom.needs_reposition());
+        assert!(!Anchor::Top.needs_reposition());
+        assert!(!Anchor::None.needs_reposition());
+    }
 }
