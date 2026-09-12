@@ -165,6 +165,30 @@ pub struct DisplayConfig {
     /// no restart. See `docs/goblin-mode.md`.
     #[serde(default)]
     pub goblin_mode: bool,
+    /// Keep the tray icon's tooltip up to date with the active profile's
+    /// quota, and tint the icon when a window is nearly exhausted. Default
+    /// true — that's what makes the icon an *indicator* rather than a button.
+    ///
+    /// While the modal is closed this costs one quota lookup every
+    /// [`Self::tray_status_interval_secs`] seconds, which for the API-backed
+    /// agents is a network request. Set to false to poll only when the modal
+    /// is open (the tooltip then shows whatever the last refresh saw).
+    #[serde(default = "default_tray_status")]
+    pub tray_status: bool,
+    /// Seconds between background tray-status refreshes. Ignored when
+    /// [`Self::tray_status`] is false. Default 1200 (20 minutes); values below
+    /// 30 are clamped up by [`Self::tray_status_interval`] so a typo can't
+    /// turn the indicator into a hot loop against a rate-limited endpoint.
+    #[serde(default = "default_tray_status_interval_secs")]
+    pub tray_status_interval_secs: u64,
+}
+
+fn default_tray_status() -> bool {
+    true
+}
+
+fn default_tray_status_interval_secs() -> u64 {
+    1200
 }
 
 /// Per-OS default for [`DisplayConfig::anchor`]. Windows ships with a bottom
@@ -195,6 +219,21 @@ impl DisplayConfig {
     pub fn auto_resize(&self) -> bool {
         self.auto_resize.unwrap_or(true)
     }
+
+    /// Effective background tray-status interval: `None` when the feature is
+    /// off, otherwise the configured value floored at 30 s.
+    ///
+    /// The floor is not a style preference. Each tick can hit the agent's
+    /// quota endpoint, so an accidental `tray_status_interval_secs = 1` would
+    /// hammer a rate-limited API from a background thread the user can't see.
+    pub fn tray_status_interval(&self) -> Option<std::time::Duration> {
+        if !self.tray_status {
+            return None;
+        }
+        Some(std::time::Duration::from_secs(
+            self.tray_status_interval_secs.max(30),
+        ))
+    }
 }
 
 impl Default for DisplayConfig {
@@ -209,6 +248,8 @@ impl Default for DisplayConfig {
             auto_resize: None,
             max_height: None,
             goblin_mode: false,
+            tray_status: default_tray_status(),
+            tray_status_interval_secs: default_tray_status_interval_secs(),
         }
     }
 }

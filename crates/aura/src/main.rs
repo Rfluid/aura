@@ -10,6 +10,7 @@ mod placement;
 mod platform;
 mod runtime;
 mod tray;
+mod tray_status;
 mod updater;
 mod work_area;
 
@@ -116,7 +117,7 @@ fn main() -> Result<()> {
     // ksni to treat a missing StatusNotifierWatcher as a soft error and keep
     // retrying, which covers both "the panel hasn't claimed the bus name yet"
     // at login and "SNI support was enabled after the fact".
-    let _tray = match tray::install() {
+    let tray = match tray::install() {
         Ok(t) => Some(t),
         Err(e) => {
             eprintln!(
@@ -127,7 +128,14 @@ fn main() -> Result<()> {
             None
         }
     };
-    let tray_missing = _tray.is_none();
+    let tray_missing = tray.is_none();
+
+    // Background indicator refresh. Runs on its own thread (the quota lookup
+    // is blocking I/O), pushes into `tray::set_status`, and is drained on the
+    // main thread by the poll loop below. Disabled by `display.tray_status`.
+    if let Some(interval) = config.display.tray_status_interval() {
+        tray_status::spawn_poll(config_path.clone(), interval);
+    }
 
     // ── Launch GPUI app ───────────────────────────────────────────────────────
     //
@@ -147,9 +155,42 @@ fn main() -> Result<()> {
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
             // Selectable labels deliberately have no focus handle, so install
-            // the crate's observer-based bridge for copy/select-all/escape and
+            // the crate's observer-based bridge for copy/select-all and
             // shift+arrow extension when no focused control claimed the key.
-            gpui_selectable_text::register_keyboard_bridge(cx).detach();
+            //
+            // Escape is handled here instead of by the bridge
+            // (`clear_on_escape: false`) because the two meanings have to be
+            // ordered: Escape clears a live text selection, and only closes
+            // the popup when there is nothing to clear. Leaving both to fire
+            // as independent keystroke observers would make the outcome depend
+            // on subscriber iteration order — one Escape could clear *and*
+            // close.
+            gpui_selectable_text::register_keyboard_bridge_with(
+                cx,
+                gpui_selectable_text::KeyboardBridge {
+                    clear_on_escape: false,
+                    ..Default::default()
+                },
+            )
+            .detach();
+            cx.observe_keystrokes(|event, window, cx| {
+                // Something with focus already claimed this keystroke.
+                if event.action.is_some() {
+                    return;
+                }
+                let keystroke = &event.keystroke;
+                if keystroke.key != "escape" || keystroke.modifiers.modified() {
+                    return;
+                }
+                if gpui_selectable_text::registry::clear_active_selection(window, cx) {
+                    return;
+                }
+                // Closing a tray popup with Escape is the convention on every
+                // desktop; the poll loop does the actual teardown because it
+                // owns the window handle.
+                runtime::request_dismiss();
+            })
+            .detach();
 
             // GPUI forces NSApplicationActivationPolicyRegular in
             // did_finish_launching; reapply the user's preference here so it
@@ -171,6 +212,13 @@ fn main() -> Result<()> {
             let config_path = config_path.clone();
 
             cx.spawn(async move |cx| {
+                // Owned here so the icon lives exactly as long as the loop
+                // that drives it — and so the loop can push status updates
+                // into it. `TrayHandle` is `!Send` on macOS / Windows (it
+                // wraps an AppKit / Win32 object); GPUI's foreground executor
+                // has no `Send` bound, which is what makes this legal.
+                let mut tray = tray;
+
                 // The currently-open window, if any. We toggle on each
                 // "Show Aura" click: open if closed, close if open.
                 let mut current: Option<WindowHandle<AuraView>> = None;
@@ -203,6 +251,37 @@ fn main() -> Result<()> {
                     // crossbeam channels under the hood, so we drain
                     // them between short sleeps.
                     cx.background_executor().timer(MENU_POLL_INTERVAL).await;
+
+                    // Apply any indicator state queued since the last tick.
+                    // Must happen on this thread: AppKit refuses NSStatusItem
+                    // mutation from anywhere but the main thread.
+                    if let Some(tray) = tray.as_mut() {
+                        tray.apply_pending_status();
+                    }
+
+                    // Escape, routed here from the keystroke observer in the
+                    // run closure. Unconditional: unlike focus loss this is an
+                    // explicit "close it" from the user, so neither
+                    // `dismiss_on_focus_loss` nor an in-flight plugin action
+                    // suppresses it.
+                    if runtime::take_dismiss_request() {
+                        #[cfg(target_os = "macos")]
+                        if current.is_some() {
+                            outside_clicked.store(false, Ordering::Relaxed);
+                            if let Some(m) = click_monitor.take() {
+                                platform::remove_click_outside_monitor(m);
+                            }
+                            if !runtime::show_in_app_switcher() {
+                                platform::apply_app_switcher_policy(false);
+                            }
+                        }
+                        if let Some(handle) = current.take() {
+                            let _ = cx.update(|cx| {
+                                let _ =
+                                    handle.update(cx, |_view, window, _cx| window.remove_window());
+                            });
+                        }
+                    }
 
                     if runtime::dismiss_on_focus_loss()
                         && current.is_some()
