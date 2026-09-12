@@ -258,8 +258,8 @@ moment you log in:
 | **Windows** | `aura.exe` in `%LOCALAPPDATA%\Programs\Aura` + a Startup-folder shortcut (autostart) + a Start Menu shortcut |
 
 **Left-click** the tray icon to open Aura's modal; left-click again to
-close. **Right-click** for an explicit menu with **Show Aura** and
-**Quit Aura**. `just stop` / `systemctl --user stop aura` (Linux) and
+close. **Middle-click** does the same. **Right-click** for an explicit menu
+with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open). `just stop` / `systemctl --user stop aura` (Linux) and
 `just stop-windows` (Windows) are equivalent CLI exits.
 
 Grab a prebuilt release archive (next section) or build from source with
@@ -274,6 +274,13 @@ Promote it so it sits permanently next to wifi/volume:
 - **GNOME** — install the _AppIndicator and KStatusNotifierItem Support_ extension if you don't have it; aura then appears in the panel by default.
 - **macOS** — the menu-bar icon is always visible; nothing to configure.
 - **Windows** — click the `^` overflow arrow in the tray, drag the Aura icon to the always-visible area.
+
+If no tray host is running at all (a bare window manager, or GNOME before the
+AppIndicator extension is enabled), Aura keeps running and registers the icon
+the moment one appears — no restart needed. It logs
+`StatusNotifier host unavailable` to the journal while it waits. If D-Bus
+itself is unreachable, Aura opens the modal directly rather than leaving you
+with an invisible process.
 
 ### Modal placement on Wayland
 
@@ -562,7 +569,7 @@ compositor version.
 | Linux             | KDE Plasma 6 (Wayland / KWin) | StatusNotifierItem (ksni)                                                                                         | ✅ Tested — install.sh auto-installs the KWin "skip taskbar" rule for the keepalive               |
 | Linux             | KDE Plasma 6 (X11)            | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — same code, position is honored natively so modal opens bottom-right                 |
 | Linux             | KDE Plasma 5                  | StatusNotifierItem (ksni)                                                                                         | ⚠️ Untested — Plasma 5's `plasmashellrc` panel-thickness lookup may differ                        |
-| Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear                                        |
+| Linux             | GNOME 45+ (Wayland / Mutter)  | StatusNotifierItem via [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) | ⚠️ Untested — extension is required for the icon to appear; Aura keeps retrying, so enabling it later works without a restart |
 | Linux             | sway / Hyprland / wlroots     | StatusNotifierItem                                                                                                | ⚠️ Untested — depends on a status-bar that honours SNI (Waybar etc.)                              |
 | Linux             | XFCE / Cinnamon / MATE        | StatusNotifierItem                                                                                                | ⚠️ Untested — these spec'ed StatusNotifierItem support, should work                               |
 | **macOS 12+**     | —                             | AppKit menu-bar item                                                                                              | ✅ Tested — `tray-icon`'s native AppKit backend, single-click activation, launchd autostart       |
