@@ -590,6 +590,18 @@ fn toggle_window(
                 platform::apply_app_switcher_policy(true);
             }
 
+            // Name the surface. Every window list we don't control reads
+            // this — alt-tab, task managers, session managers — and an
+            // untitled entry tells the user nothing about which app it
+            // belongs to. `titlebar` can't carry the name for us: the
+            // Wayland backend ignores `TitlebarOptions::title` (only
+            // `set_title` reaches `xdg_toplevel`), and with
+            // `window_chrome = false` there are no `TitlebarOptions` at all.
+            // `set_window_title` routes through the per-platform `set_title`
+            // in both configurations. With chrome on, this is also what the
+            // decorated title bar now shows.
+            let _ = handle.update(cx, |_, window, _| window.set_window_title("Aura"));
+
             cx.activate(true);
 
             #[cfg(target_os = "windows")]
