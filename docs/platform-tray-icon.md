@@ -2,8 +2,8 @@
 title: Platform integration — clickable tray icon
 status: draft
 version: 0.1.0
-last_updated: 2026-05-24
-last_verified: 2026-05-24
+last_updated: 2026-09-12
+last_verified: 2026-09-12
 source_refs:
   - crates/aura/src/tray.rs
   - crates/aura/src/main.rs
@@ -36,6 +36,43 @@ The Linux `ksni` backend uses `libayatana-appindicator`'s wire protocol but
 talks D-Bus directly — `tray-icon`'s `gtk` feature refuses to surface
 primary-click on AppIndicator hosts (it expects a menu and treats click as
 "open menu"), so we picked an SNI-native implementation instead.
+
+Middle-click (`Tray::secondary_activate` on SNI) opens the modal too. The spec
+calls it "a secondary and less important form of activation"; Aura has one
+surface and nothing secondary to do, and a dead click reads as a bug.
+
+### Surviving a missing StatusNotifier host
+
+`tray::install` spawns the ksni service with `assume_sni_available(true)`.
+Without it, ksni's default is to fail `spawn()` outright when
+`org.kde.StatusNotifierWatcher` is not on the bus — **and to start no service**,
+so nothing ever retries. Aura would then keep running with no icon and no
+window: invisible, and unreachable except through a task manager.
+
+Two ordinary situations reach that branch:
+
+- **Login race.** `aura.service` is ordered `After=graphical-session.target`,
+  which does not wait for the panel to claim the watcher name. Whether the icon
+  appears is then a coin flip per boot.
+- **SNI arriving late.** A GNOME user enabling the AppIndicator extension after
+  Aura has already started.
+
+With the flag set, both route to `Tray::watcher_offline` (which logs and
+returns `true` to keep the service alive) and ksni re-registers as soon as a
+host appears — `Tray::watcher_online` logs the recovery. A genuine D-Bus
+failure still returns `Err`, and `main()` responds by opening the modal once
+so the session is not left with no UI at all.
+
+### Icon rendering
+
+The brand SVG is rasterised at every size in `tray::ICON_SIZES`
+(16/22/24/32/48/64). Backends differ in what they want:
+
+| Platform | Sizes handed over | Notes |
+| --- | --- | --- |
+| Linux | all of them, as `IconPixmap` | The SNI spec models the property as a list so the host can pick per panel size. `IconName` is also reported as `"aura"`, but **only** when a themed icon is actually installed (`themed_icon_name` probes the XDG icon dirs) — hosts prefer the name over the pixmap, so advertising one the theme can't resolve renders a blank slot for anyone who installed the binary without `install.sh`. |
+| macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. Rendered black and flagged `with_icon_as_template(true)` so AppKit recolors it for light / dark / click-highlight like every native status item. |
+| Windows | one raster at `SM_CXSMICON` for the current DPI | `Shell_NotifyIcon` blits rather than resamples, so rendering straight at the target size beats handing Win32 a 64 px icon to squeeze into 16. Odd DPI values snap up to the next size we rasterise. |
 
 ## Modal positioning
 

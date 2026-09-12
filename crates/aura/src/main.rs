@@ -103,14 +103,31 @@ fn main() -> Result<()> {
     let config = AppConfig::load_with_discovery(&config_path)?;
     runtime::set_from_config(&config);
 
-    // ── Install tray icon (best-effort: warn on failure but keep going) ───────
+    // ── Install tray icon ─────────────────────────────────────────────────────
+    //
+    // Failure is not fatal, but it *is* serious: the tray icon is Aura's only
+    // entry point, so a process that keeps running without one is invisible —
+    // no icon, no window, and nothing to click to get either. We therefore
+    // both shout on stderr (which lands in the journal / launchd log) and set
+    // a flag that makes the run loop open the modal once, so the user gets a
+    // window instead of silence.
+    //
+    // On Linux this path is now much rarer than it was: `tray::install` asks
+    // ksni to treat a missing StatusNotifierWatcher as a soft error and keep
+    // retrying, which covers both "the panel hasn't claimed the bus name yet"
+    // at login and "SNI support was enabled after the fact".
     let _tray = match tray::install() {
         Ok(t) => Some(t),
         Err(e) => {
-            eprintln!("warning: could not install tray icon: {e}");
+            eprintln!(
+                "aura: could not install the tray icon: {e}\n\
+                 aura: opening the window directly — this session has no icon to click. \
+                 Re-run `aura` (or use the app-menu entry) to bring the window back."
+            );
             None
         }
     };
+    let tray_missing = _tray.is_none();
 
     // ── Launch GPUI app ───────────────────────────────────────────────────────
     //
@@ -171,6 +188,15 @@ fn main() -> Result<()> {
                 // can finish delivering focus / setting up the monitor before
                 // we start watching for losses.
                 let mut just_opened: u8 = 0;
+
+                // When the tray never installed, the user has no way to ask
+                // for the window — so ask on their behalf, once.
+                if tray_missing {
+                    current = toggle(cx, None, config.clone(), config_path.clone(), None).await;
+                    if current.is_some() {
+                        just_opened = 4;
+                    }
+                }
 
                 loop {
                     // Poll: ksni / tray-icon both expose blocking

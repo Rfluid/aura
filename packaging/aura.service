@@ -1,6 +1,11 @@
 [Unit]
 Description=Aura — Agent Usage Reporter & Analyzer
 Documentation=https://github.com/rfluid/aura
+# `graphical-session.target` does not wait for the panel to claim
+# org.kde.StatusNotifierWatcher, so Aura can (and often does) start before a
+# tray host exists. That is handled in-process: the ksni service stays alive
+# and registers the icon as soon as a host appears. See
+# docs/platform-tray-icon.md § "Surviving a missing StatusNotifier host".
 After=graphical-session.target
 PartOf=graphical-session.target
 
