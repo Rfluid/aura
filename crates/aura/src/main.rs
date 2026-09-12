@@ -352,6 +352,16 @@ impl Render for KeepAliveView {
 ///   the taskbar overflow instead of painting it on the desktop;
 /// * give it a distinct `app_id` ("aura-keepalive") so KDE's task
 ///   manager doesn't group it under the main "Aura" entry;
+/// * give it a human-readable title ("Aura") on every platform. The
+///   window is never meant to be seen, but compositors and session
+///   managers surface its title in places we don't control — KDE's
+///   logout screen lists windows that refuse to close, and an untitled
+///   surface renders there as an empty bullet with no hint of which
+///   app is blocking shutdown. `WindowOptions::titlebar` can't do this
+///   for us: the Wayland backend ignores `TitlebarOptions::title`
+///   entirely (only `set_title` reaches `xdg_toplevel`), so we set it
+///   explicitly after the window opens, which routes through the
+///   per-platform `set_title` on Wayland, X11, macOS and Windows alike;
 /// * intercept every platform-level close request with
 ///   `on_window_should_close` returning `false` — clicking the
 ///   compositor's "close window" action on the keepalive becomes a
@@ -388,6 +398,11 @@ fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveVie
             // either way we return the handle so the caller's reference
             // keeps the keepalive alive.
             let _ = handle.update(cx, |_view, window, cx| {
+                // Name the surface before anything else so compositors and
+                // session managers have it from the first commit. See the
+                // doc comment: an untitled keepalive shows up as a nameless
+                // entry in KDE's "these applications did not close" list.
+                window.set_window_title("Aura");
                 window.on_window_should_close(cx, |_, _| false);
                 // On Wayland, `show: false` is ignored — the compositor
                 // creates a surface unconditionally. Minimize immediately so
