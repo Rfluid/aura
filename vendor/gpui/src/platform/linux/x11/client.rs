@@ -247,7 +247,7 @@ impl X11ClientStatePtr {
         }
         state.cursor_styles.remove(&x_window);
 
-        if state.windows.is_empty() {
+        if state.windows.is_empty() && state.common.quit_on_last_window_closed {
             state.common.signal.stop();
         }
     }

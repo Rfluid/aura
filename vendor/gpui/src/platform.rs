@@ -167,6 +167,13 @@ pub(crate) trait Platform: 'static {
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>);
     fn quit(&self);
+    /// Opt out of the "last window closed means the app is done" rule.
+    ///
+    /// The Linux backends stop the event loop as soon as the window count
+    /// reaches zero; macOS and Windows keep running, so this is a no-op
+    /// there. Menu-bar / tray apps that spend most of their life with no
+    /// window open call this with `false` at startup.
+    fn set_quit_on_last_window_closed(&self, _quit: bool) {}
     fn restart(&self, binary_path: Option<PathBuf>);
     fn activate(&self, ignoring_other_apps: bool);
     fn hide(&self);

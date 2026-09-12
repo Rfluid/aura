@@ -102,6 +102,9 @@ pub(crate) struct LinuxCommon {
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) signal: LoopSignal,
     pub(crate) menus: Vec<OwnedMenu>,
+    /// When false, dropping the last window leaves the event loop running
+    /// instead of stopping it. See `Platform::set_quit_on_last_window_closed`.
+    pub(crate) quit_on_last_window_closed: bool,
 }
 
 impl LinuxCommon {
@@ -128,6 +131,7 @@ impl LinuxCommon {
             callbacks,
             signal,
             menus: Vec::new(),
+            quit_on_last_window_closed: true,
         };
 
         (common, main_receiver)
@@ -172,6 +176,10 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn quit(&self) {
         self.with_common(|common| common.signal.stop());
+    }
+
+    fn set_quit_on_last_window_closed(&self, quit: bool) {
+        self.with_common(|common| common.quit_on_last_window_closed = quit);
     }
 
     fn compositor_name(&self) -> &'static str {

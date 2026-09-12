@@ -750,6 +750,17 @@ impl App {
         self.platform.quit();
     }
 
+    /// Controls whether closing the last window quits the application.
+    ///
+    /// On by default. The Linux backends stop the event loop the moment the
+    /// window count reaches zero; macOS and Windows keep the process alive on
+    /// their own, so this is a no-op there. Tray / menu-bar apps that live
+    /// with no window open most of the time should call this with `false`
+    /// during startup, before any window is closed.
+    pub fn set_quit_on_last_window_closed(&self, quit: bool) {
+        self.platform.set_quit_on_last_window_closed(quit);
+    }
+
     /// Schedules all windows in the application to be redrawn. This can be called
     /// multiple times in an update cycle and still result in a single redraw.
     pub fn refresh_windows(&mut self) {

@@ -23,9 +23,12 @@ use anyhow::Result;
 use aura_core::{config::AppConfig, state::AppState};
 use clap::Parser;
 use gpui::{
-    div, prelude::*, px, size, Application, Bounds, IntoElement, Render, TitlebarOptions,
-    WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
+    prelude::*, Application, TitlebarOptions, WindowBounds, WindowDecorations, WindowHandle,
+    WindowKind, WindowOptions,
 };
+// Only the keepalive window needs these, and Linux doesn't build it.
+#[cfg(not(target_os = "linux"))]
+use gpui::{div, px, size, Bounds, IntoElement, Render};
 
 use crate::tray::TrayEvent;
 use crate::{app::AuraView, assets::EmbeddedAssets};
@@ -111,12 +114,18 @@ fn main() -> Result<()> {
 
     // ── Launch GPUI app ───────────────────────────────────────────────────────
     //
-    // No user-visible window is opened at startup. We open a tiny hidden
-    // "keepalive" window so GPUI's Wayland event loop doesn't stop the
-    // moment the user closes the modal — `wayland/client.rs` exits the
-    // process when `state.windows.is_empty()`. The keepalive guarantees
-    // that count is always ≥ 1, so the tray icon survives across any
-    // number of open/close cycles.
+    // No user-visible window is opened at startup, and the tray has to
+    // outlive every modal open/close cycle. The two platform families get
+    // there differently:
+    //
+    // * Linux: GPUI's Wayland and X11 clients stop the event loop the
+    //   moment `state.windows.is_empty()`. We opt out of that with
+    //   `set_quit_on_last_window_closed(false)` (our vendored patch) and
+    //   open no window at all, so the compositor never sees a stray
+    //   surface from us.
+    // * macOS / Windows: the platform keeps the process alive by itself,
+    //   but GPUI still needs a window to hang the run loop off, so we
+    //   open the hidden keepalive described on `open_keepalive_window`.
     Application::new()
         .with_assets(EmbeddedAssets)
         .run(move |cx| {
@@ -134,7 +143,12 @@ fn main() -> Result<()> {
             platform::apply_app_switcher_policy(runtime::show_in_app_switcher());
 
             // Hold the handle in the move-closure so it isn't dropped.
+            #[cfg(not(target_os = "linux"))]
             let _keepalive = open_keepalive_window(cx);
+            // No handle to hold on Linux — nothing is opened; the loop is
+            // kept alive by the opt-out instead of by a window.
+            #[cfg(target_os = "linux")]
+            cx.set_quit_on_last_window_closed(false);
 
             let config = config.clone();
             let config_path = config_path.clone();
@@ -321,8 +335,10 @@ fn main() -> Result<()> {
 /// Empty root view for the hidden keepalive window. The view is never
 /// rendered to a screen — its only job is to satisfy `open_window`'s
 /// `V: Render` bound so the window can exist in `state.windows`.
+#[cfg(not(target_os = "linux"))]
 struct KeepAliveView;
 
+#[cfg(not(target_os = "linux"))]
 impl Render for KeepAliveView {
     fn render(
         &mut self,
@@ -333,41 +349,42 @@ impl Render for KeepAliveView {
     }
 }
 
-/// Open the always-present keepalive window. See the call site for why
-/// this is necessary on Linux Wayland. Failures are non-fatal but logged:
-/// if the keepalive can't open, aura will still work — just with the old
-/// "process exits on last window close" behaviour.
+/// Open the always-present keepalive window (macOS and Windows only).
+/// See the call site for why GPUI needs it. Failures are non-fatal but
+/// logged: if the keepalive can't open, aura will still work — just with
+/// the old "process exits on last window close" behaviour.
 ///
-/// ## Hiding it on Wayland
+/// Linux doesn't build this at all. It used to, and the surface was a
+/// steady source of trouble: GPUI's Wayland backend silently ignores
+/// `show: false` (it creates an xdg_toplevel and commits the surface
+/// unconditionally), so KWin treated the 1×1 keepalive as a real window
+/// — decorating it, listing it, and, because `on_window_should_close`
+/// refuses every close request, naming it under "The following
+/// applications did not close" on the logout screen, where it blocked
+/// shutdown for two minutes. Opting out of GPUI's quit-on-last-window
+/// rule instead means there is no surface for the compositor to find.
 ///
-/// GPUI 0.2's Wayland backend silently ignores `show: false` (it creates
-/// an xdg_toplevel and commits the surface unconditionally), so KWin
-/// renders a 1×1 surface as a small window with server-side chrome
-/// (title bar + close button). To minimise damage we:
+/// What's left here keeps that history in mind, since the same window is
+/// still created on the other two platforms:
 ///
-/// * open the surface at `(-9999, -9999)` so even if the compositor
-///   doesn't clamp it back on-screen, the user can't accidentally
-///   focus or click it;
-/// * `minimize_window()` it immediately so KDE puts it straight into
-///   the taskbar overflow instead of painting it on the desktop;
-/// * give it a distinct `app_id` ("aura-keepalive") so KDE's task
-///   manager doesn't group it under the main "Aura" entry;
-/// * give it a human-readable title ("Aura") on every platform. The
-///   window is never meant to be seen, but compositors and session
-///   managers surface its title in places we don't control — KDE's
-///   logout screen lists windows that refuse to close, and an untitled
-///   surface renders there as an empty bullet with no hint of which
-///   app is blocking shutdown. `WindowOptions::titlebar` can't do this
-///   for us: the Wayland backend ignores `TitlebarOptions::title`
-///   entirely (only `set_title` reaches `xdg_toplevel`), so we set it
-///   explicitly after the window opens, which routes through the
-///   per-platform `set_title` on Wayland, X11, macOS and Windows alike;
+/// * open it at `(-9999, -9999)` so even if the platform doesn't clamp
+///   it back on-screen, the user can't accidentally focus or click it;
+/// * `minimize_window()` it immediately (except on Windows, where
+///   SW_MINIMIZE would force a hidden window visible);
+/// * give it a distinct `app_id` ("aura-keepalive") so a task manager
+///   doesn't group it under the main "Aura" entry;
+/// * give it a human-readable title ("Aura"), because window lists and
+///   session managers surface titles in places we don't control and an
+///   untitled entry tells the user nothing. `WindowOptions::titlebar`
+///   can't do this for us — setting it would also change the window's
+///   decoration behaviour — so we call `set_window_title` after open,
+///   which routes through the per-platform `set_title`;
 /// * intercept every platform-level close request with
-///   `on_window_should_close` returning `false` — clicking the
-///   compositor's "close window" action on the keepalive becomes a
-///   no-op, so the tray can't be killed by a stray click. Our own
-///   `toggle()` uses `window.remove_window()` which bypasses this
-///   guard (it's an internal close, not a platform request).
+///   `on_window_should_close` returning `false`, so the tray can't be
+///   killed by a stray click. Our own `toggle()` uses
+///   `window.remove_window()`, which bypasses this guard (it's an
+///   internal close, not a platform request).
+#[cfg(not(target_os = "linux"))]
 fn open_keepalive_window(cx: &mut gpui::App) -> Option<WindowHandle<KeepAliveView>> {
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
