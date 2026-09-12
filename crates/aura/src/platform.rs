@@ -425,6 +425,164 @@ pub fn raise_window_to_floating(window: &mut gpui::Window) {
     }
 }
 
+// ── Tray coordinate conversion ──────────────────────────────────────────────
+//
+// `tray-icon` reports click positions and icon rects in *physical* (device)
+// pixels on both of its backends:
+//
+//   * macOS multiplies the AppKit logical point by the status-bar window's
+//     `backingScaleFactor`;
+//   * Windows passes `GetCursorPos` / `Shell_NotifyIconGetRect` output
+//     straight through.
+//
+// GPUI, meanwhile, reports display bounds in logical pixels. Feeding a
+// physical coordinate into `placement::modal_origin` therefore over-shoots by
+// the scale factor on any HiDPI screen, and the clamp at the end of that
+// function quietly pins the modal to the screen corner. These helpers give the
+// tray backend the divisor it needs.
+
+/// Scale factor (physical px per logical px) for the display containing the
+/// physical screen point (`x`, `y`). Returns `1.0` when it can't be
+/// determined, which is the correct answer on a non-HiDPI setup and a
+/// harmless one elsewhere (it degrades to the pre-conversion behaviour).
+#[cfg(target_os = "windows")]
+pub fn tray_scale_factor(x: f64, y: f64) -> f32 {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::USER_DEFAULT_SCREEN_DPI;
+
+    // Per-monitor DPI matters here: a mixed-DPI desktop (laptop panel at 200%
+    // plus an external at 100%) has a different divisor depending on which
+    // screen the taskbar — and therefore the tray icon — lives on.
+    unsafe {
+        let monitor = MonitorFromPoint(
+            POINT {
+                x: x as i32,
+                y: y as i32,
+            },
+            MONITOR_DEFAULTTONEAREST,
+        );
+        let mut dpi_x: u32 = 0;
+        let mut dpi_y: u32 = 0;
+        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_err()
+            || dpi_x == 0
+        {
+            return 1.0;
+        }
+        dpi_x as f32 / USER_DEFAULT_SCREEN_DPI as f32
+    }
+}
+
+/// See the Windows variant. On macOS the status item lives in the menu bar,
+/// which belongs to `NSScreen.screens[0]`, so that screen's
+/// `backingScaleFactor` is the divisor tray-icon used on the way out.
+///
+/// This is an approximation on a mixed-DPI setup where the menu bar has been
+/// moved to a screen with a different scale than the main one — macOS mirrors
+/// the menu bar onto every screen, and tray-icon flips Y against
+/// `CGMainDisplayID`, so there is no exact inverse available to us. It is
+/// still strictly better than the implicit `1.0` it replaces.
+#[cfg(target_os = "macos")]
+pub fn tray_scale_factor(_x: f64, _y: f64) -> f32 {
+    use cocoa::base::{id, nil};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let screens: id = msg_send![class!(NSScreen), screens];
+        if screens == nil {
+            return 1.0;
+        }
+        let count: usize = msg_send![screens, count];
+        if count == 0 {
+            return 1.0;
+        }
+        let screen: id = msg_send![screens, objectAtIndex: 0usize];
+        if screen == nil {
+            return 1.0;
+        }
+        let scale: f64 = msg_send![screen, backingScaleFactor];
+        if scale > 0.0 {
+            scale as f32
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Linux never calls this — StatusNotifierItem hosts already report the
+/// activate hint in logical coordinates — but the signature has to exist for
+/// builds that compile `tray.rs`'s shared path (the BSDs, which use the ksni
+/// backend without being `target_os = "linux"`).
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[allow(dead_code)]
+pub fn tray_scale_factor(_x: f64, _y: f64) -> f32 {
+    1.0
+}
+
+// ── Absolute display bounds ─────────────────────────────────────────────────
+
+/// The display's bounds with a *real* origin in the global screen space.
+///
+/// GPUI's Windows, X11 and Wayland backends already report an origin, so this
+/// is a pass-through there. Its macOS backend, however, hard-codes
+/// `origin: Default::default()` and returns only the size (see
+/// `vendor/gpui/src/platform/mac/display.rs`), which makes every screen look
+/// like it starts at `(0, 0)` — fine for a single-monitor machine, useless for
+/// deciding which monitor a tray click landed on. We recover the origin from
+/// Core Graphics, whose `CGDisplayBounds` is already in the top-left-origin
+/// global space GPUI's other backends use.
+#[cfg(target_os = "macos")]
+pub fn display_bounds(
+    display: &std::rc::Rc<dyn gpui::PlatformDisplay>,
+) -> gpui::Bounds<gpui::Pixels> {
+    use gpui::{point, px};
+
+    // Declared here rather than pulled in via the `core-graphics` crate: this
+    // is the only CG symbol Aura needs, and the framework is already linked
+    // into the process by gpui / cocoa.
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+    // ApplicationServices (rather than CoreGraphics directly) mirrors how
+    // gpui's own mac display backend links the same family of symbols.
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn CGDisplayBounds(display: u32) -> CGRect;
+    }
+
+    let mut bounds = display.bounds();
+    // `DisplayId`'s inner value is the `CGDirectDisplayID` on this backend;
+    // the public `From` impl is the only way to read it from outside gpui.
+    let cg = unsafe { CGDisplayBounds(u32::from(display.id())) };
+    // A zero-sized rect means CG didn't recognise the id (display unplugged
+    // between the enumeration and now). Keep gpui's origin in that case.
+    if cg.size.width > 0.0 && cg.size.height > 0.0 {
+        bounds.origin = point(px(cg.origin.x as f32), px(cg.origin.y as f32));
+    }
+    bounds
+}
+
+/// See the macOS variant — everywhere else GPUI already gives us the origin.
+#[cfg(not(target_os = "macos"))]
+pub fn display_bounds(
+    display: &std::rc::Rc<dyn gpui::PlatformDisplay>,
+) -> gpui::Bounds<gpui::Pixels> {
+    display.bounds()
+}
+
 // ── Window repositioning after auto-fit resize ──────────────────────────────
 //
 // GPUI 0.2's `Window::resize` issues `SetWindowPos(.., SWP_NOMOVE)`, which

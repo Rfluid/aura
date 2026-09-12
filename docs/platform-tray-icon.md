@@ -7,6 +7,7 @@ last_verified: 2026-09-12
 source_refs:
   - crates/aura/src/tray.rs
   - crates/aura/src/tray_status.rs
+  - crates/aura/src/placement.rs
   - crates/aura/src/main.rs
   - crates/aura/src/platform.rs
   - crates/aura/src/work_area.rs
@@ -29,18 +30,15 @@ host APIs on each platform. This document is the map.
 | Linux / BSD     | [`ksni`](https://crates.io/crates/ksni)  | StatusNotifierItem over D-Bus. KDE/GNOME/Cinnamon emit `Activate()` on primary-click — the one-click UX. | `tray.rs::linux`    |
 | macOS / Windows | [`tray-icon`](https://crates.io/crates/tray-icon) | AppKit `NSStatusItem` / Win32 `Shell_NotifyIconW`. Native handlers, no GTK dependency.              | `tray.rs::non_linux` |
 
-The two backends share a `TrayEvent` enum (`Show { hint: Option<(i32, i32)> }`
+The two backends share a `TrayEvent` enum (`Show { anchor: Option<TrayAnchor> }`
 / `Quit`) and a `try_recv_event()` poller; the main loop drains events
-every 150 ms regardless of platform.
+every 150 ms regardless of platform. The same loop drains queued indicator
+state (see [Live indicator state](#live-indicator-state)).
 
 The Linux `ksni` backend uses `libayatana-appindicator`'s wire protocol but
 talks D-Bus directly — `tray-icon`'s `gtk` feature refuses to surface
 primary-click on AppIndicator hosts (it expects a menu and treats click as
 "open menu"), so we picked an SNI-native implementation instead.
-
-Middle-click (`Tray::secondary_activate` on SNI) opens the modal too. The spec
-calls it "a secondary and less important form of activation"; Aura has one
-surface and nothing secondary to do, and a dead click reads as a bug.
 
 ### Surviving a missing StatusNotifier host
 
@@ -67,12 +65,13 @@ so the session is not left with no UI at all.
 ### Icon rendering
 
 The brand SVG is rasterised at every size in `tray::ICON_SIZES`
-(16/22/24/32/48/64). Backends differ in what they want:
+(16/22/24/32/48/64) plus a red `ICON_COLOR_ATTENTION` variant. Backends differ in
+what they want:
 
 | Platform | Sizes handed over | Notes |
 | --- | --- | --- |
 | Linux | all of them, as `IconPixmap` | The SNI spec models the property as a list so the host can pick per panel size. `IconName` is also reported as `"aura"`, but **only** when a themed icon is actually installed (`themed_icon_name` probes the XDG icon dirs) — hosts prefer the name over the pixmap, so advertising one the theme can't resolve renders a blank slot for anyone who installed the binary without `install.sh`. |
-| macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. Rendered black and flagged `with_icon_as_template(true)` so AppKit recolors it for light / dark / click-highlight like every native status item. |
+| macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. Rendered black and flagged `with_icon_as_template(true)` so AppKit recolors it for light / dark / click-highlight like every native status item. The attention variant deliberately opts *out* of template mode — its whole job is to not be the menu bar's foreground color. |
 | Windows | one raster at `SM_CXSMICON` for the current DPI | `Shell_NotifyIcon` blits rather than resamples, so rendering straight at the target size beats handing Win32 a 64 px icon to squeeze into 16. Odd DPI values snap up to the next size we rasterise. |
 
 ### Live indicator state
@@ -80,7 +79,7 @@ The brand SVG is rasterised at every size in `tray::ICON_SIZES`
 A tray icon that only opens a window is a button. `tray_status::summarize`
 turns a `QuotaSnapshot` into a one-line tooltip (`"Claude · 5h 72% · week 31%"`)
 and an attention flag (any window ≥ 90%), which drives `NeedsAttention` +
-`AttentionIconPixmap` on SNI and a red icon elsewhere.
+`AttentionIconPixmap` on SNI and the red icon elsewhere.
 
 Two producers feed `tray::set_status`:
 
@@ -101,20 +100,66 @@ updates.
 
 ## Modal positioning
 
-`main.rs::compute_modal_bounds()` decides where the modal opens; the choice
-is OS-specific because that's where the tray icon lives:
+`placement::modal_bounds()` decides where the modal opens; the choice is
+OS-specific because that's where the tray icon lives:
 
 - **macOS**: tray icon is at the **top** in the menu bar. Modal anchors
-  ~25 pt below the bar, horizontally centred on the click X coordinate
-  (`hint.0` from `TrayEvent::Show`).
+  ~25 pt below the bar, horizontally centred on the status item — using the
+  icon's own rect from `TrayAnchor` when the backend reported one, and the
+  click X otherwise.
 - **Linux / Windows**: tray icon is in the bottom-right (or wherever the
   user put their panel/taskbar). Modal anchors to the bottom-right of the
   *work area* (display minus reserved panel space — see
-  [Work-area detection](#work-area-detection)).
+  [Work-area detection](#work-area-detection)), matching how the native
+  volume / network flyouts right-align to the screen edge rather than track
+  the icon.
   Wayland compositors may ignore the requested origin and centre the
   window. KDE users can install a window rule matching `app_id="aura"` to
   force the position (`Window matches: WM_CLASS = aura` → Position =
   Apply Initially). See the README "Modal placement on Wayland" section.
+
+### Two coordinate-space traps
+
+Both are invisible on a single, non-HiDPI monitor, which is why they survived
+so long:
+
+1. **tray-icon reports physical pixels.** macOS multiplies the AppKit point by
+   the status bar window's `backingScaleFactor`; Windows passes `GetCursorPos`
+   / `Shell_NotifyIconGetRect` through unchanged. GPUI reports display bounds
+   in *logical* pixels. Unconverted, a click on a 2× Retina display yields an X
+   twice as large as the real one, which the clamp in `modal_origin` then pins
+   to the screen corner — so the popover never tracked the icon at all.
+   `platform::tray_scale_factor` supplies the divisor (per-monitor DPI via
+   `MonitorFromPoint` + `GetDpiForMonitor` on Windows; `NSScreen.screens[0]`'s
+   `backingScaleFactor` on macOS, where the menu bar lives), and `tray.rs`
+   converts at the edge so nothing downstream handles physical pixels.
+
+2. **GPUI's window origin is not absolute on macOS.** `open_window` adds the
+   target `NSScreen`'s frame origin back onto `bounds.origin`, so it expects a
+   *display-relative* coordinate; Windows and X11 expect an absolute one.
+   `placement::to_window_origin` does that conversion at the single point where
+   it matters — window creation. The post-resize move in `app.rs` goes through
+   `platform::set_window_origin` (`setFrameTopLeftPoint` / `ConfigureWindow` /
+   `SetWindowPos`), all of which are absolute everywhere, so that path is left
+   alone.
+
+### Multi-monitor
+
+`placement::modal_display` picks the display whose bounds contain the tray
+anchor, falling back to the primary. Its `DisplayId` is then used twice:
+
+- passed to `WindowOptions::display_id`. Not optional on Windows — `open_window`
+  validates the requested bounds against this display (the primary one when
+  unset) and silently substitutes its centred default when they don't fit,
+  which is exactly what a secondary-monitor origin looks like;
+- stored on `AuraView`, so the auto-fit callback caps the modal's height
+  against *this* screen's work area rather than the primary's taskbar.
+
+GPUI's macOS display backend hard-codes `origin: Default::default()` and
+returns only the size, so every screen claims to start at `(0, 0)` —
+useless for deciding which one a click landed on. `platform::display_bounds`
+recovers the real origin from `CGDisplayBounds` and is a pass-through on the
+backends that already report one.
 
 ## Dismissal
 
@@ -271,7 +316,7 @@ The pattern that emerged from the existing implementations:
    `TrayEvent`/`try_recv_event` contract is the seam to write a new
    backend against.
 2. **Modal positioning** — add a `#[cfg(target_os = "newos")]` branch in
-   `main.rs::compute_modal_bounds`. The Linux/Windows branch is the
+   `placement::modal_origin`. The Linux/Windows branch is the
    right starting point for any platform with a bottom-anchored tray.
 3. **Single-instance** — add a cfg branch in
    `platform::acquire_single_instance`. The unix `flock` impl is the

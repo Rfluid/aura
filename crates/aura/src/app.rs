@@ -118,6 +118,13 @@ pub struct AuraView {
     /// Indexed by plugin name.
     plugin_panels: Vec<(String, PluginPanel)>,
 
+    /// The display the modal opened on (the one holding the tray icon — see
+    /// `placement::modal_display`). The auto-fit callback resolves it back to
+    /// a live display each frame so the height cap follows *this* screen's
+    /// work area, not the primary monitor's. `None` when no display could be
+    /// enumerated at open time.
+    display_id: Option<gpui::DisplayId>,
+
     /// Latest GitHub release info, populated by a background fetch at
     /// startup. `None` means the check hasn't completed yet, failed, or the
     /// remote version is not newer than the local build. Stays set after
@@ -181,6 +188,7 @@ impl AuraView {
         config: AppConfig,
         config_path: PathBuf,
         state: AppState,
+        display_id: Option<gpui::DisplayId>,
         cx: &mut Context<Self>,
     ) -> Self {
         let active_profile = state
@@ -217,6 +225,7 @@ impl AuraView {
             quota: None,
             forecast: None,
             plugin_panels: Vec::new(),
+            display_id,
             update: None,
             show_more_modal: false,
             show_settings_panel: false,
@@ -821,6 +830,9 @@ impl Render for AuraView {
         // How the modal re-anchors after the auto-fit resize (see
         // `placement::Anchor`). Only `Bottom` triggers an active move.
         let anchor = crate::placement::Anchor::from_config(&self.config.display.anchor);
+        // Captured by value: the callback runs on every layout pass and must
+        // not borrow `self`.
+        let display_id = self.display_id;
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
@@ -877,8 +889,12 @@ impl Render for AuraView {
                 // platforms where we can't ask the DE for the real
                 // number (non-Linux, non-Plasma, or D-Bus errors).
                 let bottom_reserve = px(120.);
-                if let Some(display) = app.primary_display() {
-                    let dbounds = display.bounds();
+                // The display the modal opened on, not the primary one: with
+                // the tray on a secondary monitor those are different screens
+                // with different taskbars, and capping against the wrong one
+                // either clips the modal short or lets it grow under a panel.
+                if let Some(dbounds) = crate::placement::display_bounds_or_primary(app, display_id)
+                {
                     let screen_bottom = dbounds.origin.y + dbounds.size.height;
                     let window_top = window.bounds().origin.y;
                     let available_bottom = crate::work_area::available_bottom(dbounds)
@@ -922,14 +938,16 @@ impl Render for AuraView {
                     // GPUI's grow-downward-from-a-fixed-top is already what they
                     // want.
                     let desired = if anchor.needs_reposition() {
-                        _cx.primary_display().map(|display| {
-                            crate::placement::modal_origin(
-                                display.bounds(),
-                                None,
-                                f32::from(new_size.height),
-                                anchor,
-                            )
-                        })
+                        crate::placement::display_bounds_or_primary(_cx, display_id).map(
+                            |dbounds| {
+                                crate::placement::modal_origin(
+                                    dbounds,
+                                    None,
+                                    f32::from(new_size.height),
+                                    anchor,
+                                )
+                            },
+                        )
                     } else {
                         None
                     };

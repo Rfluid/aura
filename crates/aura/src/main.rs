@@ -277,8 +277,8 @@ fn main() -> Result<()> {
                         }
                         if let Some(handle) = current.take() {
                             let _ = cx.update(|cx| {
-                                let _ =
-                                    handle.update(cx, |_view, window, _cx| window.remove_window());
+                                let _ = handle
+                                    .update(cx, |_view, window, _cx| window.remove_window());
                             });
                         }
                     }
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
 
                     while let Some(event) = tray::try_recv_event() {
                         match event {
-                            TrayEvent::Show { hint } => {
+                            TrayEvent::Show { anchor } => {
                                 // Reload AppConfig from disk so edits made
                                 // since the last open (whether via the
                                 // settings panel, an external editor, or
@@ -399,7 +399,7 @@ fn main() -> Result<()> {
                                     current.take(),
                                     fresh_config,
                                     config_path.clone(),
-                                    hint,
+                                    anchor,
                                 )
                                 .await;
 
@@ -552,9 +552,9 @@ async fn toggle(
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
-    hint: Option<(i32, i32)>,
+    tray_anchor: Option<tray::TrayAnchor>,
 ) -> Option<WindowHandle<AuraView>> {
-    cx.update(move |cx| toggle_window(cx, existing, config, config_path, hint))
+    cx.update(move |cx| toggle_window(cx, existing, config, config_path, tray_anchor))
         .ok()
         .flatten()
 }
@@ -568,7 +568,7 @@ fn toggle_window(
     existing: Option<WindowHandle<AuraView>>,
     config: AppConfig,
     config_path: std::path::PathBuf,
-    hint: Option<(i32, i32)>,
+    tray_anchor: Option<tray::TrayAnchor>,
 ) -> Option<WindowHandle<AuraView>> {
     if let Some(handle) = existing {
         // `update` returns Err if the window has already been removed;
@@ -587,7 +587,11 @@ fn toggle_window(
     });
 
     let anchor = placement::Anchor::from_config(&config.display.anchor);
-    let bounds = placement::modal_bounds(cx, hint, anchor);
+    // `display_id` rides along to `AuraView` so the auto-fit callback caps the
+    // modal's height against the screen it actually opened on. Reading
+    // `primary_display()` there instead would measure the wrong taskbar the
+    // moment the tray lives on a secondary monitor.
+    let (bounds, display_id) = placement::modal_bounds(cx, tray_anchor, anchor);
     // `display.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
     // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.
@@ -661,6 +665,13 @@ fn toggle_window(
         // Without this, KDE shows "Window class not available" when the
         // user tries to Detect Window Properties on the modal.
         app_id: Some("aura".into()),
+        // Target the display the tray icon lives on. Not optional on Windows:
+        // `open_window` validates the requested bounds against this display
+        // (the primary one when unset) and silently substitutes its centred
+        // default when they fall outside — which is what any secondary-monitor
+        // origin looks like. macOS also resolves the origin relative to this
+        // screen's frame; see `placement::to_window_origin`.
+        display_id,
         kind,
         // On macOS, GPUI creates the window with NSTitled|NSFullSizeContentView
         // even when titlebar:None. The native title-bar drag zone covers our
@@ -682,7 +693,7 @@ fn toggle_window(
     let cloak = config.display.auto_resize();
 
     match cx.open_window(opts, |_window, cx| {
-        cx.new(|cx| AuraView::new(config, config_path, state, cx))
+        cx.new(|cx| AuraView::new(config, config_path, state, display_id, cx))
     }) {
         Ok(handle) => {
             // On macOS, if we are running as NSApplicationActivationPolicyAccessory
