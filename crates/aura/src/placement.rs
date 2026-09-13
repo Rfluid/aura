@@ -13,7 +13,7 @@
 //! behaves as it auto-fits its content height. Two callers share the module:
 //!
 //! 1. [`modal_bounds`] — `main.rs::toggle_window` uses it for the initial
-//!    window bounds at open (size + origin for the full [`MODAL_H`]).
+//!    window bounds at open (size + origin for the height it opens at).
 //! 2. [`modal_origin`] — `app.rs`'s auto-fit callback uses it to recompute
 //!    where the (now shorter) window should sit after it shrinks to the
 //!    measured content height. Only [`Anchor::Bottom`] actually repositions
@@ -83,13 +83,13 @@ impl Anchor {
     /// `aura_core::config::default_anchor` (kept in sync by value, since the
     /// two live in different crates).
     pub fn os_default() -> Self {
-        #[cfg(target_os = "macos")]
-        {
-            Anchor::None
-        }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
             Anchor::Bottom
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Anchor::None
         }
     }
 
@@ -113,9 +113,15 @@ impl Anchor {
     }
 }
 
-/// The modal's size at open ([`MODAL_W`] × [`MODAL_H`]).
-pub fn modal_size() -> Size<Pixels> {
-    size(px(MODAL_W), px(MODAL_H))
+/// The modal's size at open: [`MODAL_W`] by `content_h`, which the caller
+/// takes from the previous open's measured height when there is one (see
+/// `runtime::last_modal_height`) and [`MODAL_H`] otherwise.
+///
+/// The height is clamped to [`MODAL_H`] so a remembered value from a taller
+/// screen — or a stale one after the user shrank their display — can't open a
+/// window larger than the fallback ever would.
+pub fn modal_size(content_h: f32) -> Size<Pixels> {
+    size(px(MODAL_W), px(content_h.clamp(1.0, MODAL_H)))
 }
 
 // ── Display selection ────────────────────────────────────────────────────────
@@ -289,8 +295,13 @@ fn to_window_origin(absolute: Point<Pixels>, display: Bounds<Pixels>) -> Point<P
 }
 
 /// The modal's full bounds at open: [`modal_size`] anchored at
-/// [`modal_origin`] for the full [`MODAL_H`], plus the id of the display it
-/// landed on. Falls back to screen-centred when there is no display at all.
+/// [`modal_origin`] for the same height, plus the id of the display it landed
+/// on. Falls back to screen-centred when there is no display at all.
+///
+/// `content_h` is the height to open at — the previous open's measured content
+/// height when this process has one, else [`MODAL_H`]. Opening at the height
+/// the content will settle at is what keeps the window from visibly jumping
+/// one frame after it appears.
 ///
 /// The returned id must be passed to `WindowOptions::display_id`, not just
 /// stored: without it GPUI validates and places the window against the
@@ -302,12 +313,13 @@ pub fn modal_bounds(
     cx: &mut App,
     tray: Option<TrayAnchor>,
     anchor: Anchor,
+    content_h: f32,
 ) -> (Bounds<Pixels>, Option<DisplayId>) {
-    let size = modal_size();
+    let size = modal_size(content_h);
     let Some((id, display)) = modal_display(cx, tray) else {
         return (Bounds::centered(None, size, cx), None);
     };
-    let absolute = modal_origin(display, tray, MODAL_H, anchor);
+    let absolute = modal_origin(display, tray, f32::from(size.height), anchor);
     (
         Bounds::new(to_window_origin(absolute, display), size),
         Some(id),
