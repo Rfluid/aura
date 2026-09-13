@@ -922,6 +922,69 @@ pub(crate) fn set_window_origin(
     }
 }
 
+/// Vertical extent (top + bottom) of the window manager's frame around `xid`,
+/// in physical pixels. Zero when the window is undecorated, when the WM does
+/// not publish `_NET_FRAME_EXTENTS`, or on any error — all of which mean
+/// "assume the client rect is the whole window", which is the right fallback.
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn frame_extents_v(conn: &impl x11rb::connection::Connection, xid: u32) -> i32 {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    // `_NET_FRAME_EXTENTS` is CARDINAL[4] = left, right, top, bottom.
+    let Ok(cookie) = conn.intern_atom(true, b"_NET_FRAME_EXTENTS") else {
+        return 0;
+    };
+    let Ok(atom) = cookie.reply() else { return 0 };
+    if atom.atom == x11rb::NONE {
+        return 0;
+    }
+    let Ok(cookie) = conn.get_property(false, xid, atom.atom, AtomEnum::CARDINAL, 0, 4) else {
+        return 0;
+    };
+    let Ok(reply) = cookie.reply() else { return 0 };
+    let Some(mut values) = reply.value32() else {
+        return 0;
+    };
+    let (_left, _right, top, bottom) = (
+        values.next().unwrap_or(0),
+        values.next().unwrap_or(0),
+        values.next().unwrap_or(0),
+        values.next().unwrap_or(0),
+    );
+    (top + bottom) as i32
+}
+
+/// Vertical extent of the window manager's frame around `window`, in logical
+/// pixels — what the auto-fit has to subtract from the room it measures, since
+/// the frame is part of the window but not of the content it fits to.
+///
+/// Zero on macOS and Windows, where the platform's own resize keeps the frame
+/// out of the caller's geometry, and on Wayland, where there is no frame to
+/// ask about.
+pub(crate) fn window_frame_extents(window: &gpui::Window) -> f32 {
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let Ok(wh) = <gpui::Window as HasWindowHandle>::window_handle(window) else {
+            return 0.0;
+        };
+        let RawWindowHandle::Xcb(h) = wh.as_raw() else {
+            return 0.0;
+        };
+        let Ok((conn, _)) = x11rb::connect(None) else {
+            return 0.0;
+        };
+        let scale = window.scale_factor().max(0.01);
+        frame_extents_v(&conn, h.window.get()) as f32 / scale
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let _ = window;
+        0.0
+    }
+}
+
 /// Linux: move the modal's top-left to `origin` (logical points). GPUI 0.2
 /// exposes no move API, so we issue an X11 move ourselves against the XCB
 /// window id.
@@ -986,6 +1049,17 @@ pub(crate) fn set_window_origin(
         ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask,
     };
 
+    // With server-side decorations (`display.window_chrome`) the window
+    // manager wraps the client in a frame, and the point a move request
+    // addresses is the *frame's* top-left, not the client's. Placing a
+    // bottom-anchored modal by its client origin therefore pushed the whole
+    // window down by the title bar's height — 28px under KWin's default
+    // theme — and walked its bottom edge into the taskbar. Shift the request
+    // up by the frame's vertical extent so the frame's *bottom* lands where
+    // the caller intended the content to end. Chromeless windows report zero
+    // extents, so this is a no-op in the default configuration.
+    let y = y - frame_extents_v(&conn, xid);
+
     // A plain ConfigureWindow moves *override-redirect* / unmanaged windows
     // (and is honoured by some minimal WMs), but a full window manager like
     // KWin owns the geometry of managed top-levels and silently ignores a
@@ -1008,10 +1082,14 @@ pub(crate) fn set_window_origin(
     // SubstructureRedirect set, which the WM (KWin, Mutter, …) processes and
     // applies. This is what actually makes `anchor = "bottom"` hug the
     // taskbar under KWin. data = [flags, x, y, w, h]; the flags carry the
-    // gravity (0 = use the window's win-gravity), which axes are present
-    // (bits 8/9 = x/y), and the source indication (bit 12 = normal app).
+    // gravity (low byte), which axes are present (bits 8/9 = x/y), and the
+    // source indication (bit 12 = normal app).
     if let Ok(cookie) = conn.intern_atom(false, b"_NET_MOVERESIZE_WINDOW") {
         if let Ok(reply) = cookie.reply() {
+            // Gravity stays 0 (the window's own win-gravity, NorthWest):
+            // KWin ignores a StaticGravity request here, so the frame — not
+            // the client — is what lands on the point we send. `y` has
+            // already been shifted by the frame extents to account for that.
             const X_PRESENT: u32 = 1 << 8;
             const Y_PRESENT: u32 = 1 << 9;
             const SOURCE_APP: u32 = 1 << 12;
