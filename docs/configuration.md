@@ -140,7 +140,8 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 | Key | Type | Allowed | Default | Summary |
 |---|---|---|---|---|
 | `default_period` | string | `all` \| `7d` \| `30d` | `all` | Usage period tab selected on open. |
-| `anchor` | string | `none` \| `bottom` \| `top` | `none` (macOS/Linux), `bottom` (Windows) | How the modal anchors as it auto-fits height. |
+| `anchor` | string | `none` \| `bottom` \| `top` | `bottom` (Linux/Windows), `none` (macOS) | How the modal anchors as it auto-fits height. |
+| `linux_backend` | string | `auto` \| `x11` \| `wayland` | `auto` | Which display server GPUI talks to on Linux/BSD. Ignored elsewhere. |
 | `plugin_order` | string[] | — | `[]` | Display order for plugin pills (comma-separated names on `set`). |
 | `show_in_app_switcher` | bool | `true` \| `false` | `false` | Show the modal in Alt+Tab / Cmd+Tab / dock surfaces. |
 | `dismiss_on_focus_loss` | bool | `true` \| `false` | `true` | Auto-close the modal when it loses focus. |
@@ -230,6 +231,12 @@ plugin_order = ["Hello", "RTK Gains"]
 # Default is per-OS and written at install (see "Modal anchoring" below).
 anchor = "bottom"
 
+# Which display server GPUI talks to on Linux/BSD: "auto" | "x11" | "wayland".
+# "auto" (default) prefers X11 whenever $DISPLAY is set — via XWayland on a
+# Wayland session — because Wayland forbids a client from positioning its own
+# window, which disables `anchor` entirely. See "Linux display backend" below.
+linux_backend = "auto"
+
 # Show the native window title bar. Default false — Aura is a chromeless tray
 # popup. Turning this on also puts the modal in the taskbar / alt-tab list.
 # Independent of `auto_resize`.
@@ -283,8 +290,8 @@ content height:
 
 | Value | Behavior | Default on |
 |---|---|---|
-| `none` | Opens at the platform's natural tray corner and grows downward; never repositioned. | macOS, Linux |
-| `bottom` | Bottom edge pinned above a bottom taskbar; grows upward. | Windows |
+| `none` | Opens at the platform's natural tray corner and grows downward; never repositioned. | macOS |
+| `bottom` | Bottom edge pinned above a bottom taskbar; grows upward. | Linux, Windows |
 | `top` | Top edge pinned just below a top panel / menu bar; grows downward. | — |
 
 The right default is written to your config at install time based on your OS,
@@ -293,21 +300,54 @@ somewhere other than your platform's default (e.g. a Linux desktop with a
 **top** panel → `anchor = "top"`). Unrecognised values (including the legacy
 `"auto"`) fall back to the per-OS default.
 
-**Linux note:** on **X11**, `anchor = "bottom"` repositions live — after each
-resize Aura asks the window manager to move the modal via an EWMH
+Horizontally the modal follows each platform's own tray popups: macOS and
+Linux centre it on the tray icon (clamped to stay on screen), Windows
+right-aligns it to the screen edge the way its volume / network flyouts do.
+Opening from the tray menu's **Show Aura** entry carries no click position, so
+that path falls back to the corner on every platform.
+
+**Linux note:** `anchor = "bottom"` repositions live — after each resize Aura
+asks the window manager to move the modal via an EWMH
 `_NET_MOVERESIZE_WINDOW` request (a plain `ConfigureWindow` is ignored by KWin
 for a managed top-level), so the modal hugs the bottom taskbar as it
-grows/shrinks. On **Wayland** the protocol forbids clients from positioning
-their own toplevels, so `bottom` only applies at *open*; as the modal shrinks
-it grows downward from there rather than hugging the taskbar. For exact
-placement on KDE Plasma / Wayland, use a KWin window rule (see
-[Modal placement on Wayland](../README.md#modal-placement-on-wayland) in the
-README). We currently detect only *bottom* panel reservations, so `top` on a
-Linux top-panel setup approximates by sitting at the very top of the display.
+grows/shrinks. This needs an X11 connection; see
+[Linux display backend](#linux-display-backend-linux_backend) for how that is
+arranged on a Wayland session, and what you lose if you opt out. We currently
+detect only *bottom* panel reservations, so `top` on a Linux top-panel setup
+approximates by sitting at the very top of the display.
 
 > **KDE Plasma:** if the modal *visibly stretches/animates* over ~0.5s as it
 > resizes, that is KWin's Morphing Popups effect, not Aura — see
 > [Troubleshooting: modal stretches on resize](troubleshooting/modal-stretches-on-resize-kde.md).
+
+### Linux display backend (`linux_backend`)
+
+Aura's placement — `anchor`, keeping clear of the taskbar, centring the modal
+under the tray icon — all depends on the app choosing its own window position.
+**Wayland does not allow that.** An `xdg_toplevel` surface has no position in
+the protocol, so on a native Wayland session the compositor puts the modal
+wherever it likes, `anchor` does nothing, and an auto-hidden panel can slide
+out on top of the window.
+
+X11 has no such restriction, and every mainstream Wayland desktop ships
+XWayland, so Aura prefers GPUI's X11 backend whenever `$DISPLAY` resolves:
+
+| Value | Behavior |
+|---|---|
+| `auto` (default) | Use X11 whenever `$DISPLAY` is set — through XWayland on a Wayland session. Full placement control. |
+| `x11` | Same, but also warns on stderr when there is no `$DISPLAY` to use. |
+| `wayland` | Keep the native Wayland backend. The compositor owns placement; `anchor` and icon-centring stop having an effect. |
+
+Pick `wayland` if XWayland output looks soft on a fractional-scale display,
+and place the modal with a compositor window rule instead (KDE: **System
+Settings → Window Management → Window Rules**, window class substring `aura`,
+property **Position** → *Apply Initially* / *Force*).
+
+Mechanically, GPUI picks its Linux backend in `guess_compositor()`, which
+takes Wayland whenever `$WAYLAND_DISPLAY` is non-empty and offers no override.
+Aura therefore hides that variable across the single `Application::new()` call
+and restores it immediately after, so plugin commands and `xdg-open` still see
+the real session environment. The field is ignored on macOS and Windows.
 
 ## Agent kinds
 

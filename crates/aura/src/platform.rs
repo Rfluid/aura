@@ -311,6 +311,201 @@ mod windows_mutex {
     }
 }
 
+// ── Linux display-server backend ─────────────────────────────────────────────
+
+/// Applies `display.linux_backend` for the lifetime of `Application::new()`.
+///
+/// Dropping the guard puts `$WAYLAND_DISPLAY` back exactly as it was, so the
+/// only thing that ever sees the doctored environment is GPUI's one-shot
+/// `guess_compositor()` call. Child processes Aura spawns later — plugin
+/// commands, `xdg-open`, the config editor — keep the session's real
+/// environment and stay native Wayland clients.
+pub(crate) struct DisplayBackendGuard {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    restore: Option<std::ffi::OsString>,
+}
+
+impl Drop for DisplayBackendGuard {
+    fn drop(&mut self) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(value) = self.restore.take() {
+            std::env::set_var("WAYLAND_DISPLAY", value);
+        }
+    }
+}
+
+/// Decide which display server GPUI connects to, honouring
+/// `display.linux_backend` (`"auto"` / `"x11"` / `"wayland"`).
+///
+/// ## Why this exists
+///
+/// Aura's whole placement story — `display.anchor`, keeping clear of the
+/// taskbar, centring the modal under the tray icon — depends on the client
+/// choosing its own window origin. Wayland does not allow that: an
+/// `xdg_toplevel` has no position, so the compositor places the modal wherever
+/// it likes, `WindowOptions::window_bounds`'s origin is dropped on the floor,
+/// and `set_window_origin` has nothing to talk to. The symptoms are exactly
+/// what you'd expect: the popup opens away from the icon and an auto-hidden
+/// panel can slide out on top of it.
+///
+/// X11 has no such restriction, and every mainstream Wayland desktop ships
+/// XWayland, so the fix is to prefer GPUI's X11 client whenever `$DISPLAY`
+/// resolves. That is what `"auto"` (the default) does.
+///
+/// ## How
+///
+/// GPUI picks its Linux backend in `guess_compositor()`, which returns
+/// `"Wayland"` whenever `$WAYLAND_DISPLAY` is non-empty and only falls through
+/// to `"X11"` otherwise. There is no API to override it, so we unset
+/// `$WAYLAND_DISPLAY` across the `Application::new()` call and restore it when
+/// the returned guard drops.
+///
+/// `"wayland"` opts back into the native backend, accepting compositor-owned
+/// placement — the escape hatch for fractional-scale displays, where XWayland
+/// output can look soft. On those setups, use a compositor window rule (KWin:
+/// *Window Rules → Position → Force*) instead of `display.anchor`.
+///
+/// No-op on macOS and Windows, where the field is ignored.
+pub(crate) fn select_display_backend(pref: &str) -> DisplayBackendGuard {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
+        let has_x11 = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty());
+
+        match backend_choice(pref, on_wayland, has_x11) {
+            BackendChoice::Inherit => DisplayBackendGuard { restore: None },
+            BackendChoice::NoXWayland => {
+                // Wayland session with no XWayland to fall back to. We have to
+                // stay on Wayland, but say why: it explains the dead anchor.
+                eprintln!(
+                    "aura: no $DISPLAY on this Wayland session (XWayland is not running), \
+                     so the modal uses the native Wayland backend. The compositor owns \
+                     window placement there: display.anchor and tray-icon centring have no \
+                     effect. See docs/configuration.md."
+                );
+                DisplayBackendGuard { restore: None }
+            }
+            BackendChoice::NoDisplayServer => {
+                eprintln!(
+                    "aura: display.linux_backend = \"x11\" but neither $DISPLAY nor \
+                     $WAYLAND_DISPLAY is set; GPUI will start headless."
+                );
+                DisplayBackendGuard { restore: None }
+            }
+            BackendChoice::ForceX11 => {
+                let restore = std::env::var_os("WAYLAND_DISPLAY");
+                std::env::remove_var("WAYLAND_DISPLAY");
+                DisplayBackendGuard { restore }
+            }
+        }
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        let _ = pref;
+        DisplayBackendGuard {}
+    }
+}
+
+/// What [`select_display_backend`] should do, factored out so the decision
+/// table is testable without mutating the process environment (which is
+/// global, and therefore racy under a multi-threaded test runner).
+#[cfg(all(unix, not(target_os = "macos")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendChoice {
+    /// Leave the environment alone and let GPUI choose.
+    Inherit,
+    /// Wanted X11, but this is a Wayland session without XWayland.
+    NoXWayland,
+    /// Asked for X11 explicitly with no display server at all in the
+    /// environment.
+    NoDisplayServer,
+    /// Hide `$WAYLAND_DISPLAY` so GPUI takes its X11 client.
+    ForceX11,
+}
+
+/// Pure decision table for `display.linux_backend`.
+///
+/// Unknown values behave like `"auto"` — the same forgiving policy as
+/// `placement::Anchor::from_config`, so a typo degrades to the default instead
+/// of leaving the user with a modal the compositor won't let Aura place.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn backend_choice(pref: &str, on_wayland: bool, has_x11: bool) -> BackendChoice {
+    let pref = pref.trim().to_ascii_lowercase();
+    if pref == "wayland" {
+        return BackendChoice::Inherit;
+    }
+    match (on_wayland, has_x11) {
+        // Wayland session with XWayland: the case this whole function exists
+        // for.
+        (true, true) => BackendChoice::ForceX11,
+        (true, false) => BackendChoice::NoXWayland,
+        // Already X11, or headless. Only "x11" complains about the latter —
+        // "auto" has nothing to say about a machine with no display server.
+        (false, true) => BackendChoice::Inherit,
+        (false, false) if pref == "x11" => BackendChoice::NoDisplayServer,
+        (false, false) => BackendChoice::Inherit,
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod backend_tests {
+    use super::{backend_choice, BackendChoice};
+
+    #[test]
+    fn prefers_xwayland_on_a_wayland_session() {
+        assert_eq!(
+            backend_choice("auto", true, true),
+            BackendChoice::ForceX11,
+            "the default has to fix placement, or display.anchor is inert"
+        );
+        assert_eq!(backend_choice("x11", true, true), BackendChoice::ForceX11);
+    }
+
+    #[test]
+    fn honours_an_explicit_wayland_preference() {
+        assert_eq!(
+            backend_choice("wayland", true, true),
+            BackendChoice::Inherit
+        );
+        assert_eq!(
+            backend_choice("  WAYLAND ", true, true),
+            BackendChoice::Inherit
+        );
+    }
+
+    #[test]
+    fn leaves_a_real_x11_session_alone() {
+        for pref in ["auto", "x11", "wayland"] {
+            assert_eq!(backend_choice(pref, false, true), BackendChoice::Inherit);
+        }
+    }
+
+    #[test]
+    fn reports_a_wayland_session_without_xwayland() {
+        assert_eq!(
+            backend_choice("auto", true, false),
+            BackendChoice::NoXWayland
+        );
+    }
+
+    #[test]
+    fn only_an_explicit_x11_preference_complains_about_headless() {
+        assert_eq!(
+            backend_choice("x11", false, false),
+            BackendChoice::NoDisplayServer
+        );
+        assert_eq!(backend_choice("auto", false, false), BackendChoice::Inherit);
+    }
+
+    #[test]
+    fn unknown_values_behave_like_auto() {
+        assert_eq!(backend_choice("", true, true), BackendChoice::ForceX11);
+        assert_eq!(backend_choice("mir", true, true), BackendChoice::ForceX11);
+        // ...including the headless case, where "auto" stays quiet.
+        assert_eq!(backend_choice("mir", false, false), BackendChoice::Inherit);
+    }
+}
+
 // ── macOS activation policy ──────────────────────────────────────────────────
 
 /// Set the macOS NSApplication activation policy.

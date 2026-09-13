@@ -69,17 +69,33 @@ pub fn fields() -> &'static [FieldDescriptor] {
             key: "display.anchor",
             type_label: "string",
             allowed: &["none", "bottom", "top"],
-            default: "\"none\" (macOS/Linux), \"bottom\" (Windows)",
+            default: "\"bottom\" (Linux/Windows), \"none\" (macOS)",
             summary: "How the modal anchors as it auto-fits its content height.",
             description: "How the modal anchors as it auto-fits its content height. \
                 \"none\": open at the platform's natural tray corner and grow downward; \
-                never reposition after a resize (safe on Wayland, where the compositor \
-                owns placement). \"bottom\": pin the bottom edge above a bottom taskbar so \
+                never reposition after a resize (all a native Wayland surface can do, \
+                since the compositor owns placement there \u{2014} see display.linux_backend). \"bottom\": pin the bottom edge above a bottom taskbar so \
                 it grows upward (the tray-popup feel). \"top\": pin the top edge below a top \
-                panel / menu bar and grow downward. Default is per-OS: \"bottom\" on Windows, \
-                \"none\" on macOS and Linux. Unrecognised values (incl. the legacy \"auto\") \
-                fall back to the per-OS default.",
+                panel / menu bar and grow downward. Default is per-OS: \"bottom\" on Linux \
+                and Windows, \"none\" on macOS. Unrecognised values (incl. the legacy \
+                \"auto\") fall back to the per-OS default.",
             example: "none",
+        },
+        FieldDescriptor {
+            key: "display.linux_backend",
+            type_label: "string",
+            allowed: &["auto", "x11", "wayland"],
+            default: "\"auto\"",
+            summary: "Which display server GPUI talks to on Linux / BSD.",
+            description: "Which display server GPUI talks to on Linux / BSD. Wayland forbids a \
+                client from positioning its own toplevel, so a native Wayland session silently \
+                disables display.anchor, taskbar avoidance, and centring the modal under the tray \
+                icon. \"auto\" (default) uses X11 whenever $DISPLAY is set \u{2014} via XWayland on a \
+                Wayland session \u{2014} which restores placement control. \"x11\" is the same but \
+                warns when $DISPLAY is missing. \"wayland\" keeps the native backend and leaves \
+                placement to the compositor (use a compositor window rule instead); pick it if \
+                XWayland looks blurry on a fractional-scale display. Ignored on macOS and Windows.",
+            example: "auto",
         },
         FieldDescriptor {
             key: "display.plugin_order",
@@ -363,6 +379,7 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
     let v = match key {
         "display.default_period" => cfg.display.default_period.clone(),
         "display.anchor" => cfg.display.anchor.clone(),
+        "display.linux_backend" => cfg.display.linux_backend.clone(),
         "display.plugin_order" => cfg.display.plugin_order.join(", "),
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher.to_string(),
         "display.dismiss_on_focus_loss" => cfg.display.dismiss_on_focus_loss.to_string(),
@@ -400,6 +417,9 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
             cfg.display.default_period = parse_enum(key, raw, &["all", "7d", "30d"])?
         }
         "display.anchor" => cfg.display.anchor = parse_enum(key, raw, &["none", "bottom", "top"])?,
+        "display.linux_backend" => {
+            cfg.display.linux_backend = parse_enum(key, raw, &["auto", "x11", "wayland"])?
+        }
         "display.plugin_order" => cfg.display.plugin_order = parse_list(raw),
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher = parse_bool(key, raw)?,
         "display.dismiss_on_focus_loss" => {
@@ -570,6 +590,7 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
     Some(match key {
         "display.default_period" => quote(&cfg.display.default_period),
         "display.anchor" => quote(&cfg.display.anchor),
+        "display.linux_backend" => quote(&cfg.display.linux_backend),
         "display.plugin_order" => str_array(&cfg.display.plugin_order),
         "display.show_in_app_switcher" => cfg.display.show_in_app_switcher.to_string(),
         "display.dismiss_on_focus_loss" => cfg.display.dismiss_on_focus_loss.to_string(),
@@ -785,6 +806,7 @@ mod tests {
             display: DisplayConfig {
                 default_period: "7d".to_string(),
                 anchor: "top".to_string(),
+                linux_backend: "wayland".to_string(),
                 plugin_order: vec!["RTK Gains".to_string(), "Hello".to_string()],
                 show_in_app_switcher: true,
                 dismiss_on_focus_loss: false,

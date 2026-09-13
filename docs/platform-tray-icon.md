@@ -107,16 +107,43 @@ OS-specific because that's where the tray icon lives:
   ~25 pt below the bar, horizontally centred on the status item — using the
   icon's own rect from `TrayAnchor` when the backend reported one, and the
   click X otherwise.
-- **Linux / Windows**: tray icon is in the bottom-right (or wherever the
-  user put their panel/taskbar). Modal anchors to the bottom-right of the
-  *work area* (display minus reserved panel space — see
-  [Work-area detection](#work-area-detection)), matching how the native
-  volume / network flyouts right-align to the screen edge rather than track
-  the icon.
-  Wayland compositors may ignore the requested origin and centre the
-  window. KDE users can install a window rule matching `app_id="aura"` to
-  force the position (`Window matches: WM_CLASS = aura` → Position =
-  Apply Initially). See the README "Modal placement on Wayland" section.
+- **Linux**: tray icon sits in the panel, usually bottom-right. The modal
+  pins its bottom edge above the *work area* (display minus reserved panel
+  space — see [Work-area detection](#work-area-detection)) and centres
+  horizontally on the icon, the way Plasma's and GNOME's own systray popups
+  do. The icon X comes from StatusNotifierItem's `Activate(x, y)` hint; the
+  clamp in `placement::centered_x` keeps the window on screen when the icon
+  is near an edge, which it almost always is.
+- **Windows**: same bottom-anchored work-area placement, but right-aligned
+  to the screen edge rather than centred — that's what the native volume /
+  network flyouts do.
+- **No position at all**: the tray menu's "Show Aura" item carries no click
+  coordinates, so it falls back to the bottom-right corner everywhere.
+
+### Wayland has no client-side positioning
+
+None of the above is possible on a native Wayland surface: `xdg_toplevel`
+has no position in the protocol, so the compositor places the modal, the
+requested origin is discarded, and `platform::set_window_origin` has no
+window id to move. `display.anchor`, taskbar avoidance and icon-centring all
+go quiet at once — and an auto-hidden panel will happily slide out over the
+modal, because nothing reserved space for it.
+
+`platform::select_display_backend` handles this at startup. GPUI picks its
+Linux backend inside `guess_compositor()`, which returns `"Wayland"` whenever
+`$WAYLAND_DISPLAY` is non-empty and offers no override, so Aura hides that
+variable for exactly the duration of `Application::new()` and restores it
+from the returned guard's `Drop`. GPUI connects over XWayland, where all the
+positioning above works, and child processes (plugin commands, `xdg-open`)
+still inherit the session's real environment.
+
+`display.linux_backend` controls it: `"auto"` (default) prefers X11 whenever
+`$DISPLAY` resolves, `"x11"` additionally warns when it doesn't, `"wayland"`
+opts back into the native backend for users who find XWayland soft on a
+fractional-scale display. The decision table is a pure function,
+`platform::backend_choice`, so it's unit-tested without touching the process
+environment. Those users want a compositor window rule instead: KDE matches
+on `WM_CLASS = aura`, Position → Apply Initially.
 
 ### Two coordinate-space traps
 

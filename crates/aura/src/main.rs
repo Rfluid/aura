@@ -151,122 +151,168 @@ fn main() -> Result<()> {
     // * macOS / Windows: the platform keeps the process alive by itself,
     //   but GPUI still needs a window to hang the run loop off, so we
     //   open the hidden keepalive described on `open_keepalive_window`.
-    Application::new()
-        .with_assets(EmbeddedAssets)
-        .run(move |cx| {
-            // Selectable labels deliberately have no focus handle, so install
-            // the crate's observer-based bridge for copy/select-all and
-            // shift+arrow extension when no focused control claimed the key.
-            //
-            // Escape is handled here instead of by the bridge
-            // (`clear_on_escape: false`) because the two meanings have to be
-            // ordered: Escape clears a live text selection, and only closes
-            // the popup when there is nothing to clear. Leaving both to fire
-            // as independent keystroke observers would make the outcome depend
-            // on subscriber iteration order — one Escape could clear *and*
-            // close.
-            gpui_selectable_text::register_keyboard_bridge_with(
-                cx,
-                gpui_selectable_text::KeyboardBridge {
-                    clear_on_escape: false,
-                    ..Default::default()
-                },
-            )
-            .detach();
-            cx.observe_keystrokes(|event, window, cx| {
-                // Something with focus already claimed this keystroke.
-                if event.action.is_some() {
-                    return;
+    //
+    // On Linux the backend GPUI picks is not incidental: Wayland forbids a
+    // client from positioning its own toplevel, which silently disables
+    // `display.anchor` and every other placement decision Aura makes. The
+    // guard below applies `display.linux_backend` for exactly the duration of
+    // `Application::new()` (see `platform::select_display_backend`) and then
+    // puts the environment back, so child processes are unaffected.
+    let app = {
+        let _backend = platform::select_display_backend(&config.display.linux_backend);
+        Application::new().with_assets(EmbeddedAssets)
+    };
+    app.run(move |cx| {
+        // Selectable labels deliberately have no focus handle, so install
+        // the crate's observer-based bridge for copy/select-all and
+        // shift+arrow extension when no focused control claimed the key.
+        //
+        // Escape is handled here instead of by the bridge
+        // (`clear_on_escape: false`) because the two meanings have to be
+        // ordered: Escape clears a live text selection, and only closes
+        // the popup when there is nothing to clear. Leaving both to fire
+        // as independent keystroke observers would make the outcome depend
+        // on subscriber iteration order — one Escape could clear *and*
+        // close.
+        gpui_selectable_text::register_keyboard_bridge_with(
+            cx,
+            gpui_selectable_text::KeyboardBridge {
+                clear_on_escape: false,
+                ..Default::default()
+            },
+        )
+        .detach();
+        cx.observe_keystrokes(|event, window, cx| {
+            // Something with focus already claimed this keystroke.
+            if event.action.is_some() {
+                return;
+            }
+            let keystroke = &event.keystroke;
+            if keystroke.key != "escape" || keystroke.modifiers.modified() {
+                return;
+            }
+            if gpui_selectable_text::registry::clear_active_selection(window, cx) {
+                return;
+            }
+            // Closing a tray popup with Escape is the convention on every
+            // desktop; the poll loop does the actual teardown because it
+            // owns the window handle.
+            runtime::request_dismiss();
+        })
+        .detach();
+
+        // GPUI forces NSApplicationActivationPolicyRegular in
+        // did_finish_launching; reapply the user's preference here so it
+        // sticks. `runtime::set_from_config` (called at startup before
+        // .run) only fires once, *before* GPUI launches — without this
+        // second push, the user's Accessory choice would be overwritten
+        // by the time we hit the run closure on macOS.
+        platform::apply_app_switcher_policy(runtime::show_in_app_switcher());
+
+        // Hold the handle in the move-closure so it isn't dropped.
+        #[cfg(not(target_os = "linux"))]
+        let _keepalive = open_keepalive_window(cx);
+        // No handle to hold on Linux — nothing is opened; the loop is
+        // kept alive by the opt-out instead of by a window.
+        #[cfg(target_os = "linux")]
+        cx.set_quit_on_last_window_closed(false);
+
+        let config = config.clone();
+        let config_path = config_path.clone();
+
+        cx.spawn(async move |cx| {
+            // Owned here so the icon lives exactly as long as the loop
+            // that drives it — and so the loop can push status updates
+            // into it. `TrayHandle` is `!Send` on macOS / Windows (it
+            // wraps an AppKit / Win32 object); GPUI's foreground executor
+            // has no `Send` bound, which is what makes this legal.
+            let mut tray = tray;
+
+            // The currently-open window, if any. We toggle on each
+            // "Show Aura" click: open if closed, close if open.
+            let mut current: Option<WindowHandle<AuraView>> = None;
+
+            // macOS: NSEvent global monitor flag. Accessory apps can't
+            // reliably set [NSApp mainWindow], which kills cx.active_window
+            // detection; the global monitor is the working alternative.
+            #[cfg(target_os = "macos")]
+            let outside_clicked = Arc::new(AtomicBool::new(false));
+            #[cfg(target_os = "macos")]
+            let mut click_monitor: Option<platform::ClickOutsideMonitor> = None;
+
+            // Grace-period counter: skip focus-loss checks for this many
+            // poll intervals after opening the modal so the platform
+            // can finish delivering focus / setting up the monitor before
+            // we start watching for losses.
+            let mut just_opened: u8 = 0;
+
+            // When the tray never installed, the user has no way to ask
+            // for the window — so ask on their behalf, once.
+            if tray_missing {
+                current = toggle(cx, None, config.clone(), config_path.clone(), None).await;
+                if current.is_some() {
+                    just_opened = 4;
                 }
-                let keystroke = &event.keystroke;
-                if keystroke.key != "escape" || keystroke.modifiers.modified() {
-                    return;
+            }
+
+            loop {
+                // Poll: ksni / tray-icon both expose blocking
+                // crossbeam channels under the hood, so we drain
+                // them between short sleeps.
+                cx.background_executor().timer(MENU_POLL_INTERVAL).await;
+
+                // Apply any indicator state queued since the last tick.
+                // Must happen on this thread: AppKit refuses NSStatusItem
+                // mutation from anywhere but the main thread.
+                if let Some(tray) = tray.as_mut() {
+                    tray.apply_pending_status();
                 }
-                if gpui_selectable_text::registry::clear_active_selection(window, cx) {
-                    return;
-                }
-                // Closing a tray popup with Escape is the convention on every
-                // desktop; the poll loop does the actual teardown because it
-                // owns the window handle.
-                runtime::request_dismiss();
-            })
-            .detach();
 
-            // GPUI forces NSApplicationActivationPolicyRegular in
-            // did_finish_launching; reapply the user's preference here so it
-            // sticks. `runtime::set_from_config` (called at startup before
-            // .run) only fires once, *before* GPUI launches — without this
-            // second push, the user's Accessory choice would be overwritten
-            // by the time we hit the run closure on macOS.
-            platform::apply_app_switcher_policy(runtime::show_in_app_switcher());
-
-            // Hold the handle in the move-closure so it isn't dropped.
-            #[cfg(not(target_os = "linux"))]
-            let _keepalive = open_keepalive_window(cx);
-            // No handle to hold on Linux — nothing is opened; the loop is
-            // kept alive by the opt-out instead of by a window.
-            #[cfg(target_os = "linux")]
-            cx.set_quit_on_last_window_closed(false);
-
-            let config = config.clone();
-            let config_path = config_path.clone();
-
-            cx.spawn(async move |cx| {
-                // Owned here so the icon lives exactly as long as the loop
-                // that drives it — and so the loop can push status updates
-                // into it. `TrayHandle` is `!Send` on macOS / Windows (it
-                // wraps an AppKit / Win32 object); GPUI's foreground executor
-                // has no `Send` bound, which is what makes this legal.
-                let mut tray = tray;
-
-                // The currently-open window, if any. We toggle on each
-                // "Show Aura" click: open if closed, close if open.
-                let mut current: Option<WindowHandle<AuraView>> = None;
-
-                // macOS: NSEvent global monitor flag. Accessory apps can't
-                // reliably set [NSApp mainWindow], which kills cx.active_window
-                // detection; the global monitor is the working alternative.
-                #[cfg(target_os = "macos")]
-                let outside_clicked = Arc::new(AtomicBool::new(false));
-                #[cfg(target_os = "macos")]
-                let mut click_monitor: Option<platform::ClickOutsideMonitor> = None;
-
-                // Grace-period counter: skip focus-loss checks for this many
-                // poll intervals after opening the modal so the platform
-                // can finish delivering focus / setting up the monitor before
-                // we start watching for losses.
-                let mut just_opened: u8 = 0;
-
-                // When the tray never installed, the user has no way to ask
-                // for the window — so ask on their behalf, once.
-                if tray_missing {
-                    current = toggle(cx, None, config.clone(), config_path.clone(), None).await;
+                // Escape, routed here from the keystroke observer in the
+                // run closure. Unconditional: unlike focus loss this is an
+                // explicit "close it" from the user, so neither
+                // `dismiss_on_focus_loss` nor an in-flight plugin action
+                // suppresses it.
+                if runtime::take_dismiss_request() {
+                    #[cfg(target_os = "macos")]
                     if current.is_some() {
-                        just_opened = 4;
+                        outside_clicked.store(false, Ordering::Relaxed);
+                        if let Some(m) = click_monitor.take() {
+                            platform::remove_click_outside_monitor(m);
+                        }
+                        if !runtime::show_in_app_switcher() {
+                            platform::apply_app_switcher_policy(false);
+                        }
+                    }
+                    if let Some(handle) = current.take() {
+                        let _ = cx.update(|cx| {
+                            let _ = handle.update(cx, |_view, window, _cx| window.remove_window());
+                        });
                     }
                 }
 
-                loop {
-                    // Poll: ksni / tray-icon both expose blocking
-                    // crossbeam channels under the hood, so we drain
-                    // them between short sleeps.
-                    cx.background_executor().timer(MENU_POLL_INTERVAL).await;
-
-                    // Apply any indicator state queued since the last tick.
-                    // Must happen on this thread: AppKit refuses NSStatusItem
-                    // mutation from anywhere but the main thread.
-                    if let Some(tray) = tray.as_mut() {
-                        tray.apply_pending_status();
-                    }
-
-                    // Escape, routed here from the keystroke observer in the
-                    // run closure. Unconditional: unlike focus loss this is an
-                    // explicit "close it" from the user, so neither
-                    // `dismiss_on_focus_loss` nor an in-flight plugin action
-                    // suppresses it.
-                    if runtime::take_dismiss_request() {
+                if runtime::dismiss_on_focus_loss()
+                    && current.is_some()
+                    && !runtime::plugin_action_inflight()
+                {
+                    let lost_focus = if just_opened > 0 {
+                        just_opened -= 1;
+                        false
+                    } else {
                         #[cfg(target_os = "macos")]
-                        if current.is_some() {
+                        {
+                            outside_clicked.load(Ordering::Relaxed)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            cx.update(|cx| cx.active_window().is_none())
+                                .unwrap_or(false)
+                        }
+                    };
+
+                    if lost_focus {
+                        #[cfg(target_os = "macos")]
+                        {
                             outside_clicked.store(false, Ordering::Relaxed);
                             if let Some(m) = click_monitor.take() {
                                 platform::remove_click_outside_monitor(m);
@@ -277,65 +323,59 @@ fn main() -> Result<()> {
                         }
                         if let Some(handle) = current.take() {
                             let _ = cx.update(|cx| {
-                                let _ = handle
-                                    .update(cx, |_view, window, _cx| window.remove_window());
+                                let _ =
+                                    handle.update(cx, |_view, window, _cx| window.remove_window());
                             });
                         }
                     }
+                }
 
-                    if runtime::dismiss_on_focus_loss()
-                        && current.is_some()
-                        && !runtime::plugin_action_inflight()
-                    {
-                        let lost_focus = if just_opened > 0 {
-                            just_opened -= 1;
-                            false
-                        } else {
-                            #[cfg(target_os = "macos")]
-                            {
-                                outside_clicked.load(Ordering::Relaxed)
-                            }
-                            #[cfg(not(target_os = "macos"))]
-                            {
-                                cx.update(|cx| cx.active_window().is_none())
-                                    .unwrap_or(false)
-                            }
-                        };
+                // A second `aura` launch (e.g. from the app-search
+                // launcher) lost the single-instance race and pinged us
+                // instead of silently exiting into nothing. Treat it as
+                // "show the window" — but don't toggle an already-open
+                // one closed the way a tray click would; just focus it.
+                if platform::try_recv_activation() {
+                    if let Some(handle) = &current {
+                        let _ = cx.update(|cx| {
+                            let _ =
+                                handle.update(cx, |_view, window, _cx| window.activate_window());
+                        });
+                    } else {
+                        let fresh_config = AppConfig::load_with_discovery(&config_path)
+                            .unwrap_or_else(|e| {
+                                eprintln!(
+                                    "aura: config reload failed ({e}); using cached snapshot"
+                                );
+                                config.clone()
+                            });
+                        runtime::set_from_config(&fresh_config);
 
-                        if lost_focus {
+                        current = toggle(cx, None, fresh_config, config_path.clone(), None).await;
+
+                        if current.is_some() {
+                            just_opened = 4; // ~600 ms at 150 ms/poll
                             #[cfg(target_os = "macos")]
                             {
                                 outside_clicked.store(false, Ordering::Relaxed);
-                                if let Some(m) = click_monitor.take() {
-                                    platform::remove_click_outside_monitor(m);
-                                }
-                                if !runtime::show_in_app_switcher() {
-                                    platform::apply_app_switcher_policy(false);
-                                }
-                            }
-                            if let Some(handle) = current.take() {
-                                let _ = cx.update(|cx| {
-                                    let _ = handle.update(cx, |_view, window, _cx| {
-                                        window.remove_window()
-                                    });
-                                });
+                                click_monitor = Some(platform::install_click_outside_monitor(
+                                    Arc::clone(&outside_clicked),
+                                ));
                             }
                         }
                     }
+                }
 
-                    // A second `aura` launch (e.g. from the app-search
-                    // launcher) lost the single-instance race and pinged us
-                    // instead of silently exiting into nothing. Treat it as
-                    // "show the window" — but don't toggle an already-open
-                    // one closed the way a tray click would; just focus it.
-                    if platform::try_recv_activation() {
-                        if let Some(handle) = &current {
-                            let _ = cx.update(|cx| {
-                                let _ = handle.update(cx, |_view, window, _cx| {
-                                    window.activate_window()
-                                });
-                            });
-                        } else {
+                while let Some(event) = tray::try_recv_event() {
+                    match event {
+                        TrayEvent::Show { anchor } => {
+                            // Reload AppConfig from disk so edits made
+                            // since the last open (whether via the
+                            // settings panel, an external editor, or
+                            // `aura plugin add`) take effect on this
+                            // open. Fall back to the startup snapshot
+                            // if the reload fails so a transient I/O
+                            // error doesn't break the toggle.
                             let fresh_config = AppConfig::load_with_discovery(&config_path)
                                 .unwrap_or_else(|e| {
                                     eprintln!(
@@ -345,11 +385,32 @@ fn main() -> Result<()> {
                                 });
                             runtime::set_from_config(&fresh_config);
 
-                            current =
-                                toggle(cx, None, fresh_config, config_path.clone(), None).await;
+                            // If a window was open, tear down its monitor
+                            // and demote the activation policy before the
+                            // toggle (which closes it).
+                            #[cfg(target_os = "macos")]
+                            if current.is_some() {
+                                if let Some(m) = click_monitor.take() {
+                                    platform::remove_click_outside_monitor(m);
+                                }
+                                if !runtime::show_in_app_switcher() {
+                                    platform::apply_app_switcher_policy(false);
+                                }
+                            }
+
+                            current = toggle(
+                                cx,
+                                current.take(),
+                                fresh_config,
+                                config_path.clone(),
+                                anchor,
+                            )
+                            .await;
 
                             if current.is_some() {
                                 just_opened = 4; // ~600 ms at 150 ms/poll
+                                                 // macOS: install the click-outside
+                                                 // monitor for the new window.
                                 #[cfg(target_os = "macos")]
                                 {
                                     outside_clicked.store(false, Ordering::Relaxed);
@@ -359,80 +420,21 @@ fn main() -> Result<()> {
                                 }
                             }
                         }
-                    }
-
-                    while let Some(event) = tray::try_recv_event() {
-                        match event {
-                            TrayEvent::Show { anchor } => {
-                                // Reload AppConfig from disk so edits made
-                                // since the last open (whether via the
-                                // settings panel, an external editor, or
-                                // `aura plugin add`) take effect on this
-                                // open. Fall back to the startup snapshot
-                                // if the reload fails so a transient I/O
-                                // error doesn't break the toggle.
-                                let fresh_config =
-                                    AppConfig::load_with_discovery(&config_path)
-                                        .unwrap_or_else(|e| {
-                                            eprintln!(
-                                                "aura: config reload failed ({e}); using cached snapshot"
-                                            );
-                                            config.clone()
-                                        });
-                                runtime::set_from_config(&fresh_config);
-
-                                // If a window was open, tear down its monitor
-                                // and demote the activation policy before the
-                                // toggle (which closes it).
-                                #[cfg(target_os = "macos")]
-                                if current.is_some() {
-                                    if let Some(m) = click_monitor.take() {
-                                        platform::remove_click_outside_monitor(m);
-                                    }
-                                    if !runtime::show_in_app_switcher() {
-                                        platform::apply_app_switcher_policy(false);
-                                    }
-                                }
-
-                                current = toggle(
-                                    cx,
-                                    current.take(),
-                                    fresh_config,
-                                    config_path.clone(),
-                                    anchor,
-                                )
-                                .await;
-
-                                if current.is_some() {
-                                    just_opened = 4; // ~600 ms at 150 ms/poll
-                                    // macOS: install the click-outside
-                                    // monitor for the new window.
-                                    #[cfg(target_os = "macos")]
-                                    {
-                                        outside_clicked.store(false, Ordering::Relaxed);
-                                        click_monitor = Some(
-                                            platform::install_click_outside_monitor(
-                                                Arc::clone(&outside_clicked),
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                            TrayEvent::Quit => {
-                                // Explicit user exit from the right-click
-                                // menu. cx.quit() tears down the GPUI
-                                // event loop; aura exits cleanly so
-                                // systemd's Restart=on-failure won't
-                                // respawn us.
-                                let _ = cx.update(|cx| cx.quit());
-                                return;
-                            }
+                        TrayEvent::Quit => {
+                            // Explicit user exit from the right-click
+                            // menu. cx.quit() tears down the GPUI
+                            // event loop; aura exits cleanly so
+                            // systemd's Restart=on-failure won't
+                            // respawn us.
+                            let _ = cx.update(|cx| cx.quit());
+                            return;
                         }
                     }
                 }
-            })
-            .detach();
-        });
+            }
+        })
+        .detach();
+    });
 
     Ok(())
 }
@@ -693,7 +695,7 @@ fn toggle_window(
     let cloak = config.display.auto_resize();
 
     match cx.open_window(opts, |_window, cx| {
-        cx.new(|cx| AuraView::new(config, config_path, state, display_id, cx))
+        cx.new(|cx| AuraView::new(config, config_path, state, display_id, tray_anchor, cx))
     }) {
         Ok(handle) => {
             // On macOS, if we are running as NSApplicationActivationPolicyAccessory

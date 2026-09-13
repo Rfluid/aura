@@ -92,7 +92,8 @@ pub struct DisplayConfig {
     ///
     /// - `"none"`   — open at the platform's natural tray corner and let the
     ///   window grow downward from there; never reposition after a resize.
-    ///   Safe on Wayland, where the compositor owns window placement.
+    ///   The only behaviour a native Wayland surface can actually deliver (see
+    ///   [`Self::linux_backend`]).
     /// - `"bottom"` — pin the modal's bottom edge above a bottom taskbar so it
     ///   grows *upward* (the tray-popup feel next to a bottom tray). Needs an
     ///   active post-resize move (see `placement::Anchor`).
@@ -100,9 +101,33 @@ pub struct DisplayConfig {
     ///   grow downward.
     ///
     /// The default is OS-specific (see [`default_anchor`]): `"bottom"` on
-    /// Windows (bottom taskbar), `"none"` on macOS and Linux. Unrecognised
-    /// values (including the legacy `"auto"`) fall back to the per-OS default.
+    /// Windows and Linux (bottom taskbar), `"none"` on macOS (top menu bar).
+    /// Unrecognised values (including the legacy `"auto"`) fall back to the
+    /// per-OS default.
     pub anchor: String,
+    /// Which display server GPUI talks to on Linux / BSD: `"auto"`, `"x11"`
+    /// or `"wayland"`.
+    ///
+    /// This exists because Wayland forbids a client from positioning its own
+    /// toplevel window. On a Wayland session the compositor ignores the
+    /// modal's requested origin outright, which silently disables
+    /// [`Self::anchor`], the taskbar-avoidance math, and centring the modal
+    /// under the tray icon — the three things that make Aura read as a tray
+    /// popup rather than a floating window.
+    ///
+    /// - `"auto"` (default) — use X11 whenever `$DISPLAY` is set. On a Wayland
+    ///   session that means going through XWayland, which nearly every desktop
+    ///   ships and which restores full placement control.
+    /// - `"x11"` — same, but also warn on stderr when `$DISPLAY` is missing
+    ///   and the preference can't be honoured.
+    /// - `"wayland"` — keep the native Wayland backend and accept that
+    ///   placement is the compositor's call. Pick this if XWayland looks
+    ///   blurry on a fractional-scale display, and use a KWin / compositor
+    ///   window rule for placement instead.
+    ///
+    /// Ignored on macOS and Windows.
+    #[serde(default = "default_linux_backend")]
+    pub linux_backend: String,
     /// Display order for plugin pills. Plugins whose display `name`
     /// appears here render in the listed order; anything not named
     /// keeps its natural order (config-then-discovered-alphabetical)
@@ -183,6 +208,13 @@ pub struct DisplayConfig {
     pub tray_status_interval_secs: u64,
 }
 
+/// Default for [`DisplayConfig::linux_backend`]. `"auto"` prefers X11 (via
+/// XWayland on a Wayland session) because window placement is the whole point
+/// of a tray popup and Wayland does not offer it.
+fn default_linux_backend() -> String {
+    "auto".to_string()
+}
+
 fn default_tray_status() -> bool {
     true
 }
@@ -191,10 +223,14 @@ fn default_tray_status_interval_secs() -> u64 {
     1200
 }
 
-/// Per-OS default for [`DisplayConfig::anchor`]. Windows ships with a bottom
-/// taskbar, so the modal grows upward off the tray (`"bottom"`); macOS (menu
-/// bar at the top) and Linux (compositor owns placement) open at their natural
-/// corner without an active reposition (`"none"`).
+/// Per-OS default for [`DisplayConfig::anchor`]. Windows and Linux both put
+/// the tray next to a bottom taskbar, so the modal pins its bottom edge above
+/// that bar and grows upward (`"bottom"`); macOS has its menu bar at the top,
+/// where GPUI's natural grow-downward behaviour is already right (`"none"`).
+///
+/// Linux used to default to `"none"` on the grounds that the compositor owned
+/// placement. That is only true on a native Wayland surface, which
+/// [`DisplayConfig::linux_backend`] now avoids by default.
 ///
 /// Evaluated at compile time for the target this binary is built for, so the
 /// value baked into `default_config()` — and thus written to disk by the
@@ -202,13 +238,13 @@ fn default_tray_status_interval_secs() -> u64 {
 /// for the platform. No install-time OS detection is needed in the shell
 /// scripts.
 fn default_anchor() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        "bottom".to_string()
-    }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         "none".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "bottom".to_string()
     }
 }
 
@@ -241,6 +277,7 @@ impl Default for DisplayConfig {
         Self {
             default_period: "all".to_string(),
             anchor: default_anchor(),
+            linux_backend: default_linux_backend(),
             plugin_order: Vec::new(),
             show_in_app_switcher: false,
             dismiss_on_focus_loss: true,

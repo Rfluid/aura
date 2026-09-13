@@ -82,10 +82,10 @@ impl TrayAnchor {
     /// Horizontal center to align the modal against: the middle of the icon
     /// when we know its rect, else the click X.
     ///
-    /// Only macOS anchors horizontally to the icon (see
-    /// `placement::modal_origin`); the corner-tray platforms right-align to
-    /// the screen edge instead and never call this.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// macOS and Linux both anchor horizontally to the icon (see
+    /// `placement::modal_origin`); Windows right-aligns to the screen edge
+    /// instead and never calls this.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn center_x(&self) -> f32 {
         match self.rect {
             Some((x, _, w, _)) => x + w / 2.0,
