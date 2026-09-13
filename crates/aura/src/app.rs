@@ -171,6 +171,15 @@ pub struct AuraView {
     /// frame. Remembering the last request lets it ask once and stop, while
     /// still reacting to any origin it hasn't tried yet.
     last_origin_request: Rc<Cell<Option<(f32, f32)>>>,
+    /// Cached vertical extent of the window manager's frame, once we have
+    /// seen a non-zero one.
+    ///
+    /// Only consulted when `display.window_chrome` is on — a chromeless
+    /// window has no frame to measure, and the lookup is an X round trip on
+    /// its own connection, far too expensive to run on every layout pass.
+    /// Caching only a non-zero reading matters because the frame does not
+    /// exist yet on the first prepaint after the window opens.
+    frame_extents: Rc<Cell<f32>>,
     /// Tracks the body's scroll state so the window-resize callback can read
     /// `max_offset` to recover the body's natural content height (the body is
     /// allowed to shrink below its content when the window hits the screen
@@ -256,6 +265,7 @@ impl AuraView {
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
             last_origin_request: Rc::new(Cell::new(None)),
+            frame_extents: Rc::new(Cell::new(0.0)),
             body_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
         };
@@ -842,6 +852,8 @@ impl Render for AuraView {
         );
         let last_height = self.last_window_height.clone();
         let last_origin = self.last_origin_request.clone();
+        let frame_extents = self.frame_extents.clone();
+        let has_chrome = self.config.display.window_chrome;
         let body_scroll = self.body_scroll.clone();
         // `display.auto_resize` governs the content-fit auto-resize that grows /
         // shrinks the window to fit its content on every layout pass. It is
@@ -941,14 +953,30 @@ impl Render for AuraView {
                     let available_bottom = crate::work_area::available_bottom(dbounds)
                         .map(px)
                         .unwrap_or(screen_bottom - bottom_reserve);
+                    let frame_v = if has_chrome {
+                        let seen = frame_extents.get();
+                        if seen > 0.0 {
+                            seen
+                        } else {
+                            let v = crate::platform::window_frame_extents(window);
+                            frame_extents.set(v);
+                            v
+                        }
+                    } else {
+                        0.0
+                    };
                     // How much room the window has depends on whether its
                     // top edge is about to move — see `placement::fit_cap`.
+                    // The window manager's frame (a title bar, when
+                    // `display.window_chrome` is on) is part of the window but
+                    // not of the content we fit to, so it comes off the top of
+                    // whatever room there is. Zero without chrome.
                     let max_h = px(crate::placement::fit_cap(
                         f32::from(available_bottom),
                         f32::from(dbounds.origin.y),
                         f32::from(window_top),
                         anchor.needs_reposition(),
-                    ));
+                    ) - frame_v);
                     if measured > max_h {
                         measured = max_h;
                     }
