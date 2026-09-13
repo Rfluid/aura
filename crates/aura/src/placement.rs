@@ -171,6 +171,10 @@ fn corner_x(screen_left: f32, screen_right: f32) -> f32 {
 /// the display with a [`SCREEN_GAP`] margin. An icon near either edge — the
 /// usual case, since that's where trays live — slides the modal back inward
 /// instead of hanging it off the screen.
+///
+/// Windows never centres (its flyouts right-align, see [`modal_origin`]), so
+/// outside `cfg(test)` this is unreachable there.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn centered_x(icon_x: f32, screen_left: f32, screen_right: f32) -> f32 {
     let min = screen_left + SCREEN_GAP;
     let max = (screen_right - MODAL_W - SCREEN_GAP).max(min);

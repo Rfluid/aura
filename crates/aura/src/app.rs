@@ -162,6 +162,15 @@ pub struct AuraView {
     /// `on_children_prepainted` callback so we only issue a `Window::resize`
     /// when the measured content height actually changes.
     last_window_height: Rc<Cell<Pixels>>,
+    /// Origin we last asked the window manager to move the window to, in the
+    /// same space [`crate::placement::modal_origin`] returns.
+    ///
+    /// A window manager is free to refuse or clamp a move. The fit callback's
+    /// drift check would then see the window still out of place on the next
+    /// layout pass and ask again — for the same origin, forever, once per
+    /// frame. Remembering the last request lets it ask once and stop, while
+    /// still reacting to any origin it hasn't tried yet.
+    last_origin_request: Rc<Cell<Option<(f32, f32)>>>,
     /// Tracks the body's scroll state so the window-resize callback can read
     /// `max_offset` to recover the body's natural content height (the body is
     /// allowed to shrink below its content when the window hits the screen
@@ -246,6 +255,7 @@ impl AuraView {
             spinner_frame: 0,
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
+            last_origin_request: Rc::new(Cell::new(None)),
             body_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
         };
@@ -831,6 +841,7 @@ impl Render for AuraView {
             SelectionStyle::from_background(rgba((self.theme.colors.accent << 8) | 0x33)),
         );
         let last_height = self.last_window_height.clone();
+        let last_origin = self.last_origin_request.clone();
         let body_scroll = self.body_scroll.clone();
         // `display.auto_resize` governs the content-fit auto-resize that grows /
         // shrinks the window to fit its content on every layout pass. It is
@@ -976,7 +987,13 @@ impl Render for AuraView {
                                 anchor,
                             );
                             let have = window.bounds().origin;
-                            (have.x - want.x).abs() >= px(1.0) || (have.y - want.y).abs() >= px(1.0)
+                            let off = (have.x - want.x).abs() >= px(1.0)
+                                || (have.y - want.y).abs() >= px(1.0);
+                            // Only chase an origin we have not already asked
+                            // for. A window manager that clamps this one will
+                            // clamp it again, and re-requesting it every layout
+                            // pass would be an endless move/resize storm.
+                            off && last_origin.get() != Some((f32::from(want.x), f32::from(want.y)))
                         },
                     );
 
@@ -994,6 +1011,7 @@ impl Render for AuraView {
                 let new_size = size(px(WINDOW_WIDTH), measured);
                 #[cfg(target_os = "windows")]
                 let uncloak = needs_uncloak.clone();
+                let last_origin = last_origin.clone();
                 window.on_next_frame(move |window, _cx| {
                     // For a bottom-anchored modal we want the *bottom* edge
                     // pinned to the taskbar, so compute the desired top-left
@@ -1016,6 +1034,7 @@ impl Render for AuraView {
                     } else {
                         None
                     };
+                    last_origin.set(desired.map(|o| (f32::from(o.x), f32::from(o.y))));
 
                     // On Windows GPUI's resize() keeps the top-left fixed; we
                     // then move + lift the open-time DWM cloak, which must fire

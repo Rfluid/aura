@@ -890,12 +890,30 @@ pub(crate) fn set_window_origin(
         if ns_window.is_null() {
             return;
         }
-        let screen: cocoa::base::id = msg_send![class!(NSScreen), mainScreen];
-        if screen.is_null() {
+        // `+[NSScreen screens]` element 0 — not `mainScreen`. AppKit's global
+        // coordinate space has its origin at the *primary* screen's bottom
+        // left, and only `screens[0]` is guaranteed to be that screen (GPUI
+        // relies on the same fact, see `MacDisplay::primary`). `mainScreen`
+        // means "the screen holding the key window", so on a multi-display Mac
+        // whose screens differ in height the flip below would be off by their
+        // difference and drop the modal at the wrong Y.
+        let screens: cocoa::base::id = msg_send![class!(NSScreen), screens];
+        if screens.is_null() {
             return;
         }
-        let frame: NSRect = msg_send![screen, frame];
-        // Flip GPUI's top-down Y into AppKit's bottom-up screen Y.
+        let count: usize = msg_send![screens, count];
+        if count == 0 {
+            return;
+        }
+        let primary: cocoa::base::id = msg_send![screens, objectAtIndex: 0usize];
+        if primary.is_null() {
+            return;
+        }
+        let frame: NSRect = msg_send![primary, frame];
+        // `origin` arrives in the space `platform::display_bounds` reports —
+        // CoreGraphics global coordinates, top-left origin, Y down. AppKit is
+        // bottom-up from the primary screen's bottom left, so the flip is
+        // against that screen's height.
         let top_left = NSPoint::new(
             f64::from(f32::from(origin.x)),
             frame.size.height - f64::from(f32::from(origin.y)),
