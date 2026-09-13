@@ -105,6 +105,14 @@ fn main() -> Result<()> {
     let config = AppConfig::load_with_discovery(&config_path)?;
     runtime::set_from_config(&config);
 
+    // Seed the height the modal opens at from the last session, so the first
+    // open is placed as well as every later one — see
+    // `runtime::seed_modal_height`. A failure here is not worth reporting:
+    // `toggle_window` falls back to `placement::MODAL_H` and the auto-fit
+    // takes over from there.
+    let mut persisted_modal_height = AppState::load().ok().and_then(|s| s.modal_height);
+    runtime::seed_modal_height(persisted_modal_height);
+
     // ── Install tray icon ─────────────────────────────────────────────────────
     //
     // Failure is not fatal, but it *is* serious: the tray icon is Aura's only
@@ -267,6 +275,28 @@ fn main() -> Result<()> {
                 // mutation from anywhere but the main thread.
                 if let Some(tray) = tray.as_mut() {
                     tray.apply_pending_status();
+                }
+
+                // Write back the height the content settled at, so the next
+                // session's first open is placed correctly too (see
+                // `runtime::seed_modal_height`). Change-gated, and only real
+                // content is ever recorded (the auto-fit skips placeholder
+                // measurements), so this is one small write per open at most —
+                // not one per resize, and nothing at all while the modal sits
+                // open. Deliberately not deferred to the modal closing: a
+                // session that ends with the window still up would save
+                // nothing. Read-modify-write, so a profile the user picked in
+                // the modal isn't clobbered.
+                if let Some(height) = runtime::modal_height_to_persist(persisted_modal_height) {
+                    let mut state = AppState::load().unwrap_or_default();
+                    state.modal_height = Some(height);
+                    if let Err(e) = state.save() {
+                        eprintln!("aura: could not save the modal height: {e}");
+                    }
+                    // Either way, stop trying: a disk that refused once will
+                    // refuse every 150ms, and the value still serves this
+                    // session from memory.
+                    persisted_modal_height = Some(height);
                 }
 
                 // Escape, routed here from the keystroke observer in the
@@ -737,7 +767,10 @@ fn toggle_window(
             #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
             {
                 let _ = handle.update(cx, |_, window, cx| {
-                    platform::set_window_origin(window, cx, bounds.origin, bounds.size)
+                    // No frame shift: the window manager has not framed the
+                    // window yet, so there is nothing to measure. The auto-fit
+                    // pass corrects for it once `_NET_FRAME_EXTENTS` appears.
+                    platform::set_window_origin(window, cx, bounds.origin, bounds.size, 0.0)
                 });
             }
 

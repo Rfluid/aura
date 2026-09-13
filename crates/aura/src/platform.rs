@@ -873,6 +873,7 @@ pub(crate) fn set_window_origin(
     _cx: &mut gpui::App,
     origin: gpui::Point<gpui::Pixels>,
     _size: gpui::Size<gpui::Pixels>,
+    _frame_v: f32,
 ) {
     use cocoa::foundation::{NSPoint, NSRect};
     use objc::{class, msg_send, sel, sel_impl};
@@ -1008,6 +1009,7 @@ pub(crate) fn set_window_origin(
     _cx: &mut gpui::App,
     origin: gpui::Point<gpui::Pixels>,
     size: gpui::Size<gpui::Pixels>,
+    frame_v: f32,
 ) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -1032,7 +1034,16 @@ pub(crate) fn set_window_origin(
     // X11 window coordinates are physical, root-relative pixels; GPUI gives us
     // logical points, so scale up (scale is 1.0 on most X11/KDE setups).
     let x = (f32::from(origin.x) * scale).round() as i32;
-    let y = (f32::from(origin.y) * scale).round() as i32;
+    // With server-side decorations (`display.window_chrome`) the window
+    // manager wraps the client in a frame, and the point a move request
+    // addresses is the *frame's* top-left, not the client's. Placing a
+    // bottom-anchored modal by its client origin therefore pushed the whole
+    // window down by the title bar's height — 28px under KWin's default
+    // theme — and walked its bottom edge into the taskbar. Shifting up by the
+    // frame's vertical extent puts the frame's *bottom* where the caller
+    // intended the content to end. `frame_v` is zero for an undecorated
+    // window, which makes this inert in the default configuration.
+    let y = ((f32::from(origin.y) - frame_v) * scale).round() as i32;
     let w = (f32::from(size.width) * scale).round().max(1.0) as u32;
     let ht = (f32::from(size.height) * scale).round().max(1.0) as u32;
     let xid = h.window.get();
@@ -1048,17 +1059,6 @@ pub(crate) fn set_window_origin(
     use x11rb::protocol::xproto::{
         ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask,
     };
-
-    // With server-side decorations (`display.window_chrome`) the window
-    // manager wraps the client in a frame, and the point a move request
-    // addresses is the *frame's* top-left, not the client's. Placing a
-    // bottom-anchored modal by its client origin therefore pushed the whole
-    // window down by the title bar's height — 28px under KWin's default
-    // theme — and walked its bottom edge into the taskbar. Shift the request
-    // up by the frame's vertical extent so the frame's *bottom* lands where
-    // the caller intended the content to end. Chromeless windows report zero
-    // extents, so this is a no-op in the default configuration.
-    let y = y - frame_extents_v(&conn, xid);
 
     // A plain ConfigureWindow moves *override-redirect* / unmanaged windows
     // (and is honoured by some minimal WMs), but a full window manager like

@@ -496,3 +496,38 @@ Write-Host "  > Tray icon: should appear at the right end of the taskbar (near t
 Write-Host "  > If it landed in the '^' overflow group, drag it into the always-visible area."
 Write-Host "  > Right-click the tray icon for Show / Quit. Left-click toggles the modal."
 Write-Host "  > If Windows SmartScreen blocked the unsigned binary on first run, click 'More info' -> 'Run anyway'."
+
+# ---- Where the modal opens ---------------------------------------------------
+#
+# The taskbar is at the bottom by default, which is what Aura ships tuned for,
+# but plenty of people move it or hide it. Say once how to match the window to
+# whatever they have.
+Write-Host ""
+Write-Host "Where the modal opens:"
+Write-Host ""
+Write-Host "  Aura opens its window in the corner by the tray and keeps clear of"
+Write-Host "  the taskbar. Which edge it holds on to is up to you:"
+Write-Host ""
+Write-Host "    Taskbar at the BOTTOM (the Windows default)"
+Write-Host "        aura config set display.anchor bottom   # already the default"
+Write-Host "        Window sits just above the taskbar and grows upward."
+Write-Host ""
+Write-Host "    Taskbar moved to the TOP"
+Write-Host "        aura config set display.anchor top"
+Write-Host "        Window hangs just below it and grows downward."
+Write-Host ""
+Write-Host "    Auto-hiding taskbar, or you'd rather Windows decide"
+Write-Host "        aura config set display.anchor none"
+Write-Host "        Window opens at the natural tray corner and stays put."
+Write-Host ""
+Write-Host "  Two more worth knowing:"
+Write-Host ""
+Write-Host "    Show the window in Alt+Tab and the taskbar"
+Write-Host "        aura config set display.show_in_app_switcher true"
+Write-Host ""
+Write-Host "    Keep the window open when it loses focus (handy for copying)"
+Write-Host "        aura config set display.dismiss_on_focus_loss false"
+Write-Host ""
+Write-Host "  Run 'aura config describe' for every setting, or edit"
+Write-Host "  %APPDATA%\aura\config.toml directly. Changes apply the next time the"
+Write-Host "  window opens - no restart."

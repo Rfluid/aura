@@ -10,6 +10,21 @@ use serde::{Deserialize, Serialize};
 pub struct AppState {
     /// Name of the last active agent profile. `None` means "use first in config".
     pub active_profile: Option<String>,
+    /// Height, in logical pixels, the modal's content settled at the last time
+    /// it was open. `None` before the modal has ever been measured.
+    ///
+    /// Purely a placement hint. The modal opens at this height so the auto-fit
+    /// pass has nothing to correct, which is what stops the window appearing
+    /// at one size and jumping to another a frame later. It matters most for
+    /// `display.anchor = "none"`, which never repositions: opened at the
+    /// fallback height the window would keep a top edge chosen for a much
+    /// taller window and float well clear of the panel for the whole session.
+    ///
+    /// Stale values are self-correcting — the auto-fit measures real content
+    /// on the next frame regardless — so no attempt is made to invalidate this
+    /// when the config or theme changes.
+    #[serde(default)]
+    pub modal_height: Option<u32>,
 }
 
 impl AppState {
@@ -64,10 +79,23 @@ mod tests {
     fn round_trips_through_json() {
         let state = AppState {
             active_profile: Some("Claude Code (Enterprise)".to_string()),
+            modal_height: Some(409),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let parsed: AppState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn a_state_file_without_a_modal_height_still_loads() {
+        // Written by any build before the field existed. `modal_height` is a
+        // placement hint, so its absence must not make the file unreadable.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, r#"{"active_profile":"Personal"}"#).unwrap();
+        let loaded = AppState::load_from(&path).unwrap();
+        assert_eq!(loaded.active_profile.as_deref(), Some("Personal"));
+        assert_eq!(loaded.modal_height, None);
     }
 
     #[test]
@@ -87,6 +115,7 @@ mod tests {
 
         let original = AppState {
             active_profile: Some("My Profile".to_string()),
+            modal_height: Some(512),
         };
         original.save_to(&path).unwrap();
 
