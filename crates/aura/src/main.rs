@@ -37,8 +37,9 @@ use crate::{app::AuraView, assets::EmbeddedAssets};
 /// DWM-cloak or -uncloak a window on Windows. Cloaking makes the window
 /// invisible to the user (DWM hides it during composition) while it still
 /// receives WM_PAINT and renders normally — used to hide the first-frame
-/// resize flash (window opens at MODAL_H, shrinks to content height on the
-/// next frame; without cloaking the user sees a one-frame flicker).
+/// resize flash (the window opens at its remembered height — MODAL_H on the
+/// first open of the process — and the auto-fit pass corrects it on the next
+/// frame; without cloaking the user sees a one-frame flicker).
 #[cfg(target_os = "windows")]
 pub(crate) fn win32_set_cloak(window: &gpui::Window, cloak: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -593,7 +594,11 @@ fn toggle_window(
     // modal's height against the screen it actually opened on. Reading
     // `primary_display()` there instead would measure the wrong taskbar the
     // moment the tray lives on a secondary monitor.
-    let (bounds, display_id) = placement::modal_bounds(cx, tray_anchor, anchor);
+    // Open at the height the content settled at last time, so the auto-fit
+    // pass has nothing to correct and the window doesn't visibly jump one
+    // frame after it appears. `MODAL_H` on the first open of the process.
+    let open_h = runtime::last_modal_height().unwrap_or(placement::MODAL_H);
+    let (bounds, display_id) = placement::modal_bounds(cx, tray_anchor, anchor, open_h);
     // `display.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
     // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.
@@ -720,12 +725,28 @@ fn toggle_window(
             // decorated title bar now shows.
             let _ = handle.update(cx, |_, window, _| window.set_window_title("Aura"));
 
+            // Re-assert the origin we asked `open_window` for. A window
+            // manager is free to ignore the position a client requests at map
+            // time unless the WM_NORMAL_HINTS carry `PPosition`, which GPUI
+            // does not set — KWin applies its own placement policy to the
+            // first window a process opens and centres it. The auto-fit pass
+            // corrects that a frame or two later, which is exactly the visible
+            // jump this call removes. Absolute coordinates: on X11
+            // `placement::to_window_origin` is the identity, so `bounds` is
+            // already in the space `set_window_origin` wants.
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+            {
+                let _ = handle.update(cx, |_, window, cx| {
+                    platform::set_window_origin(window, cx, bounds.origin, bounds.size)
+                });
+            }
+
             cx.activate(true);
 
             #[cfg(target_os = "windows")]
             {
-                // Cloak immediately so the first frame (at MODAL_H before
-                // on_children_prepainted shrinks it to content height) is
+                // Cloak immediately so the first frame (at the open height,
+                // before on_children_prepainted fits it to the content) is
                 // invisible. AuraView's on_children_prepainted uncloak fires
                 // on the second frame after the resize, showing the window at
                 // the correct size.

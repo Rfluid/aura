@@ -101,9 +101,8 @@ pub struct DisplayConfig {
     ///   grow downward.
     ///
     /// The default is OS-specific (see [`default_anchor`]): `"bottom"` on
-    /// Windows and Linux (bottom taskbar), `"none"` on macOS (top menu bar).
-    /// Unrecognised values (including the legacy `"auto"`) fall back to the
-    /// per-OS default.
+    /// Windows (bottom taskbar), `"none"` on macOS and Linux. Unrecognised
+    /// values (including the legacy `"auto"`) fall back to the per-OS default.
     pub anchor: String,
     /// Which display server GPUI talks to on Linux / BSD: `"auto"`, `"x11"`
     /// or `"wayland"`.
@@ -223,14 +222,16 @@ fn default_tray_status_interval_secs() -> u64 {
     1200
 }
 
-/// Per-OS default for [`DisplayConfig::anchor`]. Windows and Linux both put
-/// the tray next to a bottom taskbar, so the modal pins its bottom edge above
-/// that bar and grows upward (`"bottom"`); macOS has its menu bar at the top,
-/// where GPUI's natural grow-downward behaviour is already right (`"none"`).
+/// Per-OS default for [`DisplayConfig::anchor`]. Windows ships with a bottom
+/// taskbar, so the modal grows upward off the tray (`"bottom"`); macOS (menu
+/// bar at the top) and Linux open at their natural corner without an active
+/// reposition (`"none"`).
 ///
-/// Linux used to default to `"none"` on the grounds that the compositor owned
-/// placement. That is only true on a native Wayland surface, which
-/// [`DisplayConfig::linux_backend`] now avoids by default.
+/// Linux stays on `"none"` because panel placement varies far more there than
+/// on Windows — a top-panel GNOME session and a bottom-panel Plasma one are
+/// equally normal. Bottom-anchoring works fine once
+/// [`DisplayConfig::linux_backend`] has secured an X11 connection; it is just
+/// not a safe assumption to bake in, so it stays opt-in.
 ///
 /// Evaluated at compile time for the target this binary is built for, so the
 /// value baked into `default_config()` — and thus written to disk by the
@@ -238,13 +239,13 @@ fn default_tray_status_interval_secs() -> u64 {
 /// for the platform. No install-time OS detection is needed in the shell
 /// scripts.
 fn default_anchor() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        "none".to_string()
-    }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         "bottom".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "none".to_string()
     }
 }
 

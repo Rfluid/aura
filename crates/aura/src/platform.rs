@@ -872,6 +872,7 @@ pub(crate) fn set_window_origin(
     window: &mut gpui::Window,
     _cx: &mut gpui::App,
     origin: gpui::Point<gpui::Pixels>,
+    _size: gpui::Size<gpui::Pixels>,
 ) {
     use cocoa::foundation::{NSPoint, NSRect};
     use objc::{class, msg_send, sel, sel_impl};
@@ -925,6 +926,7 @@ pub(crate) fn set_window_origin(
     window: &mut gpui::Window,
     _cx: &mut gpui::App,
     origin: gpui::Point<gpui::Pixels>,
+    size: gpui::Size<gpui::Pixels>,
 ) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -950,6 +952,8 @@ pub(crate) fn set_window_origin(
     // logical points, so scale up (scale is 1.0 on most X11/KDE setups).
     let x = (f32::from(origin.x) * scale).round() as i32;
     let y = (f32::from(origin.y) * scale).round() as i32;
+    let w = (f32::from(size.width) * scale).round().max(1.0) as u32;
+    let ht = (f32::from(size.height) * scale).round().max(1.0) as u32;
     let xid = h.window.get();
 
     // Fresh short-lived connection: repositioning only fires when the content
@@ -969,7 +973,17 @@ pub(crate) fn set_window_origin(
     // KWin owns the geometry of managed top-levels and silently ignores a
     // client's attempt to move itself this way after the window is mapped.
     // It still honours it for the unmanaged case, so issue it regardless.
-    let _ = conn.configure_window(xid, &ConfigureWindowAux::new().x(x).y(y));
+    //
+    // The size goes out with it even though GPUI's `resize()` has just sent
+    // the same numbers. The two travel over *different* X connections — ours
+    // and GPUI's — so the server is free to interleave them, and a request
+    // that carries only a position can be applied to a window that is still
+    // at its old size. Spelling out the full geometry makes either ordering
+    // converge on the same rect.
+    let _ = conn.configure_window(
+        xid,
+        &ConfigureWindowAux::new().x(x).y(y).width(w).height(ht),
+    );
 
     // The EWMH-blessed way for a client to move its *own managed* window:
     // post a `_NET_MOVERESIZE_WINDOW` ClientMessage to the root with

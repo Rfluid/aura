@@ -69,15 +69,15 @@ pub fn fields() -> &'static [FieldDescriptor] {
             key: "display.anchor",
             type_label: "string",
             allowed: &["none", "bottom", "top"],
-            default: "\"bottom\" (Linux/Windows), \"none\" (macOS)",
+            default: "\"none\" (macOS/Linux), \"bottom\" (Windows)",
             summary: "How the modal anchors as it auto-fits its content height.",
             description: "How the modal anchors as it auto-fits its content height. \
                 \"none\": open at the platform's natural tray corner and grow downward; \
                 never reposition after a resize (all a native Wayland surface can do, \
                 since the compositor owns placement there \u{2014} see display.linux_backend). \"bottom\": pin the bottom edge above a bottom taskbar so \
                 it grows upward (the tray-popup feel). \"top\": pin the top edge below a top \
-                panel / menu bar and grow downward. Default is per-OS: \"bottom\" on Linux \
-                and Windows, \"none\" on macOS. Unrecognised values (incl. the legacy \
+                panel / menu bar and grow downward. Default is per-OS: \"bottom\" on \
+                Windows, \"none\" on macOS and Linux. Unrecognised values (incl. the legacy \
                 \"auto\") fall back to the per-OS default.",
             example: "none",
         },

@@ -140,7 +140,7 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 | Key | Type | Allowed | Default | Summary |
 |---|---|---|---|---|
 | `default_period` | string | `all` \| `7d` \| `30d` | `all` | Usage period tab selected on open. |
-| `anchor` | string | `none` \| `bottom` \| `top` | `bottom` (Linux/Windows), `none` (macOS) | How the modal anchors as it auto-fits height. |
+| `anchor` | string | `none` \| `bottom` \| `top` | `none` (macOS/Linux), `bottom` (Windows) | How the modal anchors as it auto-fits height. |
 | `linux_backend` | string | `auto` \| `x11` \| `wayland` | `auto` | Which display server GPUI talks to on Linux/BSD. Ignored elsewhere. |
 | `plugin_order` | string[] | — | `[]` | Display order for plugin pills (comma-separated names on `set`). |
 | `show_in_app_switcher` | bool | `true` \| `false` | `false` | Show the modal in Alt+Tab / Cmd+Tab / dock surfaces. |
@@ -290,15 +290,18 @@ content height:
 
 | Value | Behavior | Default on |
 |---|---|---|
-| `none` | Opens at the platform's natural tray corner and grows downward; never repositioned. | macOS |
-| `bottom` | Bottom edge pinned above a bottom taskbar; grows upward. | Linux, Windows |
+| `none` | Opens at the platform's natural tray corner and grows downward; never repositioned. | macOS, Linux |
+| `bottom` | Bottom edge pinned above a bottom taskbar; grows upward. | Windows |
 | `top` | Top edge pinned just below a top panel / menu bar; grows downward. | — |
 
 The right default is written to your config at install time based on your OS,
 so most people never need to set this. Change it if your taskbar/panel is
-somewhere other than your platform's default (e.g. a Linux desktop with a
-**top** panel → `anchor = "top"`). Unrecognised values (including the legacy
-`"auto"`) fall back to the per-OS default.
+somewhere other than your platform's default. Linux defaults to `none` because
+panel placement varies so much there — a top-panel GNOME session and a
+bottom-panel Plasma one are equally normal — so a Linux desktop with a bottom
+panel wants `anchor = "bottom"` and one with a top panel `anchor = "top"`.
+Unrecognised values (including the legacy `"auto"`) fall back to the per-OS
+default.
 
 Horizontally the modal follows each platform's own tray popups: macOS and
 Linux centre it on the tray icon (clamped to stay on screen), Windows

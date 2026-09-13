@@ -168,7 +168,7 @@ pub struct AuraView {
     /// cap; without this we couldn't tell capped layouts from natural ones).
     body_scroll: ScrollHandle,
     /// On Windows the modal is DWM-cloaked on open to hide the first-frame
-    /// resize (MODAL_H → content height). This flag drives the uncloak that
+    /// resize (open height → content height). This flag drives the uncloak that
     /// fires in `on_next_frame` after the first resize, so the window becomes
     /// visible at the correct size with no visible flash.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -838,6 +838,9 @@ impl Render for AuraView {
         // or without native chrome. Default on (see `DisplayConfig::auto_resize`).
         let auto_fit = self.config.display.auto_resize();
         let user_max_height = self.config.display.max_height;
+        // A refresh is in flight, so the body is showing placeholders that are
+        // shorter than the loaded content. See the floor in the fit callback.
+        let loading = self.is_loading;
         // How the modal re-anchors after the auto-fit resize (see
         // `placement::Anchor`). Only `Bottom` triggers an active move.
         let anchor = crate::placement::Anchor::from_config(&self.config.display.anchor);
@@ -880,6 +883,21 @@ impl Render for AuraView {
                     return;
                 };
                 let mut measured = (bottom + body_scroll.max_offset().height).ceil();
+
+                // While a refresh is in flight the body renders placeholders,
+                // which measure shorter than the data that is about to replace
+                // them. Fitting to those would shrink the window and then grow
+                // it straight back — a visible wobble on every open, since an
+                // open always starts with a refresh. Hold the previous open's
+                // settled height as a floor instead; it is the same number the
+                // window was created at (see `runtime::last_modal_height`), so
+                // in the steady state nothing moves at all. No floor on the
+                // first open of the process, where there is nothing to hold.
+                if loading {
+                    if let Some(floor) = crate::runtime::last_modal_height() {
+                        measured = measured.max(px(floor));
+                    }
+                }
 
                 // Cap measured at a safe distance above the primary
                 // display's bottom edge so the window never grows into a
@@ -930,15 +948,50 @@ impl Render for AuraView {
                 }
 
                 let last = last_height.get();
-                if (measured - last).abs() < px(1.0) {
+                let resized = (measured - last).abs() >= px(1.0);
+
+                // Self-heal a window that isn't where the anchor says it
+                // should be, even when the content height hasn't moved. A
+                // window manager can refuse a move it considers off-screen —
+                // KWin clamps one issued while the window is still at its
+                // pre-resize height — and without this check nothing would
+                // ever correct it, because the next pass measures the same
+                // height and returns early. Re-asserting is safe: `desired`
+                // is derived absolutely from the work area rather than read
+                // back from the live origin (the feedback loop that made the
+                // modal walk across the screen, issue #27), so it converges
+                // in one step and then stops matching.
+                let drifted = anchor.needs_reposition()
+                    && crate::placement::display_bounds_or_primary(app, display_id).is_some_and(
+                        |dbounds| {
+                            let target_h = if resized {
+                                measured
+                            } else {
+                                window.bounds().size.height
+                            };
+                            let want = crate::placement::modal_origin(
+                                dbounds,
+                                tray_anchor,
+                                f32::from(target_h),
+                                anchor,
+                            );
+                            let have = window.bounds().origin;
+                            (have.x - want.x).abs() >= px(1.0) || (have.y - want.y).abs() >= px(1.0)
+                        },
+                    );
+
+                if !resized && !drifted {
                     return;
                 }
                 last_height.set(measured);
+                // Seed the next open's window height (see
+                // `runtime::last_modal_height`) — but only from a measurement
+                // of real content. Recording a placeholder height would let
+                // the floor above decay towards it and bring the wobble back.
+                if !loading {
+                    crate::runtime::set_last_modal_height(f32::from(measured));
+                }
                 let new_size = size(px(WINDOW_WIDTH), measured);
-                // Captured for the direction-aware resize/move ordering below
-                // (only the non-Windows bottom-anchor path uses it).
-                #[cfg(not(target_os = "windows"))]
-                let prev_height = last;
                 #[cfg(target_os = "windows")]
                 let uncloak = needs_uncloak.clone();
                 window.on_next_frame(move |window, _cx| {
@@ -987,13 +1040,23 @@ impl Render for AuraView {
                     // `None`/`top` anchors just resize (grow downward).
                     #[cfg(not(target_os = "windows"))]
                     match desired {
-                        Some(origin) if new_size.height > prev_height => {
-                            crate::platform::set_window_origin(window, _cx, origin);
+                        // The direction test reads the window's *live* height,
+                        // not the previously measured one. They diverge on the
+                        // very first pass of every open — the window is still
+                        // at `placement::MODAL_H` while the last measurement is
+                        // zero — and getting it wrong there is what left the
+                        // modal stranded near the top of the screen: moving a
+                        // full-height window down to a short window's origin
+                        // puts its bottom past the screen edge, so KWin clamps
+                        // the move and the following resize keeps that clamped
+                        // top (north-west gravity).
+                        Some(origin) if new_size.height > window.bounds().size.height => {
+                            crate::platform::set_window_origin(window, _cx, origin, new_size);
                             window.resize(new_size);
                         }
                         Some(origin) => {
                             window.resize(new_size);
-                            crate::platform::set_window_origin(window, _cx, origin);
+                            crate::platform::set_window_origin(window, _cx, origin, new_size);
                         }
                         None => window.resize(new_size),
                     }
