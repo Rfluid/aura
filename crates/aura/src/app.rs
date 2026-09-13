@@ -125,6 +125,15 @@ pub struct AuraView {
     /// enumerated at open time.
     display_id: Option<gpui::DisplayId>,
 
+    /// Where the tray icon was when this modal opened, as the backend
+    /// reported it. Held for the same reason as `display_id`: the auto-fit
+    /// callback recomputes the window origin from scratch every time the
+    /// content height changes, and without the anchor that recomputation
+    /// would silently drop the modal back to the screen corner one frame
+    /// after opening centred under the icon. `None` when the trigger carried
+    /// no position (the tray menu's "Show Aura" item).
+    tray_anchor: Option<crate::tray::TrayAnchor>,
+
     /// Latest GitHub release info, populated by a background fetch at
     /// startup. `None` means the check hasn't completed yet, failed, or the
     /// remote version is not newer than the local build. Stays set after
@@ -189,6 +198,7 @@ impl AuraView {
         config_path: PathBuf,
         state: AppState,
         display_id: Option<gpui::DisplayId>,
+        tray_anchor: Option<crate::tray::TrayAnchor>,
         cx: &mut Context<Self>,
     ) -> Self {
         let active_profile = state
@@ -226,6 +236,7 @@ impl AuraView {
             forecast: None,
             plugin_panels: Vec::new(),
             display_id,
+            tray_anchor,
             update: None,
             show_more_modal: false,
             show_settings_panel: false,
@@ -833,6 +844,7 @@ impl Render for AuraView {
         // Captured by value: the callback runs on every layout pass and must
         // not borrow `self`.
         let display_id = self.display_id;
+        let tray_anchor = self.tray_anchor;
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
         let mut root = div()
@@ -942,7 +954,7 @@ impl Render for AuraView {
                             |dbounds| {
                                 crate::placement::modal_origin(
                                     dbounds,
-                                    None,
+                                    tray_anchor,
                                     f32::from(new_size.height),
                                     anchor,
                                 )

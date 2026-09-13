@@ -66,7 +66,8 @@ const MENU_BAR_H: f32 = 25.0;
 pub enum Anchor {
     /// Open at the platform's natural tray corner and grow downward from
     /// there (GPUI's default resize behaviour); never reposition after a
-    /// resize. Safe on Wayland, where the compositor owns placement.
+    /// resize. The only thing a native Wayland surface can deliver, since the
+    /// compositor owns placement there — see `display.linux_backend`.
     None,
     /// Pin the bottom edge above a bottom taskbar so the modal grows *upward*.
     /// GPUI's `resize()` keeps the top fixed and grows downward, so this is
@@ -82,13 +83,13 @@ impl Anchor {
     /// `aura_core::config::default_anchor` (kept in sync by value, since the
     /// two live in different crates).
     pub fn os_default() -> Self {
-        #[cfg(target_os = "windows")]
-        {
-            Anchor::Bottom
-        }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         {
             Anchor::None
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Anchor::Bottom
         }
     }
 
@@ -153,17 +154,34 @@ pub fn display_bounds_or_primary(cx: &App, id: Option<DisplayId>) -> Option<Boun
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 
+/// Right-aligned X: the modal hugs the display's right edge, one
+/// [`SCREEN_GAP`] in. Used on Windows always, and everywhere else when the
+/// tray host gave us no position to centre on.
+fn corner_x(screen_left: f32, screen_right: f32) -> f32 {
+    (screen_right - MODAL_W - SCREEN_GAP).max(screen_left)
+}
+
+/// X that centres the modal on `icon_x`, clamped so the window stays fully on
+/// the display with a [`SCREEN_GAP`] margin. An icon near either edge — the
+/// usual case, since that's where trays live — slides the modal back inward
+/// instead of hanging it off the screen.
+fn centered_x(icon_x: f32, screen_left: f32, screen_right: f32) -> f32 {
+    let min = screen_left + SCREEN_GAP;
+    let max = (screen_right - MODAL_W - SCREEN_GAP).max(min);
+    (icon_x - MODAL_W / 2.0).clamp(min, max)
+}
+
 /// Desired top-left of the modal, in the same logical-pixel space
 /// `App::displays` uses (origin at the virtual desktop's top-left, Y
 /// increasing downward), for a window whose content is `content_h` pixels
 /// tall under `anchor`.
 ///
-/// Horizontal placement: macOS centres the modal on the status item (the tray
-/// lives in the menu bar, and a menu-bar popover hangs directly beneath its
-/// item), so `tray` supplies the centre. Windows and Linux put the tray in a
-/// screen corner and their native flyouts — the volume and network panels —
-/// right-align to the screen edge rather than tracking the icon, so those
-/// platforms ignore `tray` horizontally.
+/// Horizontal placement follows each platform's own tray popups. macOS and
+/// Linux centre the modal on the icon (`tray` supplies the centre, via
+/// `centered_x`); Windows right-aligns to the screen edge (via
+/// `corner_x`), because that is what its volume / network flyouts do. With
+/// no `tray` — the "Show Aura" menu item carries no position — every platform
+/// falls back to the corner.
 ///
 /// Vertical placement follows `anchor` (see [`Anchor`]). `Anchor::None` uses
 /// the platform-natural corner — top (below the menu bar) on macOS, bottom on
@@ -179,17 +197,26 @@ pub fn modal_origin(
     let screen_right = f32::from(display.origin.x + display.size.width);
     let screen_bottom_full = f32::from(display.origin.y + display.size.height);
 
-    #[cfg(target_os = "macos")]
     let x = {
-        let icon_x = tray
-            .map(|t| t.center_x())
-            .unwrap_or(screen_right - MODAL_W / 2.0);
-        (icon_x - MODAL_W / 2.0).clamp(screen_left, (screen_right - MODAL_W).max(screen_left))
-    };
-    #[cfg(not(target_os = "macos"))]
-    let x = {
-        let _ = tray;
-        (screen_right - MODAL_W - SCREEN_GAP).max(screen_left)
+        #[cfg(target_os = "windows")]
+        {
+            // Windows keeps the tray in a screen corner and its own flyouts —
+            // volume, network, battery — right-align to the screen edge rather
+            // than tracking the icon that opened them. Match that.
+            let _ = tray;
+            corner_x(screen_left, screen_right)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // A macOS menu-bar popover hangs directly under its status item,
+            // and Plasma / GNOME system-tray popups centre on their icon the
+            // same way. Fall back to the corner when the trigger carried no
+            // position (the "Show Aura" menu item).
+            match tray.map(|t| t.center_x()) {
+                Some(icon_x) => centered_x(icon_x, screen_left, screen_right),
+                None => corner_x(screen_left, screen_right),
+            }
+        }
     };
 
     let bottom_y = || {
@@ -323,6 +350,44 @@ mod tests {
         let primary = display(0.0, 0.0, 2560.0, 1440.0);
         let absolute = point(px(2032.0), px(1200.0));
         assert_eq!(to_window_origin(absolute, primary), absolute);
+    }
+
+    #[test]
+    fn centres_the_modal_on_the_tray_icon() {
+        let screen = display(0.0, 0.0, 2560.0, 1440.0);
+        let left = f32::from(screen.origin.x);
+        let right = f32::from(screen.origin.x + screen.size.width);
+        // Icon comfortably inside the display: exact centring.
+        assert_eq!(centered_x(1280.0, left, right), 1280.0 - MODAL_W / 2.0);
+        // Icon hard against the right edge (where trays live): the modal
+        // slides back in rather than hanging off the screen.
+        assert_eq!(
+            centered_x(2550.0, left, right),
+            right - MODAL_W - SCREEN_GAP
+        );
+        // ...and symmetrically on the left.
+        assert_eq!(centered_x(4.0, left, right), left + SCREEN_GAP);
+    }
+
+    #[test]
+    fn centring_never_runs_off_a_display_narrower_than_the_modal() {
+        // MODAL_W is 520; a 400px-wide display can't satisfy both gaps, so the
+        // clamp must still produce a value inside the display.
+        let screen = display(0.0, 0.0, 400.0, 800.0);
+        let left = f32::from(screen.origin.x);
+        let right = f32::from(screen.origin.x + screen.size.width);
+        assert_eq!(centered_x(200.0, left, right), left + SCREEN_GAP);
+        assert_eq!(corner_x(left, right), left);
+    }
+
+    #[test]
+    fn corner_placement_hugs_the_right_edge() {
+        // Secondary display at x=1920 — the corner is that display's right
+        // edge, not the desktop's.
+        let screen = display(1920.0, 0.0, 1920.0, 1080.0);
+        let left = f32::from(screen.origin.x);
+        let right = f32::from(screen.origin.x + screen.size.width);
+        assert_eq!(corner_x(left, right), 3840.0 - MODAL_W - SCREEN_GAP);
     }
 
     #[test]

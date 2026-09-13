@@ -292,20 +292,27 @@ with an invisible process.
 
 ### Modal placement on Wayland
 
-On X11, Windows, and macOS, the modal opens in the bottom-right corner
-(where the tray icon usually lives). On Wayland (KWin, Mutter, sway)
-the compositor decides where windows go — the Wayland protocol forbids
-clients from positioning regular toplevel surfaces — so KWin will
-typically center the modal instead. The modal's height is still capped
-so it never overlaps a bottom taskbar.
+The modal opens centred on the tray icon and clear of the taskbar. That
+requires the app to choose its own window position, which the Wayland
+protocol forbids for a regular toplevel surface — on a native Wayland session
+the compositor places the window instead, `display.anchor` stops having any
+effect, and an auto-hidden panel can slide out over the modal.
 
-If you'd like exact bottom-right placement on KDE Plasma / Wayland,
-add a KWin window rule:
+Every mainstream Wayland desktop ships XWayland, so Aura uses GPUI's X11
+backend whenever `$DISPLAY` is set. Nothing to configure — this is the
+`display.linux_backend = "auto"` default.
+
+If XWayland looks soft on a fractional-scale display, set
+`display.linux_backend = "wayland"` and place the modal with a KWin rule
+instead:
 
 1. **System Settings → Window Management → Window Rules → Add New**.
 2. **Window class** (substring match): `aura`.
 3. Add property **Position** → set the value to e.g. `[screen_width - 540, screen_height - panel_height - 660]` (Force = Apply Initially).
 4. Apply. The next time Aura's modal opens it will land where you set it.
+
+See [Linux display backend](docs/configuration.md#linux-display-backend-linux_backend)
+for the full table.
 
 ### System dependencies (Linux)
 
@@ -626,12 +633,16 @@ Wayland's `xdg_toplevel` protocol [forbids client-side
 positioning](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/xdg-shell/xdg-shell.xml)
 — the compositor decides where windows go. GPUI 0.2 always uses
 `xdg_toplevel` (never `xdg_popup`), so KWin / Mutter / sway ignore our
-requested origin and typically center the modal. On X11, Windows, and
-macOS, our requested bottom-right corner is honored natively.
+requested origin and typically center the modal. That kills `display.anchor`,
+taskbar avoidance, and centring the modal under the tray icon in one go.
 
-To pin the modal to a specific position on KDE / Wayland, add a window
-rule under **System Settings → Window Management → Window Rules** with
-**Window class** substring match `aura` and a forced **Position**.
+GPUI chooses its Linux backend in `guess_compositor()`, which takes Wayland
+whenever `$WAYLAND_DISPLAY` is non-empty and exposes no override. So Aura
+hides that variable across the one `Application::new()` call and restores it
+straight after — GPUI connects through XWayland, where positioning works, and
+child processes still see the real session environment.
+`display.linux_backend = "wayland"` opts back out; use a compositor window
+rule for placement if you do.
 
 ### Why we cap the modal height (and how)
 
