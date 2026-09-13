@@ -56,6 +56,10 @@ pub const SCREEN_GAP: f32 = 8.0;
 /// taskbar.
 pub const BLIND_BOTTOM_RESERVE: f32 = 120.0;
 
+/// Floor for [`fit_cap`]: the modal never auto-fits below this, however
+/// little room the work area reports.
+pub const MIN_FIT_H: f32 = 200.0;
+
 /// Approximate height of the macOS menu bar, cleared by [`Anchor::Top`].
 #[cfg(target_os = "macos")]
 const MENU_BAR_H: f32 = 25.0;
@@ -267,6 +271,36 @@ pub fn modal_origin(
     point(px(x), px(y))
 }
 
+/// Tallest content the modal may fit to without running into a bottom panel.
+///
+/// `work_bottom` is the top of the taskbar (or the display's bottom edge when
+/// no reservation could be detected), `screen_top` the display's top edge and
+/// `window_top` where the window sits *right now* — all in the same
+/// logical-pixel space [`modal_origin`] works in.
+///
+/// The distinction that matters is whether the window's top edge is about to
+/// move:
+///
+/// * `repositions` (i.e. [`Anchor::Bottom`]) — the modal grows **upward**: the
+///   move that follows the resize lifts its top, so the room available is the
+///   whole work area. Measuring from the current top instead makes the fit
+///   *ratchet*: the cap comes out as `current_height + SCREEN_GAP`, so each
+///   layout pass can only grow by however much the previous move gained and
+///   the modal creeps to its final size over a dozen frames.
+/// * otherwise — the top is fixed and the window grows **downward**, so the
+///   room really is only what lies below it.
+///
+/// Floored at [`MIN_FIT_H`] so a misconfigured or tiny display can't collapse
+/// the modal to nothing.
+pub fn fit_cap(work_bottom: f32, screen_top: f32, window_top: f32, repositions: bool) -> f32 {
+    let room = if repositions {
+        work_bottom - screen_top - SCREEN_GAP
+    } else {
+        work_bottom - window_top
+    };
+    room.max(MIN_FIT_H)
+}
+
 /// Re-express an absolute screen origin in the coordinate space
 /// `WindowOptions::window_bounds` uses on this platform.
 ///
@@ -404,6 +438,47 @@ mod tests {
         let left = f32::from(screen.origin.x);
         let right = f32::from(screen.origin.x + screen.size.width);
         assert_eq!(corner_x(left, right), 3840.0 - MODAL_W - SCREEN_GAP);
+    }
+
+    #[test]
+    fn a_bottom_anchored_fit_gets_the_whole_work_area() {
+        // 768px display, 44px bottom panel, window currently sitting at y=318
+        // because it was last fitted to a short measurement. The cap must not
+        // depend on that: the reposition is about to lift the top.
+        assert_eq!(fit_cap(724.0, 0.0, 318.0, true), 716.0);
+        // Same answer wherever the window happens to be right now.
+        assert_eq!(fit_cap(724.0, 0.0, 76.0, true), 716.0);
+    }
+
+    #[test]
+    fn a_bottom_anchored_fit_does_not_ratchet() {
+        // The regression: capping against the live top yields
+        // `height + SCREEN_GAP`, so a modal whose content wants 477px grows 8
+        // pixels per layout pass instead of arriving in one.
+        let work_bottom = 724.0;
+        let mut height = 398.0;
+        for _ in 0..3 {
+            let window_top = work_bottom - height - SCREEN_GAP;
+            let capped = 477.0_f32.min(fit_cap(work_bottom, 0.0, window_top, true));
+            assert_eq!(capped, 477.0, "the fit must reach its target in one pass");
+            height = capped;
+        }
+    }
+
+    #[test]
+    fn a_fixed_top_fit_only_gets_the_room_below_it() {
+        // `none` / `top` keep the top edge put and grow downward, so the
+        // window's own position is exactly what bounds them.
+        assert_eq!(fit_cap(724.0, 0.0, 100.0, false), 624.0);
+        assert_eq!(fit_cap(724.0, 0.0, 318.0, false), 406.0);
+    }
+
+    #[test]
+    fn the_fit_cap_never_collapses_the_modal() {
+        // Absurd work area (a panel taller than the screen, or a parse that
+        // went wrong) must not produce a sliver of a window.
+        assert_eq!(fit_cap(40.0, 0.0, 0.0, true), MIN_FIT_H);
+        assert_eq!(fit_cap(724.0, 0.0, 700.0, false), MIN_FIT_H);
     }
 
     #[test]

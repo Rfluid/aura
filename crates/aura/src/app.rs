@@ -941,9 +941,14 @@ impl Render for AuraView {
                     let available_bottom = crate::work_area::available_bottom(dbounds)
                         .map(px)
                         .unwrap_or(screen_bottom - bottom_reserve);
-                    // Floor at 200px so a misconfigured / tiny display
-                    // doesn't collapse the modal to nothing.
-                    let max_h = (available_bottom - window_top).max(px(200.));
+                    // How much room the window has depends on whether its
+                    // top edge is about to move — see `placement::fit_cap`.
+                    let max_h = px(crate::placement::fit_cap(
+                        f32::from(available_bottom),
+                        f32::from(dbounds.origin.y),
+                        f32::from(window_top),
+                        anchor.needs_reposition(),
+                    ));
                     if measured > max_h {
                         measured = max_h;
                     }
