@@ -290,15 +290,19 @@ pub fn modal_origin(
 /// * otherwise — the top is fixed and the window grows **downward**, so the
 ///   room really is only what lies below it.
 ///
+/// Either way a [`SCREEN_GAP`] is held back, matching the gap [`modal_origin`]
+/// leaves when it places the window. Without it the two disagree by exactly
+/// that gap, and for a non-repositioning anchor the disagreement compounds:
+/// the window opens at `work_bottom - height - SCREEN_GAP`, the cap then
+/// allows `height + SCREEN_GAP`, the content fits to it, and the next open —
+/// which starts from the remembered height — repeats the trick. The modal
+/// grew 8px per launch until it reached the taskbar.
+///
 /// Floored at [`MIN_FIT_H`] so a misconfigured or tiny display can't collapse
 /// the modal to nothing.
 pub fn fit_cap(work_bottom: f32, screen_top: f32, window_top: f32, repositions: bool) -> f32 {
-    let room = if repositions {
-        work_bottom - screen_top - SCREEN_GAP
-    } else {
-        work_bottom - window_top
-    };
-    room.max(MIN_FIT_H)
+    let top = if repositions { screen_top } else { window_top };
+    (work_bottom - top - SCREEN_GAP).max(MIN_FIT_H)
 }
 
 /// Re-express an absolute screen origin in the coordinate space
@@ -468,9 +472,24 @@ mod tests {
     #[test]
     fn a_fixed_top_fit_only_gets_the_room_below_it() {
         // `none` / `top` keep the top edge put and grow downward, so the
-        // window's own position is exactly what bounds them.
-        assert_eq!(fit_cap(724.0, 0.0, 100.0, false), 624.0);
-        assert_eq!(fit_cap(724.0, 0.0, 318.0, false), 406.0);
+        // window's own position is what bounds them — less the gap.
+        assert_eq!(fit_cap(724.0, 0.0, 100.0, false), 616.0);
+        assert_eq!(fit_cap(724.0, 0.0, 318.0, false), 398.0);
+    }
+
+    #[test]
+    fn a_fixed_top_fit_does_not_creep_across_opens() {
+        // The modal reopens at the height it settled at last time, placed by
+        // `modal_origin`. Re-measuring must then agree with that height: if
+        // the cap allowed even one pixel more, the extra would be remembered
+        // and the window would grow a little on every single launch.
+        let work_bottom = 724.0;
+        let mut height = 409.0_f32;
+        for _ in 0..5 {
+            let window_top = work_bottom - height - SCREEN_GAP;
+            height = height.min(fit_cap(work_bottom, 0.0, window_top, false));
+            assert_eq!(height, 409.0);
+        }
     }
 
     #[test]

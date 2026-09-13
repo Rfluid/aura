@@ -946,6 +946,28 @@ impl Render for AuraView {
                 // the tray on a secondary monitor those are different screens
                 // with different taskbars, and capping against the wrong one
                 // either clips the modal short or lets it grow under a panel.
+                // Vertical extent of the window manager's frame — a title bar,
+                // when `display.window_chrome` is on. It belongs to the window
+                // but not to the content being fitted, so it comes off the
+                // room available and shifts every move request.
+                //
+                // Only looked up with chrome on: the query is an X round trip
+                // on its own connection, far too expensive to run on every
+                // layout pass. Only a non-zero reading is cached, because the
+                // frame does not exist yet on the first prepaint after open.
+                let frame_v = if has_chrome {
+                    let seen = frame_extents.get();
+                    if seen > 0.0 {
+                        seen
+                    } else {
+                        let v = crate::platform::window_frame_extents(window);
+                        frame_extents.set(v);
+                        v
+                    }
+                } else {
+                    0.0
+                };
+
                 if let Some(dbounds) = crate::placement::display_bounds_or_primary(app, display_id)
                 {
                     let screen_bottom = dbounds.origin.y + dbounds.size.height;
@@ -953,18 +975,6 @@ impl Render for AuraView {
                     let available_bottom = crate::work_area::available_bottom(dbounds)
                         .map(px)
                         .unwrap_or(screen_bottom - bottom_reserve);
-                    let frame_v = if has_chrome {
-                        let seen = frame_extents.get();
-                        if seen > 0.0 {
-                            seen
-                        } else {
-                            let v = crate::platform::window_frame_extents(window);
-                            frame_extents.set(v);
-                            v
-                        }
-                    } else {
-                        0.0
-                    };
                     // How much room the window has depends on whether its
                     // top edge is about to move — see `placement::fit_cap`.
                     // The window manager's frame (a title bar, when
@@ -1022,11 +1032,17 @@ impl Render for AuraView {
                             let have = window.bounds().origin;
                             let off = (have.x - want.x).abs() >= px(1.0)
                                 || (have.y - want.y).abs() >= px(1.0);
-                            // Only chase an origin we have not already asked
-                            // for. A window manager that clamps this one will
-                            // clamp it again, and re-requesting it every layout
-                            // pass would be an endless move/resize storm.
-                            off && last_origin.get() != Some((f32::from(want.x), f32::from(want.y)))
+                            // Only chase a request we have not already made.
+                            // A window manager that clamps one will clamp it
+                            // again, and re-issuing it every layout pass would
+                            // be an endless move/resize storm. The comparison
+                            // is against what would actually go out — the
+                            // origin *minus the frame shift* — not against
+                            // `want`: with chrome on, the first attempt can
+                            // fire before the WM has published
+                            // `_NET_FRAME_EXTENTS`, and the retry once they
+                            // appear is a genuinely different request.
+                            off && last_origin.get() != Some(sent_origin(want, frame_v))
                         },
                     );
 
@@ -1067,7 +1083,7 @@ impl Render for AuraView {
                     } else {
                         None
                     };
-                    last_origin.set(desired.map(|o| (f32::from(o.x), f32::from(o.y))));
+                    last_origin.set(desired.map(|o| sent_origin(o, frame_v)));
 
                     // On Windows GPUI's resize() keeps the top-left fixed; we
                     // then move + lift the open-time DWM cloak, which must fire
@@ -1103,12 +1119,16 @@ impl Render for AuraView {
                         // the move and the following resize keeps that clamped
                         // top (north-west gravity).
                         Some(origin) if new_size.height > window.bounds().size.height => {
-                            crate::platform::set_window_origin(window, _cx, origin, new_size);
+                            crate::platform::set_window_origin(
+                                window, _cx, origin, new_size, frame_v,
+                            );
                             window.resize(new_size);
                         }
                         Some(origin) => {
                             window.resize(new_size);
-                            crate::platform::set_window_origin(window, _cx, origin, new_size);
+                            crate::platform::set_window_origin(
+                                window, _cx, origin, new_size, frame_v,
+                            );
                         }
                         None => window.resize(new_size),
                     }
@@ -1123,6 +1143,14 @@ impl Render for AuraView {
         }
         root
     }
+}
+
+/// The origin a move request actually carries: the desired *client* top-left,
+/// shifted up by the window manager's frame so the frame's bottom — not the
+/// client's — lands where the placement intended. `frame_v` is zero for an
+/// undecorated window, where the two are the same thing.
+fn sent_origin(want: gpui::Point<Pixels>, frame_v: f32) -> (f32, f32) {
+    (f32::from(want.x), f32::from(want.y) - frame_v)
 }
 
 // ── Sub-renderers ─────────────────────────────────────────────────────────────

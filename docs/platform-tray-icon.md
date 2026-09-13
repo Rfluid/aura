@@ -120,6 +120,32 @@ OS-specific because that's where the tray icon lives:
 - **No position at all**: the tray menu's "Show Aura" item carries no click
   coordinates, so it falls back to the bottom-right corner everywhere.
 
+### The modal opens at the height it last settled at
+
+`AppState.modal_height` records the height the content fitted to, and the next
+open starts there instead of at `placement::MODAL_H`. Without it the window is
+created at a size its content will not have and positioned for *that* size —
+which reads as the modal appearing and then jumping a frame later.
+
+It matters most for `anchor = "none"`, which never repositions: opened at the
+fallback height, the window would keep a top edge chosen for a 640px window and
+float well clear of the panel for the whole session. Persisting rather than
+keeping it in memory is what extends the fix to the *first* open after a
+restart.
+
+Two things make this safe to persist. Stale values self-correct, because the
+auto-fit measures real content on the next frame regardless. And
+`placement::fit_cap` holds back a `SCREEN_GAP` on both of its branches, so a
+re-measurement of an unchanged window agrees with the height it was opened at —
+when only the repositioning branch reserved the gap, each open measured 8px
+more than the last, saved it, and the modal grew a little on every launch until
+it reached the taskbar.
+
+The write happens from the tray poll loop, not the layout callback: it is
+change-gated, only ever records real content (placeholder measurements are
+skipped while a refresh is in flight), and does a read-modify-write so a
+profile picked in the modal isn't clobbered.
+
 ### Wayland has no client-side positioning
 
 None of the above is possible on a native Wayland surface: `xdg_toplevel`

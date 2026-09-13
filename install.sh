@@ -515,7 +515,6 @@ case "$OS" in
         case "${XDG_CURRENT_DESKTOP:-}" in
             *KDE*)
                 print_hint "Tray icon: should already be next to wifi/volume. If it landed in the '^' overflow group, right-click the tray → Configure System Tray → Entries → Aura → set Visibility to 'Always shown'."
-                print_hint "Modal placement: KWin centers it on Wayland (protocol limit). To pin a position, add a Window Rule for class 'aura' under System Settings → Window Management → Window Rules."
                 ;;
             *GNOME*)
                 print_hint "GNOME hides StatusNotifierItem icons by default. Install the AppIndicator extension once: https://extensions.gnome.org/extension/615/appindicator-support/  then log out & back in."
@@ -528,12 +527,56 @@ case "$OS" in
                 ;;
         esac
         print_hint "Right-click the tray icon for Show / Quit. Left-click toggles the modal."
+
+        # ── Where the modal opens ────────────────────────────────────────────
+        #
+        # Linux panel layouts vary far more than macOS's menu bar or Windows'
+        # taskbar do — top bars, bottom bars, docks, auto-hide, vertical
+        # panels, multiple monitors — and there is no reliable way to detect
+        # which one the user has. So we ship a conservative default and tell
+        # them, once, how to match it to their setup. This is the one bit of
+        # configuration most people will actually want to change.
+        echo ""
+        echo "Where the modal opens:"
+        echo ""
+        echo "  Aura opens its window next to the tray icon and keeps clear of your"
+        echo "  panel. Which edge it holds on to is up to you:"
+        echo ""
+        echo "    Panel at the BOTTOM (Plasma, XFCE, Cinnamon defaults)"
+        echo "        aura config set display.anchor bottom"
+        echo "        Window sits just above the panel and grows upward."
+        echo ""
+        echo "    Panel at the TOP (GNOME, Budgie, a top-bar tiling setup)"
+        echo "        aura config set display.anchor top"
+        echo "        Window hangs just below the bar and grows downward."
+        echo ""
+        echo "    Dock, auto-hide panel, vertical panel, or you'd rather your"
+        echo "    window manager decide"
+        echo "        aura config set display.anchor none   # the default"
+        echo "        Window opens at the natural tray corner and stays put."
+        echo ""
+        echo "  Two more worth knowing:"
+        echo ""
+        echo "    Show the window in Alt+Tab and the taskbar"
+        echo "        aura config set display.show_in_app_switcher true"
+        echo ""
+        echo "    Keep the window open when it loses focus (handy for copying)"
+        echo "        aura config set display.dismiss_on_focus_loss false"
+        echo ""
+        echo "  Run 'aura config describe' for every setting, or edit"
+        echo "  ~/.config/aura/config.toml directly. Changes apply the next time"
+        echo "  the window opens — no restart."
+
+        if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+            print_hint "You are on a Wayland session. Wayland does not let an app place its own window, so Aura talks to X11 through XWayland to keep the anchoring above working. If it looks soft on a fractional-scale display, run 'aura config set display.linux_backend wayland' and position the window with a compositor window rule instead."
+        fi
         ;;
 
     Darwin)
         echo ""
         echo "Next steps:"
         print_hint "Tray icon: should appear at the right end of your menu bar."
+        print_hint "The modal hangs under the icon and grows downward, which is what the menu bar wants — no placement setting needed. 'aura config describe' lists the rest."
         print_hint "If macOS quarantined Aura.app, the launchd plist won't load — strip the quarantine: xattr -dr com.apple.quarantine /Applications/Aura.app"
         print_hint "To pin Aura.app to the Dock: right-click its Dock icon → Options → Keep in Dock."
         ;;

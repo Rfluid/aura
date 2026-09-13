@@ -64,6 +64,34 @@ pub fn last_modal_height() -> Option<f32> {
     }
 }
 
+/// Seed the remembered height from `AppState` at startup, so the *first* open
+/// of a session is placed as well as every later one.
+///
+/// Without this the first open falls back to `placement::MODAL_H`, and the
+/// window is positioned for a height its content will not have. With
+/// `display.anchor = "bottom"` the auto-fit corrects that a frame later; with
+/// `"none"`, which never repositions, it does not correct at all — the modal
+/// keeps a top edge chosen for a 640px window and floats clear of the panel
+/// for the rest of the session.
+pub fn seed_modal_height(height: Option<u32>) {
+    if let Some(h) = height {
+        LAST_MODAL_HEIGHT.store(h, Ordering::Relaxed);
+    }
+}
+
+/// The remembered height if it differs from `persisted`, for the poll loop to
+/// write back to `AppState`. `None` means "nothing new to save".
+///
+/// Read rather than pushed because the measurement happens inside a layout
+/// callback, which is the wrong place to touch the disk.
+pub fn modal_height_to_persist(persisted: Option<u32>) -> Option<u32> {
+    match LAST_MODAL_HEIGHT.load(Ordering::Relaxed) {
+        0 => None,
+        h if Some(h) == persisted => None,
+        h => Some(h),
+    }
+}
+
 /// Record the content height the auto-fit pass settled on. See
 /// [`LAST_MODAL_HEIGHT`].
 pub fn set_last_modal_height(height: f32) {
