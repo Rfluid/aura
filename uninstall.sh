@@ -41,10 +41,16 @@ case "$(uname -s)" in
         if command -v kwriteconfig6 >/dev/null 2>&1 && command -v kreadconfig6 >/dev/null 2>&1; then
             rule_id="aura-keepalive-skip-taskbar"
             current=$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)
-            new=$(echo "$current" | tr ',' '\n' | grep -vFx "$rule_id" | paste -sd ',' -)
+            # `grep -v` exits 1 when removing Aura leaves no rules. With
+            # `set -o pipefail`, that valid empty result used to abort the
+            # whole uninstall (and therefore `just update`). `awk` treats an
+            # empty result as success, which is the behavior we need here.
+            new=$(printf '%s\n' "$current" | tr ',' '\n' | \
+                awk -v remove="$rule_id" 'NF && $0 != remove' | paste -sd ',' -)
+            new_count=$(printf '%s\n' "$new" | tr ',' '\n' | \
+                awk 'NF { count++ } END { print count + 0 }')
             kwriteconfig6 --file kwinrulesrc --group General --key rules "$new"
-            kwriteconfig6 --file kwinrulesrc --group General --key count \
-                "$(echo "$new" | tr ',' '\n' | grep -c . || echo 0)"
+            kwriteconfig6 --file kwinrulesrc --group General --key count "$new_count"
             kwriteconfig6 --file kwinrulesrc --group "$rule_id" --key Description --delete 2>/dev/null || true
             command -v qdbus6 >/dev/null 2>&1 && qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 || true
         fi
