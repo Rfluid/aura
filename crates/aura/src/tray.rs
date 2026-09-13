@@ -16,7 +16,7 @@
 //!
 //! Middle-click (`secondary_activate` on SNI) opens the modal too.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
@@ -243,6 +243,7 @@ mod linux {
     use ksni::blocking::TrayMethods;
     use ksni::{Icon, MenuItem, Status};
     use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::OnceLock;
 
     /// Channel used by `activate()` (primary-click), `secondary_activate()`
     /// (middle-click) and the fallback "Show Aura" menu item to signal the
@@ -515,8 +516,8 @@ mod non_linux {
     /// handing Windows a 64 px icon to squeeze into 16.
     #[cfg(target_os = "windows")]
     pub(super) fn windows_icon_size() -> u32 {
-        use windows::Win32::UI::HiDpi::GetDpiForSystem;
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetricsForDpi, SM_CXSMICON};
+        use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+        use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
 
         let requested = unsafe {
             let dpi = GetDpiForSystem();
