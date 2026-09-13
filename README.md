@@ -266,7 +266,7 @@ with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
 (Windows) are equivalent CLI exits.
 
 Hovering the icon shows the active profile's current quota
-(`Claude · 5h 72% · week 31%`). The open ring around Aura's center dot fills
+(`Claude · 5h 72% · week 31%`). The complete ring around Aura's center dot fills
 to the highest current quota usage and moves from purple to yellow at 50%,
 orange at 75%, and red at 90%. Set `display.tray_status = false` to turn live
 updates off; the progress, color, and desktop-attention signals can also be

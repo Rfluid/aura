@@ -64,13 +64,14 @@ so the session is not left with no UI at all.
 
 ### Icon rendering
 
-The tray mark keeps the brand SVG's center dot and open 240° ring, but builds
-the ring dynamically: a dim track shows its full extent and a solid arc fills
-to the highest current quota-window usage. The mark is rasterised at every
-size in `tray::ICON_SIZES` (16/22/24/32/48/64). Its color follows a stepped
-ramp: purple below 50%, yellow from 50%, orange from 75%, and red from 90%.
-With no usable reading, Aura renders the original full ring instead of an
-empty gauge that would falsely imply 0%.
+The tray mark keeps the brand SVG's center dot but completes its surrounding
+ring to make the progress model immediately familiar. A dim 360° track shows
+the full extent and a solid arc fills to the highest current quota-window
+usage. The mark is rasterised at every size in `tray::ICON_SIZES`
+(16/22/24/32/48/64). Its color follows a stepped ramp: purple below 50%,
+yellow from 50%, orange from 75%, and red from 90%. With no usable reading,
+Aura renders the complete ring at full opacity instead of an empty gauge that
+would falsely imply 0%.
 
 Backends differ in what they want:
 

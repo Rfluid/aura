@@ -174,8 +174,9 @@ pub struct TrayStatus {
     /// Peak usage across the quota windows, in whole percent clamped to
     /// `0..=100`. Drives how far the ring is filled *and* which color it is.
     ///
-    /// `None` means "no reading yet" — the icon then draws the plain logo
-    /// rather than an empty gauge, which would read as 0% and be a lie.
+    /// `None` means "no reading yet" — the icon then draws the complete ring
+    /// at full opacity rather than an empty gauge, which would read as 0% and
+    /// be a lie.
     ///
     /// Whole percent rather than the `f64` it is derived from for two
     /// reasons: it keeps this type `Eq`, and it quantises the diff in
@@ -232,10 +233,10 @@ impl TrayStatus {
 
     /// Whether the rendered mark carries no usage signal at all: no reading
     /// yet, or both drawn visuals switched off. Only macOS cares — that is
-    /// exactly the case where the icon is the plain logo and belongs in
+    /// exactly the case where the icon is the static tray mark and belongs in
     /// template rendering.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
-    fn is_plain(&self) -> bool {
+    fn is_static(&self) -> bool {
         self.gauge_usage().is_none() && self.color() == ICON_COLOR
     }
 }
@@ -341,13 +342,11 @@ pub fn try_recv_event() -> Option<TrayEvent> {
 
 // ── The gauge ────────────────────────────────────────────────────────────────
 //
-// The mark is the Aura logo — a dot inside a ring that stops short of closing
-// — and the ring is the indicator: it fills the way the logo's arc already
-// travels, and changes color as usage climbs. The numbers below
-// are the ones `assets/icons/aura.svg` draws, so the tray icon and the in-app
-// logo stay the same mark. They live here rather than being read out of that
-// file because the ring has to be split into a consumed arc and a remaining
-// one at render time, which is not something a static asset can express.
+// The mark keeps Aura's center dot, but completes the surrounding ring for the
+// tray: users read a full circumference as progress more readily than the
+// brand logo's open arc. The ring fills from twelve o'clock and changes color
+// as usage climbs. It is generated here rather than read from the static asset
+// because it has to be split into consumed and remaining portions at runtime.
 
 /// Side of the square canvas the mark is drawn on, and its centre.
 const GAUGE_SIZE: f32 = 32.0;
@@ -361,9 +360,9 @@ const GAUGE_DOT_RADIUS: f32 = 3.0;
 /// from twelve o'clock, the one position on a dial that needs no explaining.
 const GAUGE_START_DEG: f32 = 270.0;
 
-/// How much of the circle the ring spans. The missing 120° is the logo's gap;
-/// 100% usage is the arc having travelled all 240° of what exists.
-const GAUGE_SWEEP_DEG: f32 = 240.0;
+/// A tray progress indicator uses the complete circumference even though the
+/// Aura brand mark has an open ring.
+const GAUGE_SWEEP_DEG: f32 = 360.0;
 
 /// Opacity of the not-yet-consumed remainder of the ring. Low enough to read
 /// as a track sitting behind the gauge, high enough to survive a 16 px raster
@@ -380,11 +379,20 @@ fn ring_point(degrees: f32) -> (f32, f32) {
 }
 
 /// SVG path for `sweep` degrees of the ring, starting at [`GAUGE_START_DEG`]
-/// and running counter-clockwise on screen — the direction the logo's arc
-/// already travels, so a partly-filled gauge is a prefix of the full mark
-/// rather than a mirror of it.
+/// and running counter-clockwise on screen, consistent with the brand mark's
+/// arc direction.
 fn ring_arc(sweep: f32) -> String {
     let (x0, y0) = ring_point(GAUGE_START_DEG);
+    // SVG treats an arc whose start and end points coincide as empty. Split
+    // the complete circumference into two semicircles so both the track and
+    // the 100% fill remain visible.
+    if sweep >= 360.0 {
+        let (xm, ym) = ring_point(GAUGE_START_DEG - 180.0);
+        return format!(
+            "M {x0:.3} {y0:.3} A {r:.3} {r:.3} 0 0 0 {xm:.3} {ym:.3} A {r:.3} {r:.3} 0 0 0 {x0:.3} {y0:.3}",
+            r = GAUGE_RADIUS
+        );
+    }
     let (x1, y1) = ring_point(GAUGE_START_DEG - sweep);
     // The arc flag picks the long way round whenever the sweep is a reflex
     // angle; without it every arc past 180° would be drawn as its short
@@ -400,9 +408,8 @@ fn ring_arc(sweep: f32) -> String {
 fn gauge_svg(usage: Option<u8>, color: &str) -> String {
     let track = ring_arc(GAUGE_SWEEP_DEG);
     let ring = match usage {
-        // Nothing measured yet: the plain logo. A full-opacity ring with no
-        // fill in front of it is the honest picture of "no reading", and it
-        // is what the icon looked like before it was an indicator.
+        // Nothing measured yet: a full-opacity ring with no fill in front of
+        // it is the honest picture of "no reading" rather than 0%.
         None => format!(r#"<path d="{track}"/>"#),
         Some(pct) => {
             let sweep = GAUGE_SWEEP_DEG * f32::from(pct.min(100)) / 100.0;
@@ -751,7 +758,7 @@ mod non_linux {
     ///
     /// While the mark carries no usage signal — no reading yet, or the drawn
     /// visuals switched off — macOS gets a template image (alpha-only,
-    /// recolored by AppKit) so the plain logo matches every other menu-bar
+    /// recolored by AppKit) so the static mark matches every other menu-bar
     /// item in light mode, dark mode and while the item is click-highlighted;
     /// the RGB we rasterise is then irrelevant. Once there is something to
     /// show, the color *is* the signal, so template rendering is off and the
@@ -760,7 +767,7 @@ mod non_linux {
     fn icon_color(status: &TrayStatus) -> &'static str {
         #[cfg(target_os = "macos")]
         {
-            if status.is_plain() {
+            if status.is_static() {
                 return ICON_COLOR_TEMPLATE;
             }
         }
@@ -770,7 +777,7 @@ mod non_linux {
     /// Whether `status`'s icon should be handed to AppKit as a template
     /// image. Always false off macOS (the flag is ignored there).
     pub(super) fn is_template(status: &TrayStatus) -> bool {
-        cfg!(target_os = "macos") && status.is_plain()
+        cfg!(target_os = "macos") && status.is_static()
     }
 
     pub(super) fn state_icon(status: &TrayStatus) -> Result<Icon> {
@@ -979,19 +986,17 @@ mod tests {
     fn the_arc_starts_at_the_top_and_fills_anticlockwise() {
         // Twelve o'clock on a 32×32 canvas with r=12.
         assert_eq!(ring_point(GAUGE_START_DEG), (16.0, 4.0));
-        // A quarter of the ring is 60°, i.e. 210° — up and to the left.
+        // A quarter of the full ring ends at nine o'clock.
         let (x, y) = ring_point(GAUGE_START_DEG - GAUGE_SWEEP_DEG / 4.0);
-        assert!(x < 16.0 && y < 16.0, "expected upper-left, got ({x}, {y})");
+        assert!((x - 4.0).abs() < 0.01, "x was {x}");
+        assert!((y - 16.0).abs() < 0.01, "y was {y}");
     }
 
     #[test]
-    fn a_full_gauge_still_stops_where_the_logo_does() {
-        // 100% must land on the end of the logo's arc, not close the ring —
-        // the gap is the mark.
+    fn a_full_gauge_returns_to_twelve_oclock() {
         let full = ring_point(GAUGE_START_DEG - GAUGE_SWEEP_DEG);
-        let (x, y) = (full.0, full.1);
-        assert!((x - 26.392).abs() < 0.01, "x was {x}");
-        assert!((y - 22.0).abs() < 0.01, "y was {y}");
+        assert!((full.0 - 16.0).abs() < 0.01, "x was {}", full.0);
+        assert!((full.1 - 4.0).abs() < 0.01, "y was {}", full.1);
     }
 
     #[test]
@@ -999,15 +1004,25 @@ mod tests {
         // Past a half-turn the short complement would be drawn instead,
         // collapsing the gauge just as it gets interesting.
         assert!(ring_arc(90.0).contains(" 0 0 "));
-        assert!(ring_arc(GAUGE_SWEEP_DEG).contains(" 1 0 "));
+        assert!(ring_arc(270.0).contains(" 1 0 "));
     }
 
     #[test]
-    fn an_unread_gauge_is_the_plain_logo() {
-        // One full-opacity arc, no track and no fill: what the icon looked
-        // like before it was an indicator.
+    fn a_complete_circle_is_split_into_two_visible_arcs() {
+        // A single 360° SVG arc has coincident endpoints and renders empty.
+        assert_eq!(ring_arc(GAUGE_SWEEP_DEG).matches(" A ").count(), 2);
+        assert_eq!(gauge_svg(Some(100), ICON_COLOR).matches(" A ").count(), 4);
+        let empty = render_gauge_rgba(16, Some(0), ICON_COLOR).expect("render empty gauge");
+        let full = render_gauge_rgba(16, Some(100), ICON_COLOR).expect("render full gauge");
+        assert_ne!(empty, full);
+    }
+
+    #[test]
+    fn an_unread_gauge_is_the_static_full_ring() {
+        // One full-opacity circle, no track and no fill.
         let svg = gauge_svg(None, ICON_COLOR);
         assert_eq!(svg.matches("<path").count(), 1);
+        assert_eq!(svg.matches(" A ").count(), 2);
         assert!(!svg.contains("stroke-opacity"));
     }
 
@@ -1053,7 +1068,7 @@ mod tests {
         status.visuals.progress = false;
         assert_eq!(status.gauge_usage(), None);
         assert_eq!(status.color(), ICON_COLOR_CRITICAL);
-        assert!(!status.is_plain());
+        assert!(!status.is_static());
     }
 
     #[test]
@@ -1061,19 +1076,19 @@ mod tests {
         let mut status = status(Some(95));
         status.visuals.color = false;
         assert_eq!(status.color(), ICON_COLOR);
-        // The gauge is the remaining signal, so the mark is not yet plain.
+        // The gauge is the remaining signal, so the mark is not static.
         assert_eq!(status.gauge_usage(), Some(95));
-        assert!(!status.is_plain());
+        assert!(!status.is_static());
     }
 
     #[test]
-    fn both_drawn_visuals_off_is_the_plain_logo() {
+    fn both_drawn_visuals_off_is_the_static_mark() {
         // Nothing left to say with the icon — on macOS this is what puts it
         // back into template rendering alongside every other status item.
         let mut status = status(Some(95));
         status.visuals.progress = false;
         status.visuals.color = false;
-        assert!(status.is_plain());
+        assert!(status.is_static());
         assert_eq!(
             gauge_svg(status.gauge_usage(), status.color()),
             gauge_svg(None, ICON_COLOR)

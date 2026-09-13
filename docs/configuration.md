@@ -271,7 +271,7 @@ goblin_mode = false
 # to disable updates and leave the icon static.
 tray_status = true
 
-# Fill the icon's open ring to the highest quota-window usage. Default true.
+# Fill the icon's complete ring to the highest quota-window usage. Default true.
 # Ignored when tray_status is false.
 tray_progress = true
 

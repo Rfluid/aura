@@ -205,7 +205,7 @@ pub struct DisplayConfig {
     #[serde(default = "default_tray_status")]
     pub tray_status: bool,
     /// Fill the tray icon's ring in proportion to peak quota usage. Default
-    /// true. Off, the ring is drawn whole — the plain logo — and usage lives
+    /// true. Off, the complete ring is drawn at full opacity and usage lives
     /// in the tooltip only.
     #[serde(default = "default_true")]
     pub tray_progress: bool,

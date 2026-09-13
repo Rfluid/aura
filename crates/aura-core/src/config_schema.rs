@@ -206,7 +206,7 @@ pub fn fields() -> &'static [FieldDescriptor] {
             default: "true",
             summary: "Fill the tray icon's ring in proportion to quota usage.",
             description: "Fill the tray icon's ring in proportion to peak quota usage. Default \
-                true. Set false to draw the ring whole — the plain logo — and leave usage to \
+                true. Set false to draw the complete ring at full opacity and leave usage to \
                 the tooltip. Ignored when display.tray_status is false.",
             example: "true",
         },
