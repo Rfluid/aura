@@ -266,9 +266,11 @@ with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
 (Windows) are equivalent CLI exits.
 
 Hovering the icon shows the active profile's current quota
-(`Claude · 5h 72% · week 31%`), and the icon turns red once a quota window
-passes 90%. Set `display.tray_status = false` to turn that off — see
-[Configuration](docs/configuration.md).
+(`Claude · 5h 72% · week 31%`). The open ring around Aura's center dot fills
+to the highest current quota usage and moves from purple to yellow at 50%,
+orange at 75%, and red at 90%. Set `display.tray_status = false` to turn live
+updates off; the progress, color, and desktop-attention signals can also be
+controlled independently — see [Configuration](docs/configuration.md).
 
 Grab a prebuilt release archive (next section) or build from source with
 Cargo (Rust 1.80+).

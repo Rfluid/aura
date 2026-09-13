@@ -1,8 +1,3 @@
-/// Raw bytes of the Aura logo SVG. Used by the tray-icon rasteriser on
-/// every platform — that path is GPUI-free, so it stays compiled even on
-/// macOS where the modal UI is gated out.
-pub const AURA_LOGO_SVG: &[u8] = include_bytes!("../../../assets/icons/aura.svg");
-
 macro_rules! icon_assets {
     ( $( ($name:ident, $file:literal) ),* $(,)? ) => {
         $(

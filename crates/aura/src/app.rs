@@ -392,6 +392,7 @@ impl AuraView {
             crate::tray::set_status(crate::tray_status::summarize(
                 &self.active_profile,
                 self.quota.as_ref(),
+                crate::tray_status::visuals(&self.config.display),
             ));
         }
 

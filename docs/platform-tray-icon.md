@@ -2,8 +2,8 @@
 title: Platform integration — clickable tray icon
 status: draft
 version: 0.1.0
-last_updated: 2026-09-12
-last_verified: 2026-09-12
+last_updated: 2026-09-13
+last_verified: 2026-09-13
 source_refs:
   - crates/aura/src/tray.rs
   - crates/aura/src/tray_status.rs
@@ -64,22 +64,29 @@ so the session is not left with no UI at all.
 
 ### Icon rendering
 
-The brand SVG is rasterised at every size in `tray::ICON_SIZES`
-(16/22/24/32/48/64) plus a red `ICON_COLOR_ATTENTION` variant. Backends differ in
-what they want:
+The tray mark keeps the brand SVG's center dot and open 240° ring, but builds
+the ring dynamically: a dim track shows its full extent and a solid arc fills
+to the highest current quota-window usage. The mark is rasterised at every
+size in `tray::ICON_SIZES` (16/22/24/32/48/64). Its color follows a stepped
+ramp: purple below 50%, yellow from 50%, orange from 75%, and red from 90%.
+With no usable reading, Aura renders the original full ring instead of an
+empty gauge that would falsely imply 0%.
+
+Backends differ in what they want:
 
 | Platform | Sizes handed over | Notes |
 | --- | --- | --- |
-| Linux | all of them, as `IconPixmap` | The SNI spec models the property as a list so the host can pick per panel size. `IconName` is also reported as `"aura"`, but **only** when a themed icon is actually installed (`themed_icon_name` probes the XDG icon dirs) — hosts prefer the name over the pixmap, so advertising one the theme can't resolve renders a blank slot for anyone who installed the binary without `install.sh`. |
-| macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. Rendered black and flagged `with_icon_as_template(true)` so AppKit recolors it for light / dark / click-highlight like every native status item. The attention variant deliberately opts *out* of template mode — its whole job is to not be the menu bar's foreground color. |
+| Linux | all of them, as `IconPixmap` | The SNI spec models the property as a list so the host can pick per panel size. `IconName` stays empty because hosts prefer a named, installed static asset over the live pixmaps, which would hide gauge updates. |
+| macOS | one 64 px raster | AppKit draws the status item at 18 pt and downsamples; a dense source keeps a 2× menu bar sharp. The plain/no-reading state is a black template image that AppKit recolors for light/dark/highlight. A live gauge opts out of template mode so its usage color remains visible. |
 | Windows | one raster at `SM_CXSMICON` for the current DPI | `Shell_NotifyIcon` blits rather than resamples, so rendering straight at the target size beats handing Win32 a 64 px icon to squeeze into 16. Odd DPI values snap up to the next size we rasterise. |
 
 ### Live indicator state
 
 A tray icon that only opens a window is a button. `tray_status::summarize`
 turns a `QuotaSnapshot` into a one-line tooltip (`"Claude · 5h 72% · week 31%"`)
-and an attention flag (any window ≥ 90%), which drives `NeedsAttention` +
-`AttentionIconPixmap` on SNI and the red icon elsewhere.
+and a whole-number peak usage value. `tray.rs` uses that value for both the
+ring fill and color ramp. Peak usage considers every quota window, even those
+omitted from the two-window tooltip.
 
 Two producers feed `tray::set_status`:
 
@@ -95,8 +102,11 @@ thread from the poll loop, because AppKit refuses `NSStatusItem` mutation from
 anywhere else. It also diffs against the last applied value, so a poll that
 produces identical numbers costs no D-Bus or AppKit traffic.
 
-Set `display.tray_status = false` to disable both the background poll and the
-updates.
+`display.tray_status` is the master switch for the background poll and all
+live updates. `display.tray_progress` and `display.tray_color` independently
+control the two drawn signals. `display.tray_pulse` is opt-in and maps usage at
+or above 90% to SNI's `NeedsAttention` state on Linux; it has no equivalent on
+macOS or Windows.
 
 ## Modal positioning
 

@@ -189,16 +189,44 @@ pub struct DisplayConfig {
     /// no restart. See `docs/goblin-mode.md`.
     #[serde(default)]
     pub goblin_mode: bool,
-    /// Keep the tray icon's tooltip up to date with the active profile's
-    /// quota, and tint the icon when a window is nearly exhausted. Default
-    /// true — that's what makes the icon an *indicator* rather than a button.
+    /// Keep the tray icon's tooltip and gauge up to date with the active
+    /// profile's quota. Default true — that's what makes the icon an
+    /// *indicator* rather than a button.
+    ///
+    /// The master switch for the whole feature: turning it off stops the
+    /// background poll and leaves the icon static, whatever
+    /// [`Self::tray_progress`] / [`Self::tray_color`] / [`Self::tray_pulse`]
+    /// say.
     ///
     /// While the modal is closed this costs one quota lookup every
     /// [`Self::tray_status_interval_secs`] seconds, which for the API-backed
-    /// agents is a network request. Set to false to poll only when the modal
-    /// is open (the tooltip then shows whatever the last refresh saw).
+    /// agents is a network request. Set to false to disable updates and leave
+    /// the icon static.
     #[serde(default = "default_tray_status")]
     pub tray_status: bool,
+    /// Fill the tray icon's ring in proportion to peak quota usage. Default
+    /// true. Off, the ring is drawn whole — the plain logo — and usage lives
+    /// in the tooltip only.
+    #[serde(default = "default_true")]
+    pub tray_progress: bool,
+    /// Move the tray icon's color up the purple → yellow → orange → red ramp
+    /// as usage climbs. Default true. Off, the icon stays Aura purple at
+    /// every level (and on macOS keeps the menu bar's own foreground color,
+    /// like every other status item).
+    #[serde(default = "default_true")]
+    pub tray_color: bool,
+    /// Ask the desktop to draw attention to the tray icon once usage reaches
+    /// 90%. **Default false**, unlike the other two: this is the one tray
+    /// visual that is not Aura drawing its own icon but a request to the
+    /// desktop, and hosts answer it loudly — Plasma pulls the item out of the
+    /// overflow group and animates it, which is not something to turn on for
+    /// someone without being asked.
+    ///
+    /// Linux only in practice: it maps to the StatusNotifierItem
+    /// `NeedsAttention` status. macOS and Windows have no equivalent request,
+    /// so there the red end of [`Self::tray_color`] is the whole signal.
+    #[serde(default)]
+    pub tray_pulse: bool,
     /// Seconds between background tray-status refreshes. Ignored when
     /// [`Self::tray_status`] is false. Default 1200 (20 minutes); values below
     /// 30 are clamped up by [`Self::tray_status_interval`] so a typo can't
@@ -215,6 +243,12 @@ fn default_linux_backend() -> String {
 }
 
 fn default_tray_status() -> bool {
+    true
+}
+
+/// `#[serde(default)]` on a `bool` yields `false`; the tray visuals that
+/// default *on* need this instead.
+fn default_true() -> bool {
     true
 }
 
@@ -287,6 +321,9 @@ impl Default for DisplayConfig {
             max_height: None,
             goblin_mode: false,
             tray_status: default_tray_status(),
+            tray_progress: default_true(),
+            tray_color: default_true(),
+            tray_pulse: false,
             tray_status_interval_secs: default_tray_status_interval_secs(),
         }
     }
@@ -933,6 +970,11 @@ kind = "claude-code"
         assert_eq!(cfg.display.default_period, "all");
         // `anchor` defaults per-OS (see `default_anchor`).
         assert_eq!(cfg.display.anchor, default_anchor());
+        // Existing config files predate these keys; the indicator should gain
+        // its drawn visuals without opting into desktop attention.
+        assert!(cfg.display.tray_progress);
+        assert!(cfg.display.tray_color);
+        assert!(!cfg.display.tray_pulse);
     }
 
     #[test]

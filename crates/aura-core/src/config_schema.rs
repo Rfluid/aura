@@ -189,14 +189,54 @@ pub fn fields() -> &'static [FieldDescriptor] {
             type_label: "bool",
             allowed: &["true", "false"],
             default: "true",
-            summary: "Keep the tray icon's tooltip and color in sync with quota usage.",
-            description: "Keep the tray icon's tooltip up to date with the active profile's \
-                quota, and tint the icon when a window is nearly exhausted (90%). Default true \
-                — that is what makes the icon an indicator rather than a button. While the \
-                modal is closed this costs one quota lookup every \
-                display.tray_status_interval_secs, which for API-backed agents is a network \
-                request. Set false to update the tooltip only when the modal refreshes.",
+            summary: "Keep the tray icon's tooltip and gauge in sync with quota usage.",
+            description: "Keep the tray icon's tooltip and gauge up to date with the active \
+                profile's quota. Default true — that is what makes the icon an indicator \
+                rather than a button, and it is the master switch for display.tray_progress, \
+                display.tray_color and display.tray_pulse. While the modal is closed this \
+                costs one quota lookup every display.tray_status_interval_secs, which for \
+                API-backed agents is a network request. Set false to disable updates and leave \
+                the icon static.",
             example: "true",
+        },
+        FieldDescriptor {
+            key: "display.tray_progress",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "true",
+            summary: "Fill the tray icon's ring in proportion to quota usage.",
+            description: "Fill the tray icon's ring in proportion to peak quota usage. Default \
+                true. Set false to draw the ring whole — the plain logo — and leave usage to \
+                the tooltip. Ignored when display.tray_status is false.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "display.tray_color",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "true",
+            summary: "Move the tray icon up a purple → yellow → orange → red ramp as usage climbs.",
+            description: "Move the tray icon's color up the purple → yellow → orange → red \
+                ramp as usage climbs (50% / 75% / 90%). Default true. Set false to keep the \
+                icon Aura purple at every level — on macOS it then also keeps the menu bar's \
+                own foreground color, like every other status item. Ignored when \
+                display.tray_status is false.",
+            example: "true",
+        },
+        FieldDescriptor {
+            key: "display.tray_pulse",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "false",
+            summary: "Ask the desktop to draw attention to the tray icon at 90% usage.",
+            description: "Ask the desktop to draw attention to the tray icon once usage reaches \
+                90%. Default false, unlike the other tray visuals: this is a request to the \
+                desktop rather than Aura drawing its own icon, and hosts answer it loudly — \
+                Plasma pulls the item out of the overflow group and animates it. Linux only in \
+                practice (StatusNotifierItem NeedsAttention); macOS and Windows have no \
+                equivalent, where the red end of display.tray_color is the whole signal. \
+                Ignored when display.tray_status is false.",
+            example: "false",
         },
         FieldDescriptor {
             key: "display.tray_status_interval_secs",
@@ -396,6 +436,9 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .unwrap_or_else(|| "(unset)".to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
         "display.tray_status" => cfg.display.tray_status.to_string(),
+        "display.tray_progress" => cfg.display.tray_progress.to_string(),
+        "display.tray_color" => cfg.display.tray_color.to_string(),
+        "display.tray_pulse" => cfg.display.tray_pulse.to_string(),
         "display.tray_status_interval_secs" => cfg.display.tray_status_interval_secs.to_string(),
         "update.dismissed_version" => cfg
             .update
@@ -430,6 +473,9 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "display.max_height" => cfg.display.max_height = parse_opt_u32(key, raw)?,
         "display.goblin_mode" => cfg.display.goblin_mode = parse_bool(key, raw)?,
         "display.tray_status" => cfg.display.tray_status = parse_bool(key, raw)?,
+        "display.tray_progress" => cfg.display.tray_progress = parse_bool(key, raw)?,
+        "display.tray_color" => cfg.display.tray_color = parse_bool(key, raw)?,
+        "display.tray_pulse" => cfg.display.tray_pulse = parse_bool(key, raw)?,
         "display.tray_status_interval_secs" => {
             cfg.display.tray_status_interval_secs = parse_u64(key, raw)?
         }
@@ -599,6 +645,9 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "display.max_height" => return cfg.display.max_height.map(|n| n.to_string()),
         "display.goblin_mode" => cfg.display.goblin_mode.to_string(),
         "display.tray_status" => cfg.display.tray_status.to_string(),
+        "display.tray_progress" => cfg.display.tray_progress.to_string(),
+        "display.tray_color" => cfg.display.tray_color.to_string(),
+        "display.tray_pulse" => cfg.display.tray_pulse.to_string(),
         "display.tray_status_interval_secs" => cfg.display.tray_status_interval_secs.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
@@ -815,6 +864,9 @@ mod tests {
                 max_height: Some(500),
                 goblin_mode: true,
                 tray_status: false,
+                tray_progress: false,
+                tray_color: false,
+                tray_pulse: true,
                 tray_status_interval_secs: 900,
             },
             update: UpdateConfig {

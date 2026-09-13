@@ -19,8 +19,6 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
 
-use crate::assets::AURA_LOGO_SVG;
-
 /// Icon sizes we rasterise, smallest first.
 ///
 /// StatusNotifierItem hosts are handed the whole set and pick the one that
@@ -35,16 +33,32 @@ const ICON_SIZES: &[u32] = &[16, 22, 24, 32, 48, 64];
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 const ICON_SIZE_MAX: u32 = 64;
 
-/// Aura purple — must stay in sync with `app.rs::COLOR_ACCENT` so the tray
-/// icon matches the in-app brand color. Unused on macOS outside tests, where
-/// the normal-state icon is a template image instead (see
-/// `ICON_COLOR_TEMPLATE`).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// Aura purple — must stay in sync with `aura-core/src/theme_default.toml` so
+/// the tray icon matches the in-app brand color. The resting color, and the
+/// bottom of the usage ramp.
 const ICON_COLOR: &str = "#8b5cf6";
 
-/// Icon color for the "needs attention" state (quota nearly exhausted).
-/// Matches the danger color used by the modal's progress bars.
-const ICON_COLOR_ATTENTION: &str = "#ef4444";
+/// Usage ramp above [`ELEVATED_PERCENT`] / [`HIGH_PERCENT`] /
+/// [`ATTENTION_PERCENT`]. Purple → yellow → orange → red is the ordering a
+/// glance already knows how to read, and each step is a sibling of
+/// [`ICON_COLOR`] in the same palette family so the mark still looks like
+/// Aura's at every level.
+const ICON_COLOR_ELEVATED: &str = "#eab308";
+const ICON_COLOR_HIGH: &str = "#f97316";
+/// Top of the ramp — also the danger color used by the modal's progress bars.
+const ICON_COLOR_CRITICAL: &str = "#ef4444";
+
+/// Usage at which the icon turns red and the item flips into its attention
+/// state. Deliberately high: the whole value of `NeedsAttention` is that it
+/// stays rare, and Plasma un-hides the icon from the overflow group when it
+/// fires.
+pub const ATTENTION_PERCENT: u8 = 90;
+
+/// Ramp steps below [`ATTENTION_PERCENT`]. Neither is an alarm — they are
+/// there so the color has already started moving by the time the arc is worth
+/// looking at.
+const HIGH_PERCENT: u8 = 75;
+const ELEVATED_PERCENT: u8 = 50;
 
 /// macOS template images are drawn from their alpha channel alone — AppKit
 /// recolors them for the current menu-bar appearance (light / dark / clicked
@@ -120,6 +134,35 @@ pub enum TrayEvent {
     Quit,
 }
 
+/// Which parts of the indicator are switched on, mirroring the
+/// `display.tray_*` config keys.
+///
+/// Carried on [`TrayStatus`] rather than read from config down here so the
+/// rendering path stays a pure function of the status it is handed — the same
+/// reason the backends never look at `AppConfig` themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrayVisuals {
+    /// Fill the ring in proportion to usage. Off → the ring is drawn whole.
+    pub progress: bool,
+    /// Climb the color ramp as usage does. Off → always Aura purple.
+    pub color: bool,
+    /// Ask the desktop to emphasise the item at [`ATTENTION_PERCENT`].
+    pub pulse: bool,
+}
+
+impl Default for TrayVisuals {
+    /// Progress and color on, pulse off. Drawing our own icon differently is
+    /// ours to decide; making the desktop shout is not — see
+    /// `DisplayConfig::tray_pulse`.
+    fn default() -> Self {
+        Self {
+            progress: true,
+            color: true,
+            pulse: false,
+        }
+    }
+}
+
 /// Live indicator state. Pushed from whatever loaded fresh usage data (the
 /// modal's refresh, or `main.rs`'s background poll) and applied to the icon on
 /// the main thread.
@@ -128,18 +171,72 @@ pub struct TrayStatus {
     /// One short line describing current usage, e.g. `"Claude · 5h 72%"`.
     /// Shown as the tooltip body on every platform.
     pub summary: String,
-    /// Whether to emphasise the icon. Drives `NeedsAttention` +
-    /// `AttentionIconPixmap` on StatusNotifierItem hosts and a red icon
-    /// variant on macOS / Windows.
-    pub attention: bool,
+    /// Peak usage across the quota windows, in whole percent clamped to
+    /// `0..=100`. Drives how far the ring is filled *and* which color it is.
+    ///
+    /// `None` means "no reading yet" — the icon then draws the plain logo
+    /// rather than an empty gauge, which would read as 0% and be a lie.
+    ///
+    /// Whole percent rather than the `f64` it is derived from for two
+    /// reasons: it keeps this type `Eq`, and it quantises the diff in
+    /// [`TrayHandle::apply_pending_status`], so a poll that moves usage by a
+    /// fraction of a percent — well under a pixel of arc at 16 px — costs no
+    /// D-Bus or AppKit traffic.
+    pub usage_percent: Option<u8>,
+    /// Which of the three visuals the user has left switched on.
+    pub visuals: TrayVisuals,
 }
 
 impl Default for TrayStatus {
     fn default() -> Self {
         Self {
             summary: DEFAULT_SUMMARY.to_string(),
-            attention: false,
+            usage_percent: None,
+            visuals: TrayVisuals::default(),
         }
+    }
+}
+
+impl TrayStatus {
+    /// Whether to ask the desktop to emphasise the icon. Drives
+    /// `NeedsAttention` + `AttentionIconPixmap` on StatusNotifierItem hosts.
+    /// Always false unless the user opted into `display.tray_pulse`.
+    pub fn attention(&self) -> bool {
+        self.visuals.pulse
+            && self
+                .usage_percent
+                .is_some_and(|pct| pct >= ATTENTION_PERCENT)
+    }
+
+    /// How far to fill the ring, or `None` to draw it whole — which is both
+    /// "no reading yet" and "the user turned the gauge off".
+    fn gauge_usage(&self) -> Option<u8> {
+        self.visuals
+            .progress
+            .then_some(self.usage_percent)
+            .flatten()
+    }
+
+    /// Color for the ring and the dot at this usage level.
+    fn color(&self) -> &'static str {
+        if !self.visuals.color {
+            return ICON_COLOR;
+        }
+        match self.usage_percent {
+            Some(pct) if pct >= ATTENTION_PERCENT => ICON_COLOR_CRITICAL,
+            Some(pct) if pct >= HIGH_PERCENT => ICON_COLOR_HIGH,
+            Some(pct) if pct >= ELEVATED_PERCENT => ICON_COLOR_ELEVATED,
+            _ => ICON_COLOR,
+        }
+    }
+
+    /// Whether the rendered mark carries no usage signal at all: no reading
+    /// yet, or both drawn visuals switched off. Only macOS cares — that is
+    /// exactly the case where the icon is the plain logo and belongs in
+    /// template rendering.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    fn is_plain(&self) -> bool {
+        self.gauge_usage().is_none() && self.color() == ICON_COLOR
     }
 }
 
@@ -188,18 +285,27 @@ impl TrayHandle {
 
     #[cfg(target_os = "linux")]
     fn push_status(&mut self, status: &TrayStatus) {
+        // Rasterise out here rather than inside the closure: hosts read
+        // `IconPixmap` whenever they feel like it, and re-rendering six SVGs
+        // per read would put the rasteriser on the D-Bus reply path. A render
+        // failure leaves the previous icons in place — a stale gauge beats a
+        // blank slot — while the tooltip still updates.
+        let icons = linux::icon_set(status).ok();
         let status = status.clone();
         // `update` returns None once the service has shut down; nothing useful
         // to do about it here — the process is on its way out.
         let _ = self.ksni.update(move |tray: &mut linux::AuraTray| {
             tray.status = status;
+            if let Some(icons) = icons {
+                tray.icons = icons;
+            }
         });
     }
 
     #[cfg(not(target_os = "linux"))]
     fn push_status(&mut self, status: &TrayStatus) {
         let _ = self.icon.set_tooltip(Some(non_linux::tooltip(status)));
-        let Ok(icon) = non_linux::state_icon(status.attention) else {
+        let Ok(icon) = non_linux::state_icon(status) else {
             return;
         };
         // `set_icon` on macOS keeps the *previous* template flag, which would
@@ -211,7 +317,7 @@ impl TrayHandle {
         {
             let _ = self
                 .icon
-                .set_icon_with_as_template(Some(icon), non_linux::is_template(status.attention));
+                .set_icon_with_as_template(Some(icon), non_linux::is_template(status));
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -233,21 +339,102 @@ pub fn try_recv_event() -> Option<TrayEvent> {
     }
 }
 
+// ── The gauge ────────────────────────────────────────────────────────────────
+//
+// The mark is the Aura logo — a dot inside a ring that stops short of closing
+// — and the ring is the indicator: it fills the way the logo's arc already
+// travels, and changes color as usage climbs. The numbers below
+// are the ones `assets/icons/aura.svg` draws, so the tray icon and the in-app
+// logo stay the same mark. They live here rather than being read out of that
+// file because the ring has to be split into a consumed arc and a remaining
+// one at render time, which is not something a static asset can express.
+
+/// Side of the square canvas the mark is drawn on, and its centre.
+const GAUGE_SIZE: f32 = 32.0;
+const GAUGE_CENTER: f32 = GAUGE_SIZE / 2.0;
+const GAUGE_RADIUS: f32 = 12.0;
+const GAUGE_STROKE: f32 = 2.0;
+const GAUGE_DOT_RADIUS: f32 = 3.0;
+
+/// Where the ring starts, in SVG degrees — 0° is `+x` and angles grow
+/// clockwise on screen, so 270° is straight up. The gauge therefore fills
+/// from twelve o'clock, the one position on a dial that needs no explaining.
+const GAUGE_START_DEG: f32 = 270.0;
+
+/// How much of the circle the ring spans. The missing 120° is the logo's gap;
+/// 100% usage is the arc having travelled all 240° of what exists.
+const GAUGE_SWEEP_DEG: f32 = 240.0;
+
+/// Opacity of the not-yet-consumed remainder of the ring. Low enough to read
+/// as a track sitting behind the gauge, high enough to survive a 16 px raster
+/// on a panel that may be any color.
+const GAUGE_TRACK_OPACITY: f32 = 0.3;
+
+/// Point on the ring at `degrees`.
+fn ring_point(degrees: f32) -> (f32, f32) {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    (
+        GAUGE_CENTER + GAUGE_RADIUS * cos,
+        GAUGE_CENTER + GAUGE_RADIUS * sin,
+    )
+}
+
+/// SVG path for `sweep` degrees of the ring, starting at [`GAUGE_START_DEG`]
+/// and running counter-clockwise on screen — the direction the logo's arc
+/// already travels, so a partly-filled gauge is a prefix of the full mark
+/// rather than a mirror of it.
+fn ring_arc(sweep: f32) -> String {
+    let (x0, y0) = ring_point(GAUGE_START_DEG);
+    let (x1, y1) = ring_point(GAUGE_START_DEG - sweep);
+    // The arc flag picks the long way round whenever the sweep is a reflex
+    // angle; without it every arc past 180° would be drawn as its short
+    // complement, i.e. the gauge would collapse instead of filling.
+    let large = u8::from(sweep > 180.0);
+    format!(
+        "M {x0:.3} {y0:.3} A {r:.3} {r:.3} 0 {large} 0 {x1:.3} {y1:.3}",
+        r = GAUGE_RADIUS
+    )
+}
+
+/// The whole mark for `usage`, drawn in `color`.
+fn gauge_svg(usage: Option<u8>, color: &str) -> String {
+    let track = ring_arc(GAUGE_SWEEP_DEG);
+    let ring = match usage {
+        // Nothing measured yet: the plain logo. A full-opacity ring with no
+        // fill in front of it is the honest picture of "no reading", and it
+        // is what the icon looked like before it was an indicator.
+        None => format!(r#"<path d="{track}"/>"#),
+        Some(pct) => {
+            let sweep = GAUGE_SWEEP_DEG * f32::from(pct.min(100)) / 100.0;
+            let mut ring = format!(r#"<path d="{track}" stroke-opacity="{GAUGE_TRACK_OPACITY}"/>"#);
+            // Skipped at 0%: a round cap on a zero-length arc still paints a
+            // full-width blob at twelve o'clock, which reads as usage.
+            if sweep > 0.0 {
+                ring.push_str(&format!(r#"<path d="{}"/>"#, ring_arc(sweep)));
+            }
+            ring
+        }
+    };
+
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {GAUGE_SIZE} {GAUGE_SIZE}" fill="none" stroke="{color}" stroke-width="{GAUGE_STROKE}" stroke-linecap="round">{ring}<circle cx="{GAUGE_CENTER}" cy="{GAUGE_CENTER}" r="{GAUGE_DOT_RADIUS}" fill="{color}" stroke="none"/></svg>"#
+    )
+}
+
 // ── Shared icon rasteriser ───────────────────────────────────────────────────
 //
-// Both backends paint the same brand SVG; only the destination buffer
-// format differs (ksni wants ARGB32, tray-icon wants straight RGBA).
+// Both backends paint the same gauge; only the destination buffer format
+// differs (ksni wants ARGB32, tray-icon wants straight RGBA).
 
-/// Rasterise the brand SVG at `size`×`size` in `color`.
+/// Rasterise the mark for `usage` at `size`×`size` in `color`.
 ///
 /// Returns RGBA8 with *straight* (non-premultiplied) alpha — both call
 /// sites massage it from here.
-fn render_logo_rgba(size: u32, color: &str) -> Result<Vec<u8>> {
-    let svg_text = std::str::from_utf8(AURA_LOGO_SVG).context("aura.svg is not UTF-8")?;
-    let svg_text = svg_text.replace("currentColor", color);
+fn render_gauge_rgba(size: u32, usage: Option<u8>, color: &str) -> Result<Vec<u8>> {
+    let svg_text = gauge_svg(usage, color);
 
-    let tree =
-        usvg::Tree::from_str(&svg_text, &usvg::Options::default()).context("parsing aura.svg")?;
+    let tree = usvg::Tree::from_str(&svg_text, &usvg::Options::default())
+        .context("parsing the tray gauge SVG")?;
 
     let mut pixmap = tiny_skia::Pixmap::new(size, size).context("allocating tray pixmap")?;
 
@@ -290,11 +477,10 @@ mod linux {
 
     pub(super) struct AuraTray {
         tx: Sender<TrayEvent>,
-        icons: Vec<Icon>,
-        attention_icons: Vec<Icon>,
-        /// Freedesktop icon name, or empty when no themed `aura` icon is
-        /// installed. See [`themed_icon_name`].
-        icon_name: String,
+        /// The gauge rendered for [`Self::status`], one entry per
+        /// [`ICON_SIZES`]. Recomputed by `TrayHandle::push_status` whenever
+        /// the status changes.
+        pub(super) icons: Vec<Icon>,
         pub(super) status: TrayStatus,
     }
 
@@ -308,13 +494,15 @@ mod linux {
             "Aura — Agent Usage Reporter".into()
         }
 
-        /// Prefer a themed icon when one is installed: the host can then
-        /// render it at any panel size and follow the user's icon theme.
-        /// Empty (→ hosts fall back to `icon_pixmap`) when the icon isn't on
-        /// disk, which is the case for `cargo install` users who never ran
-        /// `install.sh`.
+        /// Always empty, so hosts use [`Self::icon_pixmap`].
+        ///
+        /// A themed `IconName` used to be reported when `install.sh` had put
+        /// `aura.svg` in an XDG icon dir, and hosts prefer the name over the
+        /// pixmap — which now means they would render the static logo and
+        /// never show the gauge. A file on disk cannot track live usage, so
+        /// there is nothing to name.
         fn icon_name(&self) -> String {
-            self.icon_name.clone()
+            String::new()
         }
 
         fn icon_pixmap(&self) -> Vec<Icon> {
@@ -322,20 +510,22 @@ mod linux {
         }
 
         fn attention_icon_name(&self) -> String {
-            // No separate themed asset ships for the attention state, so
-            // always fall through to the pixmap below.
             String::new()
         }
 
+        /// Same pixmaps as [`Self::icon_pixmap`]: the ramp has already turned
+        /// the gauge red by the time the item reports `NeedsAttention`, and
+        /// hosts switch to this property when it does. Rendering a second set
+        /// would only risk the two disagreeing.
         fn attention_icon_pixmap(&self) -> Vec<Icon> {
-            self.attention_icons.clone()
+            self.icons.clone()
         }
 
         /// `NeedsAttention` tells the host to emphasise the item (Plasma
         /// un-hides it from the overflow group and animates it) and to switch
         /// to `attention_icon_pixmap`.
         fn status(&self) -> Status {
-            if self.status.attention {
+            if self.status.attention() {
                 Status::NeedsAttention
             } else {
                 Status::Active
@@ -422,14 +612,17 @@ mod linux {
         }
     }
 
-    /// Rasterise every entry in [`ICON_SIZES`] into ksni's ARGB32 layout.
-    fn icon_set(color: &str) -> Result<Vec<Icon>> {
+    /// Rasterise the gauge for `status` at every entry in [`ICON_SIZES`], in
+    /// ksni's ARGB32 layout.
+    pub(super) fn icon_set(status: &TrayStatus) -> Result<Vec<Icon>> {
+        let color = status.color();
+        let usage = status.gauge_usage();
         ICON_SIZES
             .iter()
             .map(|&size| {
                 // RGBA8 → ARGB32 (network byte order, big-endian).
                 // ksni::Icon::data layout in memory is `[A, R, G, B, …]`.
-                let mut argb = render_logo_rgba(size, color)?;
+                let mut argb = render_gauge_rgba(size, usage, color)?;
                 for px in argb.chunks_exact_mut(4) {
                     px.rotate_right(1);
                 }
@@ -442,45 +635,6 @@ mod linux {
             .collect()
     }
 
-    /// `"aura"` when a themed icon is installed under any XDG data dir,
-    /// otherwise the empty string.
-    ///
-    /// Reporting an `IconName` the theme can't resolve is worse than
-    /// reporting none: hosts that trust the name over the pixmap render a
-    /// blank slot. `install.sh` writes
-    /// `~/.local/share/icons/hicolor/scalable/apps/aura.svg`, but a user who
-    /// installed the binary by hand has no such file.
-    fn themed_icon_name() -> String {
-        let mut roots: Vec<std::path::PathBuf> = Vec::new();
-        if let Some(home) = dirs::data_dir() {
-            roots.push(home.join("icons"));
-        }
-        if let Some(home) = dirs::home_dir() {
-            roots.push(home.join(".icons"));
-        }
-        let system_dirs = std::env::var("XDG_DATA_DIRS")
-            .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-        roots.extend(
-            system_dirs
-                .split(':')
-                .filter(|d| !d.is_empty())
-                .map(|d| std::path::Path::new(d).join("icons")),
-        );
-
-        let candidates = [
-            "hicolor/scalable/apps/aura.svg",
-            "hicolor/symbolic/apps/aura-symbolic.svg",
-            "hicolor/64x64/apps/aura.png",
-            "hicolor/48x48/apps/aura.png",
-        ];
-        for root in roots {
-            if candidates.iter().any(|c| root.join(c).exists()) {
-                return "aura".to_string();
-            }
-        }
-        String::new()
-    }
-
     pub(super) fn install() -> Result<TrayHandle> {
         let (tx, rx) = mpsc::channel::<TrayEvent>();
 
@@ -488,12 +642,11 @@ mod linux {
         // Re-install would overwrite — but install() is called once.
         let _ = EVENT_RX.set(Mutex::new(rx));
 
+        let status = TrayStatus::default();
         let tray = AuraTray {
             tx,
-            icons: icon_set(ICON_COLOR)?,
-            attention_icons: icon_set(ICON_COLOR_ATTENTION)?,
-            icon_name: themed_icon_name(),
-            status: TrayStatus::default(),
+            icons: icon_set(&status)?,
+            status,
         };
 
         // `assume_sni_available(true)` is load-bearing, not a nicety.
@@ -596,34 +749,33 @@ mod non_linux {
 
     /// Icon color for the current state.
     ///
-    /// macOS gets a template image (alpha-only, recolored by AppKit) in the
-    /// normal state so it matches every other menu-bar item in light mode,
-    /// dark mode and while the item is click-highlighted. The attention state
-    /// deliberately opts out of template rendering — the whole point is to be
-    /// the one item in the bar that isn't the menu-bar's foreground color.
-    fn icon_color(attention: bool) -> &'static str {
-        if attention {
-            return ICON_COLOR_ATTENTION;
-        }
+    /// While the mark carries no usage signal — no reading yet, or the drawn
+    /// visuals switched off — macOS gets a template image (alpha-only,
+    /// recolored by AppKit) so the plain logo matches every other menu-bar
+    /// item in light mode, dark mode and while the item is click-highlighted;
+    /// the RGB we rasterise is then irrelevant. Once there is something to
+    /// show, the color *is* the signal, so template rendering is off and the
+    /// ramp shows through — an alpha-recolored gauge would be the one thing it
+    /// must not be, the menu bar's foreground color.
+    fn icon_color(status: &TrayStatus) -> &'static str {
         #[cfg(target_os = "macos")]
         {
-            ICON_COLOR_TEMPLATE
+            if status.is_plain() {
+                return ICON_COLOR_TEMPLATE;
+            }
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            ICON_COLOR
-        }
+        status.color()
     }
 
-    /// Whether the icon for `attention` should be handed to AppKit as a
-    /// template image. Always false off macOS (the flag is ignored there).
-    pub(super) fn is_template(attention: bool) -> bool {
-        cfg!(target_os = "macos") && !attention
+    /// Whether `status`'s icon should be handed to AppKit as a template
+    /// image. Always false off macOS (the flag is ignored there).
+    pub(super) fn is_template(status: &TrayStatus) -> bool {
+        cfg!(target_os = "macos") && status.is_plain()
     }
 
-    pub(super) fn state_icon(attention: bool) -> Result<Icon> {
+    pub(super) fn state_icon(status: &TrayStatus) -> Result<Icon> {
         let size = icon_size();
-        let rgba = render_logo_rgba(size, icon_color(attention))?;
+        let rgba = render_gauge_rgba(size, status.gauge_usage(), icon_color(status))?;
         Icon::from_rgba(rgba, size, size).context("Icon::from_rgba")
     }
 
@@ -649,11 +801,11 @@ mod non_linux {
         menu.append(&quit).context("menu append Quit")?;
 
         let tray = TrayIconBuilder::new()
-            .with_icon(state_icon(status.attention)?)
+            .with_icon(state_icon(&status)?)
             // Template rendering makes the icon track the menu bar's
             // appearance (light / dark / highlighted) the way every native
             // status item does. macOS-only; ignored on Windows.
-            .with_icon_as_template(is_template(status.attention))
+            .with_icon_as_template(is_template(&status))
             .with_tooltip(tooltip(&status))
             .with_menu(Box::new(menu))
             // Primary-click activates directly; menu is right-click only.
@@ -765,10 +917,24 @@ mod tests {
         assert_eq!(anchor.locator(), (1900.0, 1040.0));
     }
 
+    /// A status with every visual on, so the ramp and gauge tests exercise
+    /// the drawing itself rather than the toggles.
+    fn status(usage_percent: Option<u8>) -> TrayStatus {
+        TrayStatus {
+            summary: String::new(),
+            usage_percent,
+            visuals: TrayVisuals {
+                progress: true,
+                color: true,
+                pulse: true,
+            },
+        }
+    }
+
     #[test]
     fn every_declared_icon_size_rasterises() {
         for &size in ICON_SIZES {
-            let rgba = render_logo_rgba(size, ICON_COLOR).expect("render");
+            let rgba = render_gauge_rgba(size, Some(50), ICON_COLOR).expect("render");
             assert_eq!(rgba.len(), (size * size * 4) as usize);
         }
     }
@@ -776,15 +942,159 @@ mod tests {
     #[test]
     fn the_attention_icon_differs_from_the_normal_one() {
         // A same-colored "attention" icon would make NeedsAttention invisible.
-        let normal = render_logo_rgba(32, ICON_COLOR).expect("render");
-        let attention = render_logo_rgba(32, ICON_COLOR_ATTENTION).expect("render");
+        let normal = render_gauge_rgba(32, Some(10), ICON_COLOR).expect("render");
+        let attention = render_gauge_rgba(32, Some(95), ICON_COLOR_CRITICAL).expect("render");
         assert_ne!(normal, attention);
     }
 
     #[test]
     fn the_default_status_is_not_an_attention_state() {
         let status = TrayStatus::default();
-        assert!(!status.attention);
+        assert!(!status.attention());
+        assert_eq!(status.usage_percent, None);
         assert_eq!(status.summary, DEFAULT_SUMMARY);
+    }
+
+    #[test]
+    fn the_color_ramp_climbs_purple_yellow_orange_red() {
+        assert_eq!(status(None).color(), ICON_COLOR);
+        assert_eq!(status(Some(0)).color(), ICON_COLOR);
+        assert_eq!(status(Some(ELEVATED_PERCENT - 1)).color(), ICON_COLOR);
+        assert_eq!(status(Some(ELEVATED_PERCENT)).color(), ICON_COLOR_ELEVATED);
+        assert_eq!(status(Some(HIGH_PERCENT - 1)).color(), ICON_COLOR_ELEVATED);
+        assert_eq!(status(Some(HIGH_PERCENT)).color(), ICON_COLOR_HIGH);
+        assert_eq!(status(Some(ATTENTION_PERCENT - 1)).color(), ICON_COLOR_HIGH);
+        assert_eq!(status(Some(ATTENTION_PERCENT)).color(), ICON_COLOR_CRITICAL);
+        assert_eq!(status(Some(100)).color(), ICON_COLOR_CRITICAL);
+    }
+
+    #[test]
+    fn attention_starts_exactly_at_the_threshold() {
+        assert!(!status(None).attention());
+        assert!(!status(Some(ATTENTION_PERCENT - 1)).attention());
+        assert!(status(Some(ATTENTION_PERCENT)).attention());
+    }
+
+    #[test]
+    fn the_arc_starts_at_the_top_and_fills_anticlockwise() {
+        // Twelve o'clock on a 32×32 canvas with r=12.
+        assert_eq!(ring_point(GAUGE_START_DEG), (16.0, 4.0));
+        // A quarter of the ring is 60°, i.e. 210° — up and to the left.
+        let (x, y) = ring_point(GAUGE_START_DEG - GAUGE_SWEEP_DEG / 4.0);
+        assert!(x < 16.0 && y < 16.0, "expected upper-left, got ({x}, {y})");
+    }
+
+    #[test]
+    fn a_full_gauge_still_stops_where_the_logo_does() {
+        // 100% must land on the end of the logo's arc, not close the ring —
+        // the gap is the mark.
+        let full = ring_point(GAUGE_START_DEG - GAUGE_SWEEP_DEG);
+        let (x, y) = (full.0, full.1);
+        assert!((x - 26.392).abs() < 0.01, "x was {x}");
+        assert!((y - 22.0).abs() < 0.01, "y was {y}");
+    }
+
+    #[test]
+    fn the_large_arc_flag_tracks_the_sweep() {
+        // Past a half-turn the short complement would be drawn instead,
+        // collapsing the gauge just as it gets interesting.
+        assert!(ring_arc(90.0).contains(" 0 0 "));
+        assert!(ring_arc(GAUGE_SWEEP_DEG).contains(" 1 0 "));
+    }
+
+    #[test]
+    fn an_unread_gauge_is_the_plain_logo() {
+        // One full-opacity arc, no track and no fill: what the icon looked
+        // like before it was an indicator.
+        let svg = gauge_svg(None, ICON_COLOR);
+        assert_eq!(svg.matches("<path").count(), 1);
+        assert!(!svg.contains("stroke-opacity"));
+    }
+
+    #[test]
+    fn a_measured_gauge_draws_a_track_behind_the_fill() {
+        let svg = gauge_svg(Some(40), ICON_COLOR);
+        assert_eq!(svg.matches("<path").count(), 2);
+        assert!(svg.contains("stroke-opacity"));
+    }
+
+    #[test]
+    fn zero_percent_draws_no_fill_at_all() {
+        // A round cap on a zero-length arc paints a blob that reads as usage.
+        let svg = gauge_svg(Some(0), ICON_COLOR);
+        assert_eq!(svg.matches("<path").count(), 1);
+        assert!(svg.contains("stroke-opacity"));
+    }
+
+    #[test]
+    fn usage_past_a_hundred_percent_does_not_overrun_the_ring() {
+        // Quota APIs have been known to report >100; the arc must saturate
+        // rather than wrap back over itself.
+        assert_eq!(
+            gauge_svg(Some(100), ICON_COLOR),
+            gauge_svg(Some(250), ICON_COLOR)
+        );
+    }
+
+    #[test]
+    fn pulse_off_keeps_the_desktop_quiet_but_still_paints_the_gauge() {
+        // The shipped default. Everything Aura draws itself still reacts;
+        // only the request for the host to emphasise the item is withheld.
+        let mut status = status(Some(95));
+        status.visuals.pulse = false;
+        assert!(!status.attention());
+        assert_eq!(status.color(), ICON_COLOR_CRITICAL);
+        assert_eq!(status.gauge_usage(), Some(95));
+    }
+
+    #[test]
+    fn progress_off_draws_the_ring_whole_but_keeps_the_color() {
+        let mut status = status(Some(95));
+        status.visuals.progress = false;
+        assert_eq!(status.gauge_usage(), None);
+        assert_eq!(status.color(), ICON_COLOR_CRITICAL);
+        assert!(!status.is_plain());
+    }
+
+    #[test]
+    fn color_off_pins_the_icon_to_aura_purple() {
+        let mut status = status(Some(95));
+        status.visuals.color = false;
+        assert_eq!(status.color(), ICON_COLOR);
+        // The gauge is the remaining signal, so the mark is not yet plain.
+        assert_eq!(status.gauge_usage(), Some(95));
+        assert!(!status.is_plain());
+    }
+
+    #[test]
+    fn both_drawn_visuals_off_is_the_plain_logo() {
+        // Nothing left to say with the icon — on macOS this is what puts it
+        // back into template rendering alongside every other status item.
+        let mut status = status(Some(95));
+        status.visuals.progress = false;
+        status.visuals.color = false;
+        assert!(status.is_plain());
+        assert_eq!(
+            gauge_svg(status.gauge_usage(), status.color()),
+            gauge_svg(None, ICON_COLOR)
+        );
+    }
+
+    #[test]
+    fn the_toggles_are_part_of_the_diff() {
+        // `apply_pending_status` skips a push when the status is unchanged;
+        // a config edit that only flips a visual still has to get through.
+        let mut flipped = status(Some(40));
+        flipped.visuals.progress = false;
+        assert_ne!(status(Some(40)), flipped);
+    }
+
+    #[test]
+    fn different_usage_levels_rasterise_differently() {
+        // The whole feature: the icon has to actually change as usage climbs,
+        // at the smallest size a panel will ask for.
+        let low = render_gauge_rgba(16, Some(10), ICON_COLOR).expect("render");
+        let high = render_gauge_rgba(16, Some(80), ICON_COLOR).expect("render");
+        assert_ne!(low, high);
     }
 }

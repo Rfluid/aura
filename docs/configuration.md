@@ -149,7 +149,10 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 | `auto_resize` | bool? | `true` \| `false` | unset (auto-fit) | Auto-resize the modal to fit its content height. `false` = fixed-size. Works with or without chrome. |
 | `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `auto_resize` is false. |
 | `goblin_mode` | bool | `true` \| `false` | `false` | Swap UI copy for the aggressive "Goblin Mode" variant. |
-| `tray_status` | bool | `true` \| `false` | `true` | Keep the tray tooltip in sync with quota usage and tint the icon past 90%. |
+| `tray_status` | bool | `true` \| `false` | `true` | Keep the tray tooltip and gauge in sync with quota usage. |
+| `tray_progress` | bool | `true` \| `false` | `true` | Fill the tray icon's ring in proportion to peak quota usage. |
+| `tray_color` | bool | `true` \| `false` | `true` | Move the tray icon through the purple/yellow/orange/red usage ramp. |
+| `tray_pulse` | bool | `true` \| `false` | `false` | Ask the desktop to emphasize the tray icon at 90% usage. Effective on Linux SNI hosts. |
 | `tray_status_interval_secs` | u64 | — | `1200` | Seconds between background tray-status refreshes; clamped up to 30. |
 
 ### `[update]`
@@ -262,11 +265,24 @@ show_in_app_switcher = false
 # Swap UI copy for the aggressive "Goblin Mode" variant. Default false.
 goblin_mode = false
 
-# Keep the tray icon's tooltip in sync with the active profile's quota, and
-# tint the icon red once a window passes 90%. Default true. While the modal is
-# closed this costs one quota lookup per interval below (a network request for
-# the API-backed agents); set false to update only when the modal refreshes.
+# Keep the tray icon's tooltip and gauge in sync with the active profile's
+# quota. Default true. While the modal is closed this costs one quota lookup
+# per interval below (a network request for the API-backed agents); set false
+# to disable updates and leave the icon static.
 tray_status = true
+
+# Fill the icon's open ring to the highest quota-window usage. Default true.
+# Ignored when tray_status is false.
+tray_progress = true
+
+# Change the icon from purple to yellow at 50%, orange at 75%, and red at 90%.
+# Default true. Ignored when tray_status is false.
+tray_color = true
+
+# Ask the desktop to emphasize the icon at 90%. Default false because Linux
+# panels may animate it or pull it out of the overflow group. SNI/Linux only;
+# the color remains the attention signal on macOS and Windows.
+tray_pulse = false
 
 # Seconds between background tray-status refreshes. Ignored when tray_status is
 # false. Values below 30 are clamped up to 30.
