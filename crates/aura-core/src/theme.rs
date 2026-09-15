@@ -612,6 +612,8 @@ accent = "#112233"
             config_path: None,
             // config.toml override should LOSE to theme.toml override.
             color: Some("#222222".to_string()),
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         assert_eq!(t.agent_accent(&agent), 0x111111);
     }
@@ -625,6 +627,8 @@ accent = "#112233"
             kind: AgentKind::ClaudeCode,
             config_path: None,
             color: Some("#333333".to_string()),
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         assert_eq!(t.agent_accent(&agent_with_color), 0x333333);
 
@@ -634,6 +638,8 @@ accent = "#112233"
             kind: AgentKind::ClaudeCode,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         assert_eq!(t.agent_accent(&agent_bare), 0xd97757);
     }
@@ -648,6 +654,8 @@ accent = "#112233"
             kind: AgentKind::Codex,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         assert_eq!(t.agent_accent(&codex), t.colors.agent_fallback);
     }

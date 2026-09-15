@@ -27,6 +27,31 @@ pub struct AgentConfig {
     /// leading `#` (3- or 6-digit). When absent, the per-kind default applies.
     #[serde(default)]
     pub color: Option<String>,
+    /// Which quota window fills the tray icon's ring while this profile is
+    /// active, as a position in the window list this agent reports — the same
+    /// order the modal and the tooltip show. `None` (default) reads position
+    /// 0, the session window on every backend Aura speaks to.
+    ///
+    /// Per-agent rather than global because the list is the agent's own:
+    /// position 1 is Claude's all-models week and Codex's weekly limit, and a
+    /// Gemini profile reports no percentages at all.
+    ///
+    /// Paired with [`Self::tray_color_source`] (position 1 by default) this
+    /// splits the two halves of the indicator — ring off the session, color
+    /// off the week. Positions shift when a window is absent (an idle Claude
+    /// session has no 5h window, a plan without Opus has no Opus week), so a
+    /// selector past the end, or one landing on a window with no percentage,
+    /// falls back to the peak across every window rather than blanking the
+    /// icon. Only the two selected windows reach the icon: one running out
+    /// further down the list shows up in the tooltip, not the ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray_progress_source: Option<u32>,
+    /// Which quota window drives the tray icon's color ramp — and with it
+    /// `display.tray_pulse`, the loud end of the same signal. Same positional
+    /// scheme and same peak fallback as [`Self::tray_progress_source`].
+    /// `None` (default) reads position 1, the weekly window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray_color_source: Option<u32>,
 }
 
 impl AgentConfig {
@@ -561,24 +586,32 @@ pub fn known_agent_profiles() -> Vec<AgentConfig> {
             kind: AgentKind::ClaudeCode,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         },
         AgentConfig {
             name: "Claude Code (Enterprise)".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-enterprise".to_string()),
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         },
         AgentConfig {
             name: "Codex".to_string(),
             kind: AgentKind::Codex,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         },
         AgentConfig {
             name: "Gemini".to_string(),
             kind: AgentKind::Gemini,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         },
     ]
 }
@@ -754,6 +787,8 @@ dismiss_all = true
                 kind: AgentKind::ClaudeCode,
                 config_path: None, // resolves to ~/.claude
                 color: Some("#abcdef".to_string()),
+                tray_progress_source: None,
+                tray_color_source: None,
             }],
             plugins: vec![],
             display: DisplayConfig::default(),
@@ -766,12 +801,16 @@ dismiss_all = true
                 kind: AgentKind::ClaudeCode,
                 config_path: None,
                 color: None,
+                tray_progress_source: None,
+                tray_color_source: None,
             },
             AgentConfig {
                 name: "Codex".to_string(),
                 kind: AgentKind::Codex,
                 config_path: None,
                 color: None,
+                tray_progress_source: None,
+                tray_color_source: None,
             },
         ]);
 
@@ -792,6 +831,8 @@ dismiss_all = true
                 kind: AgentKind::ClaudeCode,
                 config_path: None,
                 color: None,
+                tray_progress_source: None,
+                tray_color_source: None,
             }],
             plugins: vec![],
             display: DisplayConfig::default(),
@@ -803,6 +844,8 @@ dismiss_all = true
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-enterprise".to_string()),
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         }]);
 
         assert_eq!(added, 1);
@@ -984,6 +1027,8 @@ kind = "claude-code"
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-test".to_string()),
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         let resolved = agent.resolved_config_path();
         assert!(resolved.to_string_lossy().contains(".claude-test"));
@@ -997,6 +1042,8 @@ kind = "claude-code"
             kind: AgentKind::ClaudeCode,
             config_path: None,
             color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
         };
         let resolved = agent.resolved_config_path();
         assert!(resolved.ends_with(".claude"));
