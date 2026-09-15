@@ -172,6 +172,32 @@ Controls the "Update available" header button.
 | `kind` | string | `claude-code` \| `codex` \| `gemini` | Which agent this profile reads. |
 | `config_path` | string? | — | Agent config dir; defaults to `~/.claude`, `~/.codex`, `~/.gemini` per kind. |
 | `color` | string? | — | Accent color override, hex like `#rrggbb` or `#rgb`. |
+| `tray_progress_source` | u32? | — | Quota window that fills the tray ring, by position. Unset = `0`, the session. |
+| `tray_color_source` | u32? | — | Quota window that drives the tray color ramp, by position. Unset = `1`, the week. |
+
+The two `tray_*_source` selectors point the halves of the tray indicator at
+different quota windows. Out of the box the ring is the session you're in and
+the color is the week you're spending; set them to repoint either half:
+
+```toml
+[[agents]]
+name = "Claude Code"
+kind = "claude-code"
+tray_progress_source = 0   # ring   ← Current session          (the default)
+tray_color_source = 1      # color  ← Current week, all models (the default)
+```
+
+They live on the agent rather than under `[display]` because the positions
+index that agent's own window list: position 1 is Claude's all-models week and
+Codex's weekly limit, and a Gemini profile reports no percentages at all.
+
+Backends emit only the windows they actually have — an idle Claude session has
+no 5h window, a plan without Opus has no Opus week — so positions shift. A
+selector past the end, or one landing on a window with no percentage, falls
+back to the peak across every window rather than blanking the icon; that is
+also what puts the ramp on the only window a single-window agent reports. Note
+that only the two selected windows reach the icon: a third window running out
+shows up in the tooltip, not the ring.
 
 ### `[[plugins]]` (repeatable)
 

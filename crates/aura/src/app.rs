@@ -389,11 +389,18 @@ impl AuraView {
         // for the UI, so reusing it costs nothing and is always fresher than
         // whatever the background poll last managed.
         if self.config.display.tray_status {
-            crate::tray::set_status(crate::tray_status::summarize(
-                &self.active_profile,
-                self.quota.as_ref(),
-                crate::tray_status::visuals(&self.config.display),
-            ));
+            if let Some(agent) = self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.name == self.active_profile)
+            {
+                crate::tray::set_status(crate::tray_status::summarize(
+                    agent,
+                    self.quota.as_ref(),
+                    &self.config.display,
+                ));
+            }
         }
 
         // Initialize the active plugin selection if absent or stale.

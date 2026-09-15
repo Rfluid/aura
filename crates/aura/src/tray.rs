@@ -171,8 +171,7 @@ pub struct TrayStatus {
     /// One short line describing current usage, e.g. `"Claude · 5h 72%"`.
     /// Shown as the tooltip body on every platform.
     pub summary: String,
-    /// Peak usage across the quota windows, in whole percent clamped to
-    /// `0..=100`. Drives how far the ring is filled *and* which color it is.
+    /// Usage that fills the ring, in whole percent clamped to `0..=100`.
     ///
     /// `None` means "no reading yet" — the icon then draws the complete ring
     /// at full opacity rather than an empty gauge, which would read as 0% and
@@ -183,7 +182,15 @@ pub struct TrayStatus {
     /// [`TrayHandle::apply_pending_status`], so a poll that moves usage by a
     /// fraction of a percent — well under a pixel of arc at 16 px — costs no
     /// D-Bus or AppKit traffic.
-    pub usage_percent: Option<u8>,
+    pub gauge_percent: Option<u8>,
+    /// Usage that drives the color ramp and the attention request. Same units
+    /// and same `None` meaning as [`Self::gauge_percent`].
+    ///
+    /// A separate reading because the two halves of the indicator read
+    /// different quota windows — by default the session for the ring and the
+    /// week for the color, repointed per agent with `tray_progress_source` /
+    /// `tray_color_source`.
+    pub color_percent: Option<u8>,
     /// Which of the three visuals the user has left switched on.
     pub visuals: TrayVisuals,
 }
@@ -192,7 +199,8 @@ impl Default for TrayStatus {
     fn default() -> Self {
         Self {
             summary: DEFAULT_SUMMARY.to_string(),
-            usage_percent: None,
+            gauge_percent: None,
+            color_percent: None,
             visuals: TrayVisuals::default(),
         }
     }
@@ -205,7 +213,7 @@ impl TrayStatus {
     pub fn attention(&self) -> bool {
         self.visuals.pulse
             && self
-                .usage_percent
+                .color_percent
                 .is_some_and(|pct| pct >= ATTENTION_PERCENT)
     }
 
@@ -214,7 +222,7 @@ impl TrayStatus {
     fn gauge_usage(&self) -> Option<u8> {
         self.visuals
             .progress
-            .then_some(self.usage_percent)
+            .then_some(self.gauge_percent)
             .flatten()
     }
 
@@ -223,7 +231,7 @@ impl TrayStatus {
         if !self.visuals.color {
             return ICON_COLOR;
         }
-        match self.usage_percent {
+        match self.color_percent {
             Some(pct) if pct >= ATTENTION_PERCENT => ICON_COLOR_CRITICAL,
             Some(pct) if pct >= HIGH_PERCENT => ICON_COLOR_HIGH,
             Some(pct) if pct >= ELEVATED_PERCENT => ICON_COLOR_ELEVATED,
@@ -929,7 +937,8 @@ mod tests {
     fn status(usage_percent: Option<u8>) -> TrayStatus {
         TrayStatus {
             summary: String::new(),
-            usage_percent,
+            gauge_percent: usage_percent,
+            color_percent: usage_percent,
             visuals: TrayVisuals {
                 progress: true,
                 color: true,
@@ -958,7 +967,8 @@ mod tests {
     fn the_default_status_is_not_an_attention_state() {
         let status = TrayStatus::default();
         assert!(!status.attention());
-        assert_eq!(status.usage_percent, None);
+        assert_eq!(status.gauge_percent, None);
+        assert_eq!(status.color_percent, None);
         assert_eq!(status.summary, DEFAULT_SUMMARY);
     }
 

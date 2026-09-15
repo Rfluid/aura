@@ -302,6 +302,19 @@ pub fn agent_fields() -> &'static [SectionField] {
             allowed: &[],
             summary: "Accent color override, hex like #rrggbb or #rgb.",
         },
+        SectionField {
+            key: "tray_progress_source",
+            type_label: "u32?",
+            allowed: &[],
+            summary: "Quota window that fills the tray ring, by position. Unset = 0, the session.",
+        },
+        SectionField {
+            key: "tray_color_source",
+            type_label: "u32?",
+            allowed: &[],
+            summary: "Quota window that drives the tray color ramp, by position. \
+                Unset = 1, the week.",
+        },
     ]
 }
 
@@ -845,6 +858,8 @@ mod tests {
                 kind: AgentKind::ClaudeCode,
                 config_path: Some("~/.claude-work".to_string()),
                 color: Some("#abcdef".to_string()),
+                tray_progress_source: None,
+                tray_color_source: None,
             }],
             plugins: vec![PluginConfig {
                 name: "RTK Gains".to_string(),

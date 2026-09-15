@@ -109,6 +109,25 @@ control the two drawn signals. `display.tray_pulse` is opt-in and maps usage at
 or above 90% to SNI's `NeedsAttention` state on Linux; it has no equivalent on
 macOS or Windows.
 
+Each drawn signal carries its own reading (`TrayStatus::gauge_percent` and
+`color_percent`), so the ring and the ramp watch different quota windows: by
+default the ring fills from window 0 (the session on every backend Aura
+speaks to) and the color climbs with window 1 (the week). One glance then
+carries both the burst you're in and the budget you're spending, which a single
+peak across all windows cannot.
+
+The active agent's own `tray_progress_source` / `tray_color_source` repoint
+either half at another position in the window list *that agent* reports. They
+sit on `[[agents]]` rather than `[display]` because the positions are only
+meaningful against one agent's windows. Backends push only the windows they
+actually have (an idle Claude session has no 5h window; a plan without Opus has
+no Opus week), so positions shift — a selector that lands past the end, or on a
+token-only window with no percentage, falls back to the peak rather than
+blanking the icon, which is also what puts the ramp on the single window a
+one-window agent reports. The flip side of reading by position: a window
+further down the list that is running out reaches the tooltip but not the icon.
+`tray_pulse` follows the color reading, being the loud end of the same ramp.
+
 ## Modal positioning
 
 `placement::modal_bounds()` decides where the modal opens; the choice is
