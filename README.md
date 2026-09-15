@@ -111,7 +111,7 @@ running a CLI command.
 - **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin. First-party plugins (incl. RTK Gains for [RTK](https://github.com/rtk) token-savings) are installed separately.
 - **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit; Escape closes.
-- **A real indicator, not a launcher** — the tooltip carries live quota usage and the icon turns red near the limit, without opening anything.
+- **A real indicator, not a launcher** — the tooltip carries live quota usage, the ring fills with your session while its color tracks your week, and the icon turns red near the limit — without opening anything.
 - **Tray-native** — uses [`ksni`](https://github.com/iovxw/ksni) on Linux for direct StatusNotifierItem (Plasma / GNOME / sway / etc.) and `tray-icon` on macOS / Windows for AppKit / Win32 menu-bar integration.
 
 ## Plugins
@@ -266,11 +266,15 @@ with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
 (Windows) are equivalent CLI exits.
 
 Hovering the icon shows the active profile's current quota
-(`Claude · 5h 72% · week 31%`). The complete ring around Aura's center dot fills
-to the highest current quota usage and moves from purple to yellow at 50%,
-orange at 75%, and red at 90%. Set `display.tray_status = false` to turn live
-updates off; the progress, color, and desktop-attention signals can also be
-controlled independently — see [Configuration](docs/configuration.md).
+(`Claude · 5h 72% · week 31%`). The two halves of the icon read two different
+quota windows: by default the complete ring around Aura's center dot fills with
+your **current session**, while its **color** tracks your **week** — purple,
+then yellow at 50%, orange at 75%, and red at 90%. One glance carries both the
+burst you're in and the budget you're spending. Either half can be pointed at
+another quota window per agent (`tray_progress_source` / `tray_color_source`).
+Set `display.tray_status = false` to turn live updates off; the progress,
+color, and desktop-attention signals can also be controlled independently — see
+[Configuration](docs/configuration.md).
 
 Grab a prebuilt release archive (next section) or build from source with
 Cargo (Rust 1.80+).
