@@ -40,12 +40,13 @@ const DEFAULT_COLOR_SOURCE: u32 = 1;
 
 /// The last reading the indicator managed, and the profile it belongs to.
 ///
-/// A throttled poll (HTTP 429) carries no usable numbers: the backends fall
-/// back to local token counts, or to nothing at all, and pushing either one
-/// wipes a good gauge and tooltip until the next successful poll — which, in
-/// the middle of a rate limit, can be a long way off. Keeping the last good
-/// reading here lets [`summarize_sticky`] ride out the 429. Keyed by profile
-/// so switching agents never shows one agent's numbers under another's name.
+/// A failed poll carries no usable numbers: the backends fall back to local
+/// token counts, or to nothing at all, and pushing either one wipes a good
+/// gauge and tooltip until the next successful poll — which, in the middle of
+/// a rate limit or an outage, can be a long way off. Keeping the last good
+/// reading here lets [`summarize_sticky`] ride the failure out. Keyed by
+/// profile so switching agents never shows one agent's numbers under
+/// another's name.
 ///
 /// The modal does not read this — it keeps showing whatever the snapshot
 /// actually said, note and all.
@@ -151,7 +152,7 @@ fn reading(windows: &[QuotaWindow], source: u32, peak: f64) -> u8 {
     pct.round().clamp(0.0, 100.0) as u8
 }
 
-/// [`summarize`], but a rate-limited poll keeps the last good reading.
+/// [`summarize`], but a failed poll keeps the last good reading.
 ///
 /// This is what both indicator producers call; `summarize` itself stays a
 /// pure function, and so does [`sticky`] below it — this wrapper is only the
@@ -172,11 +173,12 @@ pub fn summarize_sticky(
 /// Decide what the indicator shows, given `last` — the last good reading and
 /// the profile it belongs to. Updates `last` in place.
 ///
-/// On a 429 the stored summary and both readings are replayed, with the
-/// visuals taken from the *current* config so toggling `tray.progress` and
-/// friends still takes effect while throttled. Any other reading — including
-/// an unavailable one that is genuinely unavailable rather than throttled —
-/// is pushed as-is, and remembered when it carries a gauge reading.
+/// Every API failure holds — a 429, a 500, a dead network, an expired token.
+/// The stored summary and both readings are replayed, with the visuals taken
+/// from the *current* config so toggling `tray.progress` and friends still
+/// takes effect mid-outage. A poll that reached the API — or a backend with
+/// no API to fail — is pushed as-is, and remembered when it carries a gauge
+/// reading.
 fn sticky(
     agent: &AgentConfig,
     quota: Option<&QuotaSnapshot>,
@@ -185,7 +187,7 @@ fn sticky(
 ) -> TrayStatus {
     let status = summarize(agent, quota, tray);
 
-    if quota.is_some_and(|q| q.rate_limited) {
+    if quota.is_some_and(|q| q.api_failed) {
         if let Some((profile, good)) = last.as_ref() {
             if profile == &agent.name {
                 return TrayStatus {
@@ -271,17 +273,17 @@ mod tests {
             windows,
             source: QuotaSource::Api,
             note: None,
-            rate_limited: false,
+            api_failed: false,
         }
     }
 
-    /// What a backend hands back after a 429: the API numbers are gone and
-    /// only the local fallback (or nothing) is left.
-    fn throttled(windows: Vec<QuotaWindow>) -> QuotaSnapshot {
+    /// What a backend hands back when the API call failed: the API numbers
+    /// are gone and only the local fallback (or nothing) is left.
+    fn degraded(windows: Vec<QuotaWindow>) -> QuotaSnapshot {
         QuotaSnapshot {
             source: QuotaSource::Fallback,
-            rate_limited: true,
-            note: Some("API unavailable (HTTP 429)".to_string()),
+            api_failed: true,
+            note: Some("API unavailable (http status: 429)".to_string()),
             ..snapshot(windows)
         }
     }
@@ -504,10 +506,10 @@ mod tests {
         assert_eq!(line("Claude", Some(&over)).gauge_percent, Some(100));
     }
 
-    // ── The 429 hold ──────────────────────────────────────────────────────
+    // ── The failed-poll hold ──────────────────────────────────────────────
 
     #[test]
-    fn a_rate_limited_poll_keeps_the_last_good_reading() {
+    fn a_failed_poll_keeps_the_last_good_reading() {
         let mut last = None;
         let agent = agent("Claude");
         let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
@@ -519,7 +521,7 @@ mod tests {
         // tooltip line, the ring and the color where they were.
         let held = sticky(
             &agent,
-            Some(&throttled(vec![window("5h (local est.)", None)])),
+            Some(&degraded(vec![window("5h (local est.)", None)])),
             &all_on(),
             &mut last,
         );
@@ -527,13 +529,13 @@ mod tests {
     }
 
     #[test]
-    fn the_hold_survives_repeated_429s() {
+    fn the_hold_survives_repeated_failures() {
         let mut last = None;
         let agent = agent("Claude");
         let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
         let first = sticky(&agent, Some(&good), &all_on(), &mut last);
         for _ in 0..3 {
-            let held = sticky(&agent, Some(&throttled(Vec::new())), &all_on(), &mut last);
+            let held = sticky(&agent, Some(&degraded(Vec::new())), &all_on(), &mut last);
             assert_eq!(held, first);
         }
     }
@@ -544,7 +546,7 @@ mod tests {
         let agent = agent("Claude");
         let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
         sticky(&agent, Some(&good), &all_on(), &mut last);
-        sticky(&agent, Some(&throttled(Vec::new())), &all_on(), &mut last);
+        sticky(&agent, Some(&degraded(Vec::new())), &all_on(), &mut last);
 
         let fresh = snapshot(vec![window("5h", Some(80.0)), window("week", Some(33.0))]);
         let status = sticky(&agent, Some(&fresh), &all_on(), &mut last);
@@ -569,20 +571,20 @@ mod tests {
             pulse: false,
             ..TrayConfig::default()
         };
-        let held = sticky(&agent, Some(&throttled(Vec::new())), &off, &mut last);
+        let held = sticky(&agent, Some(&degraded(Vec::new())), &off, &mut last);
         assert_eq!(held.summary, "Claude · 5h 72% · week 31%");
         assert_eq!(held.gauge_percent, Some(72));
         assert_eq!(held.visuals, visuals(&off));
     }
 
     #[test]
-    fn a_429_with_nothing_held_shows_what_the_poll_returned() {
+    fn a_failure_with_nothing_held_shows_what_the_poll_returned() {
         // First poll of the session lands on a rate limit: there is nothing
         // to replay, so the degraded line goes out rather than no indicator.
         let mut last = None;
         let status = sticky(
             &agent("Claude"),
-            Some(&throttled(Vec::new())),
+            Some(&degraded(Vec::new())),
             &all_on(),
             &mut last,
         );
@@ -602,7 +604,7 @@ mod tests {
 
         let status = sticky(
             &agent("Codex"),
-            Some(&throttled(Vec::new())),
+            Some(&degraded(Vec::new())),
             &all_on(),
             &mut last,
         );
@@ -611,22 +613,41 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_poll_that_is_not_a_429_still_goes_through() {
-        // Only throttling is held. A revoked token, say, is real news and the
-        // icon should say so instead of showing numbers that no longer apply.
+    fn every_failure_status_holds_not_just_the_rate_limit() {
+        // A 500, an expired token, a dead network: all of them reach the tray
+        // as the same degraded snapshot, and all of them hold. The modal is
+        // where the note explains which one it was.
         let mut last = None;
         let agent = agent("Claude");
-        let good = snapshot(vec![window("5h", Some(72.0))]);
-        sticky(&agent, Some(&good), &all_on(), &mut last);
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        let first = sticky(&agent, Some(&good), &all_on(), &mut last);
 
-        let dead = QuotaSnapshot::unavailable("no oauth token");
-        let status = sticky(&agent, Some(&dead), &all_on(), &mut last);
-        assert_eq!(status.summary, "Claude · quota unavailable");
-        assert_eq!(status.gauge_percent, None);
+        let dead = QuotaSnapshot {
+            api_failed: true,
+            ..QuotaSnapshot::unavailable("API failed: http status: 500; local fallback failed")
+        };
+        assert_eq!(sticky(&agent, Some(&dead), &all_on(), &mut last), first);
     }
 
     #[test]
-    fn a_throttled_poll_that_still_has_percentages_is_held_too() {
+    fn a_backend_without_an_api_is_never_held() {
+        // Gemini publishes no quota endpoint, so its local numbers are the
+        // real reading — `api_failed` stays false and they go straight out.
+        let mut last = None;
+        let agent = agent("Gemini");
+        let good = snapshot(vec![window("5h", Some(72.0))]);
+        sticky(&agent, Some(&good), &all_on(), &mut last);
+
+        let local = QuotaSnapshot {
+            source: QuotaSource::Fallback,
+            ..snapshot(vec![window("5h", Some(12.0))])
+        };
+        let status = sticky(&agent, Some(&local), &all_on(), &mut last);
+        assert_eq!(status.gauge_percent, Some(12));
+    }
+
+    #[test]
+    fn a_degraded_poll_that_still_has_percentages_is_held_too() {
         // Codex's local fallback can produce percentages, but they are the
         // last ones a session file observed — staler than what we already
         // hold, and they would jump the gauge backwards.
@@ -634,7 +655,7 @@ mod tests {
         let agent = agent("Codex");
         let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
         let first = sticky(&agent, Some(&good), &all_on(), &mut last);
-        let stale = throttled(vec![window("5h", Some(12.0)), window("week", Some(4.0))]);
+        let stale = degraded(vec![window("5h", Some(12.0)), window("week", Some(4.0))]);
         assert_eq!(sticky(&agent, Some(&stale), &all_on(), &mut last), first);
     }
 }

@@ -38,7 +38,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::{call_failure, codex_oauth, ApiFailure, QuotaSnapshot, QuotaSource, QuotaWindow};
+use super::{codex_oauth, QuotaSnapshot, QuotaSource, QuotaWindow};
 
 const WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
@@ -143,7 +143,6 @@ impl CodexQuota {
         match self.snapshot_via_api() {
             Ok(snap) => snap,
             Err(api_err) => {
-                let throttled = api_err.rate_limited;
                 let mut snap = match self.snapshot_local() {
                     Ok(Some(mut snap)) => {
                         snap.source = QuotaSource::Fallback;
@@ -159,7 +158,7 @@ impl CodexQuota {
                         "API failed: {api_err}; local fallback failed: {local_err}"
                     )),
                 };
-                snap.rate_limited = throttled;
+                snap.api_failed = true;
                 snap
             }
         }
@@ -167,7 +166,7 @@ impl CodexQuota {
 
     // ── API path ──────────────────────────────────────────────────────────────
 
-    fn snapshot_via_api(&self) -> Result<QuotaSnapshot, ApiFailure> {
+    fn snapshot_via_api(&self) -> Result<QuotaSnapshot> {
         let tokens = codex_oauth::ensure_fresh(&self.codex_config_dir)?;
 
         let mut request = ureq::get(WHAM_USAGE_URL)
@@ -178,7 +177,9 @@ impl CodexQuota {
             request = request.header("chatgpt-account-id", account_id.as_str());
         }
 
-        let mut response = request.call().map_err(|e| call_failure("/wham/usage", e))?;
+        let mut response = request
+            .call()
+            .map_err(|e| anyhow!("/wham/usage call failed: {e}"))?;
 
         if response.status() != 200 {
             let status = response.status();
@@ -186,12 +187,7 @@ impl CodexQuota {
                 .body_mut()
                 .read_to_string()
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            let err = anyhow!("/wham/usage returned HTTP {status}: {body}");
-            return Err(if status == 429 {
-                ApiFailure::rate_limited(err)
-            } else {
-                err.into()
-            });
+            return Err(anyhow!("/wham/usage returned HTTP {status}: {body}"));
         }
 
         let raw_body = response
@@ -264,7 +260,7 @@ fn snapshot_from_wham(usage: WhamUsage, fallback_plan: Option<String>) -> QuotaS
         windows,
         source: QuotaSource::Api,
         note,
-        rate_limited: false,
+        api_failed: false,
     }
 }
 
@@ -401,7 +397,7 @@ fn snapshot_from_local(observed_at: String, rl: RawRateLimits) -> QuotaSnapshot 
         windows,
         source: QuotaSource::Fallback,
         note,
-        rate_limited: false,
+        api_failed: false,
     }
 }
 

@@ -150,7 +150,7 @@ impl GeminiQuota {
             windows,
             source: QuotaSource::Fallback,
             note,
-            rate_limited: false,
+            api_failed: false,
         }))
     }
 }
