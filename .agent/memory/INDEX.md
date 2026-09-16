@@ -20,7 +20,7 @@ Auto-grown list of memory entries. Agents append after each task that produced n
 
 ## patterns/
 
-_(empty — populate as you learn)_
+- [2026-09-16-issue-triage-before-publishing](patterns/2026-09-16-issue-triage-before-publishing.md) — Diagnose Aura support reports against docs/source first, then file or update GitHub issues only when evidence warrants it
 
 ## lessons/
 
