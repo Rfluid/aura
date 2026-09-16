@@ -14,6 +14,7 @@
 //!    when the modal is closed. Same code path, own thread.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use aura_core::{
@@ -36,6 +37,19 @@ const DEFAULT_PROGRESS_SOURCE: u32 = 0;
 /// of the indicator — one number for the burst you're in, one for the budget
 /// you're spending.
 const DEFAULT_COLOR_SOURCE: u32 = 1;
+
+/// The last reading the indicator managed, and the profile it belongs to.
+///
+/// A throttled poll (HTTP 429) carries no usable numbers: the backends fall
+/// back to local token counts, or to nothing at all, and pushing either one
+/// wipes a good gauge and tooltip until the next successful poll — which, in
+/// the middle of a rate limit, can be a long way off. Keeping the last good
+/// reading here lets [`summarize_sticky`] ride out the 429. Keyed by profile
+/// so switching agents never shows one agent's numbers under another's name.
+///
+/// The modal does not read this — it keeps showing whatever the snapshot
+/// actually said, note and all.
+static LAST_GOOD: Mutex<Option<(String, TrayStatus)>> = Mutex::new(None);
 
 /// Read the three drawn-visual toggles off the `[tray]` config.
 pub fn visuals(tray: &TrayConfig) -> TrayVisuals {
@@ -137,6 +151,60 @@ fn reading(windows: &[QuotaWindow], source: u32, peak: f64) -> u8 {
     pct.round().clamp(0.0, 100.0) as u8
 }
 
+/// [`summarize`], but a rate-limited poll keeps the last good reading.
+///
+/// This is what both indicator producers call; `summarize` itself stays a
+/// pure function, and so does [`sticky`] below it — this wrapper is only the
+/// process-wide slot the two producers share.
+pub fn summarize_sticky(
+    agent: &AgentConfig,
+    quota: Option<&QuotaSnapshot>,
+    tray: &TrayConfig,
+) -> TrayStatus {
+    match LAST_GOOD.lock() {
+        Ok(mut last) => sticky(agent, quota, tray, &mut last),
+        // A poisoned lock is a panic in another producer, not a reason to
+        // stop updating the icon.
+        Err(_) => summarize(agent, quota, tray),
+    }
+}
+
+/// Decide what the indicator shows, given `last` — the last good reading and
+/// the profile it belongs to. Updates `last` in place.
+///
+/// On a 429 the stored summary and both readings are replayed, with the
+/// visuals taken from the *current* config so toggling `tray.progress` and
+/// friends still takes effect while throttled. Any other reading — including
+/// an unavailable one that is genuinely unavailable rather than throttled —
+/// is pushed as-is, and remembered when it carries a gauge reading.
+fn sticky(
+    agent: &AgentConfig,
+    quota: Option<&QuotaSnapshot>,
+    tray: &TrayConfig,
+    last: &mut Option<(String, TrayStatus)>,
+) -> TrayStatus {
+    let status = summarize(agent, quota, tray);
+
+    if quota.is_some_and(|q| q.rate_limited) {
+        if let Some((profile, good)) = last.as_ref() {
+            if profile == &agent.name {
+                return TrayStatus {
+                    visuals: visuals(tray),
+                    ..good.clone()
+                };
+            }
+        }
+        // Nothing good to fall back on for this profile: a degraded reading
+        // beats no indicator at all, and it is not worth remembering.
+        return status;
+    }
+
+    if status.gauge_percent.is_some() {
+        *last = Some((agent.name.clone(), status.clone()));
+    }
+    status
+}
+
 /// Load config + state from disk and fetch the active agent's quota. Blocking
 /// and network-touching — call from a background thread only.
 fn poll_once(config_path: &Path) -> Option<TrayStatus> {
@@ -158,7 +226,7 @@ fn poll_once(config_path: &Path) -> Option<TrayStatus> {
         AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
     };
 
-    Some(summarize(agent, Some(&quota), &config.tray))
+    Some(summarize_sticky(agent, Some(&quota), &config.tray))
 }
 
 /// Start the background refresh thread.
@@ -203,6 +271,18 @@ mod tests {
             windows,
             source: QuotaSource::Api,
             note: None,
+            rate_limited: false,
+        }
+    }
+
+    /// What a backend hands back after a 429: the API numbers are gone and
+    /// only the local fallback (or nothing) is left.
+    fn throttled(windows: Vec<QuotaWindow>) -> QuotaSnapshot {
+        QuotaSnapshot {
+            source: QuotaSource::Fallback,
+            rate_limited: true,
+            note: Some("API unavailable (HTTP 429)".to_string()),
+            ..snapshot(windows)
         }
     }
 
@@ -422,5 +502,139 @@ mod tests {
         assert_eq!(line("Claude", Some(&snap)).gauge_percent, Some(73));
         let over = snapshot(vec![window("5h", Some(140.0))]);
         assert_eq!(line("Claude", Some(&over)).gauge_percent, Some(100));
+    }
+
+    // ── The 429 hold ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_rate_limited_poll_keeps_the_last_good_reading() {
+        let mut last = None;
+        let agent = agent("Claude");
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        let first = sticky(&agent, Some(&good), &all_on(), &mut last);
+        assert_eq!(first.gauge_percent, Some(72));
+
+        // The 429 fallback has only token counts, so on its own it would read
+        // as unavailable and blank the icon. The hold keeps all three of the
+        // tooltip line, the ring and the color where they were.
+        let held = sticky(
+            &agent,
+            Some(&throttled(vec![window("5h (local est.)", None)])),
+            &all_on(),
+            &mut last,
+        );
+        assert_eq!(held, first);
+    }
+
+    #[test]
+    fn the_hold_survives_repeated_429s() {
+        let mut last = None;
+        let agent = agent("Claude");
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        let first = sticky(&agent, Some(&good), &all_on(), &mut last);
+        for _ in 0..3 {
+            let held = sticky(&agent, Some(&throttled(Vec::new())), &all_on(), &mut last);
+            assert_eq!(held, first);
+        }
+    }
+
+    #[test]
+    fn the_next_good_poll_replaces_the_held_reading() {
+        let mut last = None;
+        let agent = agent("Claude");
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        sticky(&agent, Some(&good), &all_on(), &mut last);
+        sticky(&agent, Some(&throttled(Vec::new())), &all_on(), &mut last);
+
+        let fresh = snapshot(vec![window("5h", Some(80.0)), window("week", Some(33.0))]);
+        let status = sticky(&agent, Some(&fresh), &all_on(), &mut last);
+        assert_eq!(status.summary, "Claude · 5h 80% · week 33%");
+        assert_eq!(status.gauge_percent, Some(80));
+        assert_eq!(status.color_percent, Some(33));
+    }
+
+    #[test]
+    fn the_visual_toggles_still_apply_while_held() {
+        // The held numbers are last poll's; which visuals are drawn is the
+        // user's current config, so a toggle flipped during a rate limit
+        // takes effect without waiting for the API to come back.
+        let mut last = None;
+        let agent = agent("Claude");
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        sticky(&agent, Some(&good), &all_on(), &mut last);
+
+        let off = TrayConfig {
+            progress: false,
+            color: false,
+            pulse: false,
+            ..TrayConfig::default()
+        };
+        let held = sticky(&agent, Some(&throttled(Vec::new())), &off, &mut last);
+        assert_eq!(held.summary, "Claude · 5h 72% · week 31%");
+        assert_eq!(held.gauge_percent, Some(72));
+        assert_eq!(held.visuals, visuals(&off));
+    }
+
+    #[test]
+    fn a_429_with_nothing_held_shows_what_the_poll_returned() {
+        // First poll of the session lands on a rate limit: there is nothing
+        // to replay, so the degraded line goes out rather than no indicator.
+        let mut last = None;
+        let status = sticky(
+            &agent("Claude"),
+            Some(&throttled(Vec::new())),
+            &all_on(),
+            &mut last,
+        );
+        assert_eq!(status.summary, "Claude · quota unavailable");
+        assert_eq!(status.gauge_percent, None);
+        // Nothing worth holding was learned either.
+        assert!(last.is_none());
+    }
+
+    #[test]
+    fn the_hold_never_crosses_profiles() {
+        // Switching agents while the new one is throttled must not show the
+        // old agent's numbers under the new agent's name.
+        let mut last = None;
+        let claude = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        sticky(&agent("Claude"), Some(&claude), &all_on(), &mut last);
+
+        let status = sticky(
+            &agent("Codex"),
+            Some(&throttled(Vec::new())),
+            &all_on(),
+            &mut last,
+        );
+        assert_eq!(status.summary, "Codex · quota unavailable");
+        assert_eq!(status.gauge_percent, None);
+    }
+
+    #[test]
+    fn an_unavailable_poll_that_is_not_a_429_still_goes_through() {
+        // Only throttling is held. A revoked token, say, is real news and the
+        // icon should say so instead of showing numbers that no longer apply.
+        let mut last = None;
+        let agent = agent("Claude");
+        let good = snapshot(vec![window("5h", Some(72.0))]);
+        sticky(&agent, Some(&good), &all_on(), &mut last);
+
+        let dead = QuotaSnapshot::unavailable("no oauth token");
+        let status = sticky(&agent, Some(&dead), &all_on(), &mut last);
+        assert_eq!(status.summary, "Claude · quota unavailable");
+        assert_eq!(status.gauge_percent, None);
+    }
+
+    #[test]
+    fn a_throttled_poll_that_still_has_percentages_is_held_too() {
+        // Codex's local fallback can produce percentages, but they are the
+        // last ones a session file observed — staler than what we already
+        // hold, and they would jump the gauge backwards.
+        let mut last = None;
+        let agent = agent("Codex");
+        let good = snapshot(vec![window("5h", Some(72.0)), window("week", Some(31.0))]);
+        let first = sticky(&agent, Some(&good), &all_on(), &mut last);
+        let stale = throttled(vec![window("5h", Some(12.0)), window("week", Some(4.0))]);
+        assert_eq!(sticky(&agent, Some(&stale), &all_on(), &mut last), first);
     }
 }

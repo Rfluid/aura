@@ -395,7 +395,7 @@ impl AuraView {
                 .iter()
                 .find(|a| a.name == self.active_profile)
             {
-                crate::tray::set_status(crate::tray_status::summarize(
+                crate::tray::set_status(crate::tray_status::summarize_sticky(
                     agent,
                     self.quota.as_ref(),
                     &self.config.tray,

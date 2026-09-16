@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::reader::scan::{list_session_files, scan_files};
 
-use super::{oauth, QuotaSnapshot, QuotaWindow};
+use super::{call_failure, oauth, ApiFailure, QuotaSnapshot, QuotaWindow};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -117,23 +117,28 @@ impl QuotaApi {
     pub fn snapshot(&self) -> QuotaSnapshot {
         match self.snapshot_via_api() {
             Ok(snap) => snap,
-            Err(api_err) => match self.snapshot_local() {
-                Ok(mut snap) => {
-                    snap.note = Some(format!(
-                        "API unavailable ({api_err}); showing local token counts"
-                    ));
-                    snap
-                }
-                Err(local_err) => QuotaSnapshot::unavailable(format!(
-                    "API failed: {api_err}; local fallback failed: {local_err}"
-                )),
-            },
+            Err(api_err) => {
+                let throttled = api_err.rate_limited;
+                let mut snap = match self.snapshot_local() {
+                    Ok(mut snap) => {
+                        snap.note = Some(format!(
+                            "API unavailable ({api_err}); showing local token counts"
+                        ));
+                        snap
+                    }
+                    Err(local_err) => QuotaSnapshot::unavailable(format!(
+                        "API failed: {api_err}; local fallback failed: {local_err}"
+                    )),
+                };
+                snap.rate_limited = throttled;
+                snap
+            }
         }
     }
 
     // ── API path ──────────────────────────────────────────────────────────────
 
-    fn snapshot_via_api(&self) -> Result<QuotaSnapshot> {
+    fn snapshot_via_api(&self) -> Result<QuotaSnapshot, ApiFailure> {
         let creds = oauth::ensure_fresh(&self.claude_config_dir)?;
 
         let mut response = ureq::get(USAGE_URL)
@@ -141,7 +146,7 @@ impl QuotaApi {
             .header("anthropic-beta", OAUTH_BETA)
             .header("content-type", "application/json")
             .call()
-            .map_err(|e| anyhow!("/api/oauth/usage call failed: {e}"))?;
+            .map_err(|e| call_failure("/api/oauth/usage", e))?;
 
         if response.status() != 200 {
             let status = response.status();
@@ -149,7 +154,12 @@ impl QuotaApi {
                 .body_mut()
                 .read_to_string()
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(anyhow!("/api/oauth/usage returned HTTP {status}: {body}"));
+            let err = anyhow!("/api/oauth/usage returned HTTP {status}: {body}");
+            return Err(if status == 429 {
+                ApiFailure::rate_limited(err)
+            } else {
+                err.into()
+            });
         }
 
         // Read body as a string so we can surface it on parse failure.
@@ -206,11 +216,11 @@ impl QuotaApi {
         // either the user has no active subscription, or Anthropic changed the
         // schema. Push the raw body up so the user can see what we got.
         if windows.is_empty() {
-            return Err(anyhow!(
+            return Err(ApiFailure::from(anyhow!(
                 "API returned HTTP 200 but no recognisable rate limit windows. \
                  Raw body: {}",
                 truncate(&raw_body, 400)
-            ));
+            )));
         }
 
         Ok(QuotaSnapshot {
@@ -218,6 +228,7 @@ impl QuotaApi {
             windows,
             source: QuotaSource::Api,
             note: None,
+            rate_limited: false,
         })
     }
 
@@ -293,6 +304,7 @@ impl QuotaApi {
             windows,
             source: QuotaSource::Fallback,
             note: None,
+            rate_limited: false,
         })
     }
 }
