@@ -313,7 +313,7 @@ mod windows_mutex {
 
 // ── Linux display-server backend ─────────────────────────────────────────────
 
-/// Applies `display.linux_backend` for the lifetime of `Application::new()`.
+/// Applies `window.linux_backend` for the lifetime of `Application::new()`.
 ///
 /// Dropping the guard puts `$WAYLAND_DISPLAY` back exactly as it was, so the
 /// only thing that ever sees the doctored environment is GPUI's one-shot
@@ -335,11 +335,11 @@ impl Drop for DisplayBackendGuard {
 }
 
 /// Decide which display server GPUI connects to, honouring
-/// `display.linux_backend` (`"auto"` / `"x11"` / `"wayland"`).
+/// `window.linux_backend` (`"auto"` / `"x11"` / `"wayland"`).
 ///
 /// ## Why this exists
 ///
-/// Aura's whole placement story — `display.anchor`, keeping clear of the
+/// Aura's whole placement story — `window.anchor`, keeping clear of the
 /// taskbar, centring the modal under the tray icon — depends on the client
 /// choosing its own window origin. Wayland does not allow that: an
 /// `xdg_toplevel` has no position, so the compositor places the modal wherever
@@ -363,7 +363,7 @@ impl Drop for DisplayBackendGuard {
 /// `"wayland"` opts back into the native backend, accepting compositor-owned
 /// placement — the escape hatch for fractional-scale displays, where XWayland
 /// output can look soft. On those setups, use a compositor window rule (KWin:
-/// *Window Rules → Position → Force*) instead of `display.anchor`.
+/// *Window Rules → Position → Force*) instead of `window.anchor`.
 ///
 /// No-op on macOS and Windows, where the field is ignored.
 pub(crate) fn select_display_backend(pref: &str) -> DisplayBackendGuard {
@@ -380,14 +380,14 @@ pub(crate) fn select_display_backend(pref: &str) -> DisplayBackendGuard {
                 eprintln!(
                     "aura: no $DISPLAY on this Wayland session (XWayland is not running), \
                      so the modal uses the native Wayland backend. The compositor owns \
-                     window placement there: display.anchor and tray-icon centring have no \
+                     window placement there: window.anchor and tray-icon centring have no \
                      effect. See docs/configuration.md."
                 );
                 DisplayBackendGuard { restore: None }
             }
             BackendChoice::NoDisplayServer => {
                 eprintln!(
-                    "aura: display.linux_backend = \"x11\" but neither $DISPLAY nor \
+                    "aura: window.linux_backend = \"x11\" but neither $DISPLAY nor \
                      $WAYLAND_DISPLAY is set; GPUI will start headless."
                 );
                 DisplayBackendGuard { restore: None }
@@ -423,7 +423,7 @@ pub(crate) enum BackendChoice {
     ForceX11,
 }
 
-/// Pure decision table for `display.linux_backend`.
+/// Pure decision table for `window.linux_backend`.
 ///
 /// Unknown values behave like `"auto"` — the same forgiving policy as
 /// `placement::Anchor::from_config`, so a typo degrades to the default instead
@@ -456,7 +456,7 @@ mod backend_tests {
         assert_eq!(
             backend_choice("auto", true, true),
             BackendChoice::ForceX11,
-            "the default has to fix placement, or display.anchor is inert"
+            "the default has to fix placement, or window.anchor is inert"
         );
         assert_eq!(backend_choice("x11", true, true), BackendChoice::ForceX11);
     }
@@ -1022,7 +1022,7 @@ pub(crate) fn set_window_origin(
         static WARNED: std::sync::Once = std::sync::Once::new();
         WARNED.call_once(|| {
             eprintln!(
-                "aura: display.anchor = \"bottom\" has no live reposition on \
+                "aura: window.anchor = \"bottom\" has no live reposition on \
                  Wayland (the compositor owns window placement); the modal \
                  opens bottom-anchored but grows downward. See \
                  docs/configuration.md."
@@ -1034,7 +1034,7 @@ pub(crate) fn set_window_origin(
     // X11 window coordinates are physical, root-relative pixels; GPUI gives us
     // logical points, so scale up (scale is 1.0 on most X11/KDE setups).
     let x = (f32::from(origin.x) * scale).round() as i32;
-    // With server-side decorations (`display.window_chrome`) the window
+    // With server-side decorations (`window.chrome`) the window
     // manager wraps the client in a frame, and the point a move request
     // addresses is the *frame's* top-left, not the client's. Placing a
     // bottom-anchored modal by its client origin therefore pushed the whole

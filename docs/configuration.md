@@ -2,8 +2,8 @@
 title: Configuration
 status: current
 version: 0.2.0
-last_updated: 2026-05-30
-last_verified: 2026-05-30
+last_updated: 2026-09-16
+last_verified: 2026-09-16
 source_refs:
   - crates/aura-core/src/config.rs
   - crates/aura-core/src/config_schema.rs
@@ -26,11 +26,55 @@ together. To **add or change** a config field as a developer, see
 [`.agent/skills/add-or-change-config.md`](../.agent/skills/add-or-change-config.md),
 which builds on this reference.
 
+## Quick tutorial
+
+Most users should configure Aura with the CLI first, then use the config file
+for fine tuning.
+
+1. Run the setup wizard to detect installed agents and create/update the file:
+
+   ```sh
+   aura config setup
+   ```
+
+2. Use the interactive configuration wizard when you want to walk every
+   supported setting without memorizing key names:
+
+   ```sh
+   aura config wizard
+   ```
+
+3. Use direct CLI edits for one setting at a time. The CLI validates values and
+   rewrites the file with the inline comments preserved:
+
+   ```sh
+   aura config set window.anchor bottom
+   aura config set tray.progress true
+   aura config set content.default_period 7d
+   ```
+
+4. Open the config file when you want to edit multiple values together:
+
+   ```sh
+   aura config edit
+   ```
+
+   You can also right-click the tray icon and choose **Open config file**, or
+   open Aura and use the settings button.
+
+5. Keep this guide handy from the app: right-click the tray icon and choose
+   **Configuration guide**, or use the **...** menu in the modal.
+
+The generated `config.toml` starts with a link back to this tutorial and then
+documents each field above the value it controls. Repeatable `[[agents]]` and
+`[[plugins]]` blocks are ordinary TOML arrays of tables; scalar settings live
+under `[window]`, `[tray]`, `[content]`, and `[update]`.
+
 ## File locations
 
 | File | Path | What it holds | Edited by |
 |---|---|---|---|
-| Config | `~/.config/aura/config.toml` | Agents, plugins, `[display]`, `[update]` | You (CLI / editor) |
+| Config | `~/.config/aura/config.toml` | Agents, plugins, `[window]`, `[tray]`, `[content]`, `[update]` | You (CLI / editor) |
 | Theme | `~/.config/aura/theme.toml` | Color / font / spinner overrides | You (CLI / editor) |
 | State | `~/.local/share/aura/state.json` | Active profile selection | Aura (do not hand-edit) |
 | Plugins dir | `~/.config/aura/plugins/` | Auto-discovered plugin binaries | `aura plugin add` |
@@ -44,15 +88,16 @@ writes a fully-commented default `config.toml` on first run if none exists.
 Config flows through five layers, top (authoring) to bottom (consumption):
 
 1. **Typed structs** — `crates/aura-core/src/config.rs`. `AppConfig` is the
-   root (`agents`, `plugins`, `display`, `update`); each sub-struct derives
+   root (`agents`, `plugins`, `window`, `tray`, `content`, `update`); each sub-struct derives
    `Serialize`/`Deserialize` and a `Default`, so the whole tree round-trips
    through TOML and an empty/partial file still parses (missing fields fall back
    to `Default`). This is the **source of truth** — the shape of a config is
    whatever these structs say it is.
 
 2. **Field registry / schema** — `crates/aura-core/src/config_schema.rs`. A
-   flat list of `FieldDescriptor`s (one per settable scalar under `[display]` /
-   `[update]`) plus `SectionField`s describing the repeatable `[[agents]]` /
+   flat list of `FieldDescriptor`s (one per settable scalar in the
+   `config_schema::SECTIONS` tables) plus `SectionField`s describing the
+   repeatable `[[agents]]` /
    `[[plugins]]` tables. This registry powers everything self-documenting:
    `config describe`, `get`/`set` validation, the `wizard`, and the
    `#`-commented `config.toml` template (`render_commented`). A unit test
@@ -66,18 +111,21 @@ Config flows through five layers, top (authoring) to bottom (consumption):
    `setup`).
 
 4. **Load + merge** — `AppConfig::load` reads the file (writing defaults if
-   absent); `load_with_discovery` additionally merges executable plugins found in
-   the plugins dir (config-listed entries win on name collision) and applies
-   `display.plugin_order`; `run_setup` detects installed agents and merges new
-   ones without disturbing existing edits.
+   absent) and runs it through `config_migrate::normalize` first, so a config
+   written against an older section layout parses as the current one;
+   `load_with_discovery` additionally merges executable plugins found in the
+   plugins dir (config-listed entries win on name collision) and applies
+   `content.plugin_order`; `run_setup` detects installed agents and merges new
+   ones without disturbing existing edits. See
+   [Migrating an older config](#migrating-an-older-config).
 
 5. **Runtime mirror** — `crates/aura/src/runtime.rs`. The tray poll loop in
    `main.rs` and the modal's async refresh task in `app.rs` each reload the
-   config independently. To stop them drifting, a handful of `[display]` fields
+   config independently. To stop them drifting, a handful of `[window]` fields
    are mirrored into process atomics via `runtime::set_from_config`, and any
    platform state they drive (e.g. the macOS NSApp activation policy) is
-   reapplied there. Add an atomic + accessor here when a new `[display]` knob
-   must be visible to *both* the background loop and the modal.
+   reapplied there. Add an atomic + accessor here when a new knob must be
+   visible to *both* the background loop and the modal.
 
 ### Reload triggers (hot reload)
 
@@ -117,7 +165,7 @@ aura config show               # print loaded config (--format text|json)
 aura config describe [<key>]   # list every field (type/default/docs), or explain one
                                #   (--format json emits the full schema)
 aura config get <key>          # print a single field's current value
-aura config set <key> <value>  # validate and set one field (e.g. set display.anchor top)
+aura config set <key> <value>  # validate and set one field (e.g. set window.anchor top)
 aura config wizard             # walk every field interactively; blank keeps current
 aura config init [--force]     # write a fresh, fully-commented config.toml
 aura config document           # rewrite the existing config in place with inline docs
@@ -125,8 +173,10 @@ aura config edit               # open in $EDITOR (creates defaults if missing)
 aura config validate           # parse-check
 ```
 
-Keys are dotted paths into `[display]` / `[update]`, e.g. `display.anchor`,
-`display.max_height`, `update.dismiss_all`. `set` rejects bad enums/booleans and
+Keys are dotted paths into `[window]` / `[tray]` / `[content]` / `[update]`,
+e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. A key from an
+older layout (`display.anchor`) still resolves — `get`, `set` and `describe`
+answer with its current name and print a note. `set` rejects bad enums/booleans and
 suggests near-miss keys; pass `none` (or empty) to clear an optional field. The
 repeatable `[[agents]]` / `[[plugins]]` tables are *documented* by `describe`
 but **edited** via `aura config edit`, `aura agents`, or `aura plugin` — they
@@ -135,25 +185,46 @@ are not `get`/`set` targets. The legacy `aura setup-config` is a hidden alias fo
 
 ## Field reference
 
-### `[display]`
+### `[window]`
+
+Where the modal sits, how big it gets, and what kind of window it is.
+
+| Key | Type | Allowed | Default | Summary |
+|---|---|---|---|---|
+| `anchor` | string | `none` \| `bottom` \| `top` | `none` (macOS/Linux), `bottom` (Windows) | How the modal anchors as it auto-fits height. |
+| `linux_backend` | string | `auto` \| `x11` \| `wayland` | `auto` | Which display server GPUI talks to on Linux/BSD. Ignored elsewhere. |
+| `show_in_app_switcher` | bool | `true` \| `false` | `false` | Show the modal in Alt+Tab / Cmd+Tab / dock surfaces. |
+| `dismiss_on_focus_loss` | bool | `true` \| `false` | `true` | Auto-close the modal when it loses focus. |
+| `chrome` | bool | `true` \| `false` | `false` | Show the native window title bar (independent of `auto_resize`). |
+| `auto_resize` | bool? | `true` \| `false` | unset (auto-fit) | Auto-resize the modal to fit its content height. `false` = fixed-size. Works with or without chrome. |
+| `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `auto_resize` is false. |
+
+`linux_backend` lives here rather than in a platform section because it exists
+entirely to decide whether Aura can place its own window — on a native Wayland
+surface `anchor` has no effect at all. See
+[Linux display backend](#linux-display-backend).
+
+### `[tray]`
+
+The icon by the clock. None of this reaches the modal.
+
+| Key | Type | Allowed | Default | Summary |
+|---|---|---|---|---|
+| `indicator` | bool | `true` \| `false` | `true` | Whether the icon reports quota, or is just a button that opens the modal. Master switch for the three below. |
+| `progress` | bool | `true` \| `false` | `true` | Fill the tray icon's ring in proportion to peak quota usage. |
+| `color` | bool | `true` \| `false` | `true` | Move the tray icon through the purple/yellow/orange/red usage ramp. |
+| `pulse` | bool | `true` \| `false` | `false` | Ask the desktop to emphasize the tray icon at 90% usage. Effective on Linux SNI hosts. |
+| `refresh_secs` | u64 | — | `1200` | Seconds between background refreshes of the indicator; clamped up to 30. |
+
+### `[content]`
+
+What the modal renders, as opposed to where the window sits.
 
 | Key | Type | Allowed | Default | Summary |
 |---|---|---|---|---|
 | `default_period` | string | `all` \| `7d` \| `30d` | `all` | Usage period tab selected on open. |
-| `anchor` | string | `none` \| `bottom` \| `top` | `none` (macOS/Linux), `bottom` (Windows) | How the modal anchors as it auto-fits height. |
-| `linux_backend` | string | `auto` \| `x11` \| `wayland` | `auto` | Which display server GPUI talks to on Linux/BSD. Ignored elsewhere. |
 | `plugin_order` | string[] | — | `[]` | Display order for plugin pills (comma-separated names on `set`). |
-| `show_in_app_switcher` | bool | `true` \| `false` | `false` | Show the modal in Alt+Tab / Cmd+Tab / dock surfaces. |
-| `dismiss_on_focus_loss` | bool | `true` \| `false` | `true` | Auto-close the modal when it loses focus. |
-| `window_chrome` | bool | `true` \| `false` | `false` | Show the native window title bar (independent of `auto_resize`). |
-| `auto_resize` | bool? | `true` \| `false` | unset (auto-fit) | Auto-resize the modal to fit its content height. `false` = fixed-size. Works with or without chrome. |
-| `max_height` | u32? | — | unset | Upper bound (logical px) on auto-fit height; ignored when `auto_resize` is false. |
 | `goblin_mode` | bool | `true` \| `false` | `false` | Swap UI copy for the aggressive "Goblin Mode" variant. |
-| `tray_status` | bool | `true` \| `false` | `true` | Keep the tray tooltip and gauge in sync with quota usage. |
-| `tray_progress` | bool | `true` \| `false` | `true` | Fill the tray icon's ring in proportion to peak quota usage. |
-| `tray_color` | bool | `true` \| `false` | `true` | Move the tray icon through the purple/yellow/orange/red usage ramp. |
-| `tray_pulse` | bool | `true` \| `false` | `false` | Ask the desktop to emphasize the tray icon at 90% usage. Effective on Linux SNI hosts. |
-| `tray_status_interval_secs` | u64 | — | `1200` | Seconds between background tray-status refreshes; clamped up to 30. |
 
 ### `[update]`
 
@@ -187,7 +258,7 @@ tray_progress_source = 0   # ring   ← Current session          (the default)
 tray_color_source = 1      # color  ← Current week, all models (the default)
 ```
 
-They live on the agent rather than under `[display]` because the positions
+They live on the agent rather than under `[tray]` because the positions
 index that agent's own window list: position 1 is Claude's all-models week and
 Codex's weekly limit, and a Gemini profile reports no percentages at all.
 
@@ -246,16 +317,9 @@ config_path = "~/.codex"
 name = "RTK Gains"
 command = "aura-plugin-rtk"
 
-# ── Display ──────────────────────────────────────────────────────────────────
+# ── Window ────────────────────────────────────────────────────────
 
-[display]
-# Which usage period tab is selected on open: "all" | "7d" | "30d".
-default_period = "all"
-
-# Explicit ordering for the plugin pill row. Named plugins render first in this
-# order (case-insensitive match on `name`); the rest keep their natural order.
-plugin_order = ["Hello", "RTK Gains"]
-
+[window]
 # How the modal anchors as it auto-fits height: "none" | "bottom" | "top".
 # Default is per-OS and written at install (see "Modal anchoring" below).
 anchor = "bottom"
@@ -266,13 +330,21 @@ anchor = "bottom"
 # window, which disables `anchor` entirely. See "Linux display backend" below.
 linux_backend = "auto"
 
+# Appear in Alt+Tab / Cmd+Tab / dock / panel surfaces. Default false (tray-only).
+# Reapplies on the next refresh or open — no restart needed.
+show_in_app_switcher = false
+
+# Auto-close the modal when it loses focus. Default true (tray-popup behaviour);
+# set false to keep it open until the tray icon is clicked again.
+dismiss_on_focus_loss = true
+
 # Show the native window title bar. Default false — Aura is a chromeless tray
 # popup. Turning this on also puts the modal in the taskbar / alt-tab list.
 # Independent of `auto_resize`.
-window_chrome = false
+chrome = false
 
 # Auto-resize the modal to fit its content height. Unset (default) = auto-fit on.
-# Set false for a fixed-size modal. Works the same with or without window_chrome.
+# Set false for a fixed-size modal. Works the same with or without `chrome`.
 # (This is not user drag-to-resize — the window manager owns that.)
 # auto_resize = false
 
@@ -280,39 +352,44 @@ window_chrome = false
 # screen work area; this is a tighter ceiling. Ignored when auto_resize = false.
 # max_height = 500
 
-# Auto-close the modal when it loses focus. Default true (tray-popup behaviour);
-# set false to keep it open until the tray icon is clicked again.
-dismiss_on_focus_loss = true
+# ── Tray ──────────────────────────────────────────────────────────
 
-# Appear in Alt+Tab / Cmd+Tab / dock / panel surfaces. Default false (tray-only).
-# Reapplies on the next refresh or open — no restart needed.
-show_in_app_switcher = false
-
-# Swap UI copy for the aggressive "Goblin Mode" variant. Default false.
-goblin_mode = false
-
-# Keep the tray icon's tooltip and gauge in sync with the active profile's
-# quota. Default true. While the modal is closed this costs one quota lookup
-# per interval below (a network request for the API-backed agents); set false
-# to disable updates and leave the icon static.
-tray_status = true
+[tray]
+# Whether the icon reports quota or is just a button that opens the modal.
+# Default true. While the modal is closed this costs one quota lookup per
+# `refresh_secs` (a network request for the API-backed agents); set false to
+# leave the icon static.
+indicator = true
 
 # Fill the icon's complete ring to the highest quota-window usage. Default true.
-# Ignored when tray_status is false.
-tray_progress = true
+# Ignored when indicator is false.
+progress = true
 
 # Change the icon from purple to yellow at 50%, orange at 75%, and red at 90%.
-# Default true. Ignored when tray_status is false.
-tray_color = true
+# Default true. Ignored when indicator is false.
+color = true
 
 # Ask the desktop to emphasize the icon at 90%. Default false because Linux
 # panels may animate it or pull it out of the overflow group. SNI/Linux only;
 # the color remains the attention signal on macOS and Windows.
-tray_pulse = false
+pulse = false
 
-# Seconds between background tray-status refreshes. Ignored when tray_status is
-# false. Values below 30 are clamped up to 30.
-tray_status_interval_secs = 1200
+# Seconds between background refreshes of the indicator. Ignored when indicator
+# is false. Values below 30 are clamped up to 30.
+refresh_secs = 1200
+
+# ── Content ────────────────────────────────────────────────────
+
+[content]
+# Which usage period tab is selected on open: "all" | "7d" | "30d".
+default_period = "all"
+
+# Explicit ordering for the plugin pill row. Named plugins render first in this
+# order (case-insensitive match on `name`); the rest keep their natural order.
+plugin_order = ["Hello", "RTK Gains"]
+
+# Swap UI copy for the aggressive "Goblin Mode" variant. Default false.
+goblin_mode = false
 
 # ── Update ───────────────────────────────────────────────────────────────────
 
@@ -393,6 +470,64 @@ takes Wayland whenever `$WAYLAND_DISPLAY` is non-empty and offers no override.
 Aura therefore hides that variable across the single `Application::new()` call
 and restores it immediately after, so plugin commands and `xdg-open` still see
 the real session environment. The field is ignored on macOS and Windows.
+
+## Migrating an older config
+
+Aura's section layout can change between releases. Reorganizing it must never
+mean "everyone's settings silently revert to defaults", so every key that moves
+is recorded as a declarative migration in
+`crates/aura-core/src/config_migrate.rs`, and that one registry drives
+everything:
+
+- **`AppConfig::load` normalizes in memory on every launch.** An un-migrated
+  `config.toml` keeps working exactly as before; Aura does not rewrite the
+  user's file behind their back.
+- **Old key names keep resolving in the CLI.** `aura config get
+  display.tray_color` answers with `tray.color` and prints a note saying where
+  the key went. Same for `set` and `describe`.
+- **`aura config migrate` rewrites the file** into the current layout, carrying
+  every value over. It is idempotent, so running it on a current config just
+  says so. The installer runs it on every install and upgrade.
+- **`aura doctor` and `aura config validate` report a pending migration**, so
+  you find out without having to know the command exists.
+
+```bash
+aura config migrate --check   # report what would change; exit 1 if anything is pending
+aura config migrate           # rewrite config.toml (also refreshes the inline docs)
+```
+
+A key the migration has no descriptor for — something you hand-wrote into a
+section that moved — is reported and left alone in the file, but note that the
+rewrite re-serializes from the parsed struct, so it does **not** survive
+`migrate`. The `--check` output names any such key before you commit to the
+rewrite.
+
+### What moved in the `[display]` split
+
+`[display]` had grown to cover four unrelated jobs. It now means only *where
+the window goes*, under the clearer name `[window]`:
+
+| Old key | New key |
+|---|---|
+| `display.anchor` | `window.anchor` |
+| `display.linux_backend` | `window.linux_backend` |
+| `display.show_in_app_switcher` | `window.show_in_app_switcher` |
+| `display.dismiss_on_focus_loss` | `window.dismiss_on_focus_loss` |
+| `display.window_chrome` | `window.chrome` |
+| `display.auto_resize` | `window.auto_resize` |
+| `display.max_height` | `window.max_height` |
+| `display.tray_status` | `tray.indicator` |
+| `display.tray_progress` | `tray.progress` |
+| `display.tray_color` | `tray.color` |
+| `display.tray_pulse` | `tray.pulse` |
+| `display.tray_status_interval_secs` | `tray.refresh_secs` |
+| `display.default_period` | `content.default_period` |
+| `display.plugin_order` | `content.plugin_order` |
+| `display.goblin_mode` | `content.goblin_mode` |
+
+`tray_status` became `tray.indicator` because "enabled" would read as "is there
+a tray icon at all"; what it actually toggles is whether the icon is a live
+indicator or a plain button that opens the modal.
 
 ## Agent kinds
 

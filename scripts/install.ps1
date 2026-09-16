@@ -429,6 +429,19 @@ if (Test-Path $IconStagePath) {
     $InstalledIcon = $null
 }
 
+# ---- Migrate an older config.toml to the current layout ----------------------
+# An upgrade can land on a config written against an older section layout (the
+# pre-0.2 [display] block, say). Aura reads those fine -- every load migrates in
+# memory -- but rewriting the file here keeps what is on disk matching the
+# documented key names. No-op on a fresh install and on an already-current
+# config; failure is non-fatal.
+
+Write-Host "> Checking config layout..."
+& (Join-Path $InstallDir 'aura.exe') config migrate
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "'aura config migrate' failed; Aura will still read your existing config"
+}
+
 # ---- Detect agents and seed/merge config -------------------------------------
 # Runs before autostart so the app picks up the populated config on its first
 # launch. Failure is non-fatal -- AppConfig::load() writes a default config on
@@ -509,24 +522,24 @@ Write-Host "  Aura opens its window in the corner by the tray and keeps clear of
 Write-Host "  the taskbar. Which edge it holds on to is up to you:"
 Write-Host ""
 Write-Host "    Taskbar at the BOTTOM (the Windows default)"
-Write-Host "        aura config set display.anchor bottom   # already the default"
+Write-Host "        aura config set window.anchor bottom   # already the default"
 Write-Host "        Window sits just above the taskbar and grows upward."
 Write-Host ""
 Write-Host "    Taskbar moved to the TOP"
-Write-Host "        aura config set display.anchor top"
+Write-Host "        aura config set window.anchor top"
 Write-Host "        Window hangs just below it and grows downward."
 Write-Host ""
 Write-Host "    Auto-hiding taskbar, or you'd rather Windows decide"
-Write-Host "        aura config set display.anchor none"
+Write-Host "        aura config set window.anchor none"
 Write-Host "        Window opens at the natural tray corner and stays put."
 Write-Host ""
 Write-Host "  Two more worth knowing:"
 Write-Host ""
 Write-Host "    Show the window in Alt+Tab and the taskbar"
-Write-Host "        aura config set display.show_in_app_switcher true"
+Write-Host "        aura config set window.show_in_app_switcher true"
 Write-Host ""
 Write-Host "    Keep the window open when it loses focus (handy for copying)"
-Write-Host "        aura config set display.dismiss_on_focus_loss false"
+Write-Host "        aura config set window.dismiss_on_focus_loss false"
 Write-Host ""
 Write-Host "  Run 'aura config describe' for every setting, or edit"
 Write-Host "  %APPDATA%\aura\config.toml directly. Changes apply the next time the"

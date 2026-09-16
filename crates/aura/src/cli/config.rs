@@ -15,6 +15,7 @@ use std::io::{self, Write};
 
 use anyhow::{Context, Result};
 use aura_core::config::{AgentStatus, AppConfig};
+use aura_core::config_migrate::{self, MigrationReport};
 use aura_core::config_schema::{self, FieldDescriptor, SectionField};
 use clap::{Args, Subcommand};
 
@@ -39,21 +40,21 @@ enum ConfigCommand {
         format: OutputFormat,
     },
     /// List every config field with its type, default, and docs — or explain
-    /// one field when a key is given (e.g. `display.anchor`).
+    /// one field when a key is given (e.g. `window.anchor`).
     Describe {
         /// A dotted key to explain in full (omit to list everything).
         key: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
-    /// Print the current value of a single key (e.g. `display.anchor`).
+    /// Print the current value of a single key (e.g. `window.anchor`).
     Get {
-        /// Dotted key, e.g. `display.anchor`.
+        /// Dotted key, e.g. `window.anchor`.
         key: String,
     },
-    /// Set a single key and save (e.g. `set display.anchor top`).
+    /// Set a single key and save (e.g. `set window.anchor top`).
     Set {
-        /// Dotted key, e.g. `display.anchor`.
+        /// Dotted key, e.g. `window.anchor`.
         key: String,
         /// New value. Use `none` to clear an optional field.
         value: String,
@@ -69,6 +70,14 @@ enum ConfigCommand {
     /// Rewrite the existing `config.toml` in place with inline docs, keeping
     /// every current value (adds the `#` comments an older config lacks).
     Document,
+    /// Rewrite an older `config.toml` into the current section layout,
+    /// carrying every value over (e.g. the pre-0.2 `[display]` block).
+    Migrate {
+        /// Report what would change and exit non-zero if anything is
+        /// pending, without touching the file.
+        #[arg(long)]
+        check: bool,
+    },
     /// Open `config.toml` in `$EDITOR` (creates defaults if missing).
     Edit,
     /// Parse the config file and report errors.
@@ -90,6 +99,7 @@ impl ConfigCli {
             ConfigCommand::Wizard => run_wizard(),
             ConfigCommand::Init { force } => run_init(force),
             ConfigCommand::Document => run_document(),
+            ConfigCommand::Migrate { check } => run_migrate(check),
             ConfigCommand::Edit => run_edit(),
             ConfigCommand::Validate => run_validate(),
         }
@@ -186,6 +196,7 @@ fn describe_one(key: &str) -> Result<()> {
         .ok()
         .and_then(|cfg| config_schema::get_value(&cfg, key).ok());
 
+    note_if_renamed(key);
     println!("{}  ({})", f.key, f.type_label);
     if !f.allowed.is_empty() {
         println!("  allowed: {}", f.allowed.join(" | "));
@@ -203,7 +214,7 @@ fn describe_all() {
     let current = AppConfig::load(&AppConfig::default_path()).ok();
 
     println!("Settable keys — `aura config set <key> <value>`:\n");
-    for section in ["display", "update"] {
+    for section in config_schema::SECTIONS {
         println!("[{section}]");
         let prefix = format!("{section}.");
         for f in config_schema::fields()
@@ -233,7 +244,23 @@ fn describe_all() {
     print_section("[[agents]]", config_schema::agent_fields());
     print_section("[[plugins]]", config_schema::plugin_fields());
 
-    println!("Explain one field with `aura config describe <key>` (e.g. display.anchor).");
+    let aliases = config_migrate::aliases();
+    if !aliases.is_empty() {
+        println!("Keys renamed by an earlier layout — the old spelling still works:\n");
+        for (from, to) in aliases {
+            println!("  {from:<36} → {to}");
+        }
+        println!();
+        // Only nudge when this user's file actually still uses an old name.
+        let pending = config_migrate::check_file(&AppConfig::default_path())
+            .map(|r| !r.is_noop())
+            .unwrap_or(false);
+        if pending {
+            println!("Your config.toml still uses some of these — run `aura config migrate`.\n");
+        }
+    }
+
+    println!("Explain one field with `aura config describe <key>` (e.g. window.anchor).");
 }
 
 fn print_section(header: &str, fields: &[SectionField]) {
@@ -258,6 +285,7 @@ fn run_get(key: &str) -> Result<()> {
     let path = AppConfig::default_path();
     let cfg = AppConfig::load(&path).with_context(|| format!("load {}", path.display()))?;
     let value = config_schema::get_value(&cfg, key).map_err(anyhow::Error::msg)?;
+    note_if_renamed(key);
     println!("{value}");
     Ok(())
 }
@@ -266,11 +294,21 @@ fn run_set(key: &str, value: &str) -> Result<()> {
     let path = AppConfig::default_path();
     let mut cfg = AppConfig::load(&path).with_context(|| format!("load {}", path.display()))?;
     config_schema::set_value(&mut cfg, key, value).map_err(anyhow::Error::msg)?;
+    note_if_renamed(key);
     cfg.save(&path)
         .with_context(|| format!("write config to {}", path.display()))?;
     let stored = config_schema::get_value(&cfg, key).unwrap_or_else(|_| value.to_string());
-    println!("set {key} = {stored}");
+    println!("set {} = {stored}", config_schema::canonical_key(key));
     Ok(())
+}
+
+/// Tell the user when the key they typed has since moved. The operation still
+/// succeeds — the point is that they learn the new name from the tool rather
+/// than from a failure.
+fn note_if_renamed(key: &str) {
+    if let Some(current) = config_schema::renamed_from(key) {
+        eprintln!("note: `{key}` is now `{current}` (run `aura config migrate` to update your config.toml)");
+    }
 }
 
 fn run_wizard() -> Result<()> {
@@ -355,6 +393,80 @@ fn run_document() -> Result<()> {
     Ok(())
 }
 
+// ── migrate ──────────────────────────────────────────────────────────────────
+
+/// Rewrite `config.toml` into the current section layout.
+///
+/// Public so the installer's post-install step can run it without going
+/// through `ConfigCli::run`.
+///
+/// The migration itself lives in `aura_core::config_migrate`; this is the
+/// user-facing half — it reports every key that moved, then saves through the
+/// commented renderer so the rewritten file also picks up current inline docs.
+pub fn run_migrate(check: bool) -> Result<()> {
+    let path = AppConfig::default_path();
+    if !path.exists() {
+        println!("{} does not exist — nothing to migrate.", path.display());
+        return Ok(());
+    }
+
+    let report =
+        config_migrate::check_file(&path).with_context(|| format!("read {}", path.display()))?;
+
+    if report.is_noop() {
+        print_notes(&report);
+        println!("{} is already in the current layout.", path.display());
+        return Ok(());
+    }
+
+    print_changes(&report);
+
+    if check {
+        println!(
+            "\n{} needs migrating — run `aura config migrate`.",
+            path.display()
+        );
+        // Non-zero so a script can gate on it.
+        std::process::exit(1);
+    }
+
+    // `load` migrates in memory; `save` writes the current shape back out.
+    let cfg = AppConfig::load(&path).with_context(|| format!("load {}", path.display()))?;
+    cfg.save(&path)
+        .with_context(|| format!("write config to {}", path.display()))?;
+    println!("\nMigrated {}.", path.display());
+    Ok(())
+}
+
+fn print_changes(report: &MigrationReport) {
+    println!("Changes:");
+    for change in &report.changes {
+        if matches!(change, config_migrate::Change::Unrecognized { .. }) {
+            continue;
+        }
+        println!("  {change}");
+    }
+    print_notes(report);
+}
+
+/// Keys Aura has no descriptor for. Worth saying out loud before a rewrite:
+/// `save` re-serializes from the parsed struct, so an unknown key is not
+/// carried over.
+fn print_notes(report: &MigrationReport) {
+    let notes: Vec<_> = report
+        .changes
+        .iter()
+        .filter(|c| matches!(c, config_migrate::Change::Unrecognized { .. }))
+        .collect();
+    if notes.is_empty() {
+        return;
+    }
+    println!("\nNot recognised — a rewrite will drop these:");
+    for note in notes {
+        println!("  {note}");
+    }
+}
+
 fn run_edit() -> Result<()> {
     let path = AppConfig::default_path();
     // `AppConfig::load` writes defaults if the file is missing, so editing
@@ -374,8 +486,15 @@ fn run_validate() -> Result<()> {
     }
     let content =
         std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let _: AppConfig =
-        toml::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
+    // Through `parse` so an older section layout validates as the current one
+    // — that is exactly how the app reads it.
+    let (_, report) =
+        AppConfig::parse(&content).with_context(|| format!("parse {}", path.display()))?;
     println!("{} is valid.", path.display());
+    if !report.is_noop() {
+        println!("\nIt still uses an older section layout:");
+        print_changes(&report);
+        println!("\nAura reads it as-is; `aura config migrate` rewrites it.");
+    }
     Ok(())
 }

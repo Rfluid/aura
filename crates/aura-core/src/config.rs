@@ -47,7 +47,7 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tray_progress_source: Option<u32>,
     /// Which quota window drives the tray icon's color ramp — and with it
-    /// `display.tray_pulse`, the loud end of the same signal. Same positional
+    /// `tray.pulse`, the loud end of the same signal. Same positional
     /// scheme and same peak fallback as [`Self::tray_progress_source`].
     /// `None` (default) reads position 1, the weekly window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,13 +106,14 @@ pub struct PluginConfig {
     pub icon: Option<String>,
 }
 
-// ── Display ──────────────────────────────────────────────────────────────────
+// ── Window ─────────────────────────────────────────────────────────────
 
+/// Where the modal sits, how big it gets, and what window kind it is. Nothing
+/// here touches what the modal *renders* (see [`ContentConfig`]) or the tray
+/// icon (see [`TrayConfig`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct DisplayConfig {
-    /// Which period to show by default: `"all"`, `"7d"`, or `"30d"`.
-    pub default_period: String,
+pub struct WindowConfig {
     /// How the modal anchors as it auto-fits its content height:
     ///
     /// - `"none"`   — open at the platform's natural tray corner and let the
@@ -132,12 +133,14 @@ pub struct DisplayConfig {
     /// Which display server GPUI talks to on Linux / BSD: `"auto"`, `"x11"`
     /// or `"wayland"`.
     ///
-    /// This exists because Wayland forbids a client from positioning its own
-    /// toplevel window. On a Wayland session the compositor ignores the
-    /// modal's requested origin outright, which silently disables
-    /// [`Self::anchor`], the taskbar-avoidance math, and centring the modal
-    /// under the tray icon — the three things that make Aura read as a tray
-    /// popup rather than a floating window.
+    /// This lives under `[window]` rather than a platform section because it
+    /// exists entirely to decide whether Aura can place its own window.
+    /// Wayland forbids a client from positioning its own toplevel: on a
+    /// Wayland session the compositor ignores the modal's requested origin
+    /// outright, which silently disables [`Self::anchor`], the
+    /// taskbar-avoidance math, and centring the modal under the tray icon —
+    /// the three things that make Aura read as a tray popup rather than a
+    /// floating window.
     ///
     /// - `"auto"` (default) — use X11 whenever `$DISPLAY` is set. On a Wayland
     ///   session that means going through XWayland, which nearly every desktop
@@ -152,13 +155,6 @@ pub struct DisplayConfig {
     /// Ignored on macOS and Windows.
     #[serde(default = "default_linux_backend")]
     pub linux_backend: String,
-    /// Display order for plugin pills. Plugins whose display `name`
-    /// appears here render in the listed order; anything not named
-    /// keeps its natural order (config-then-discovered-alphabetical)
-    /// and appends after the explicitly-ordered prefix. Match is
-    /// case-insensitive.
-    #[serde(default)]
-    pub plugin_order: Vec<String>,
     /// Whether the modal appears in the OS's "where are my windows"
     /// surfaces — Cmd+Tab + Dock on macOS, Alt+Tab + taskbar on Windows,
     /// panel + window switcher on Linux. Default `false` so Aura behaves
@@ -186,7 +182,7 @@ pub struct DisplayConfig {
     ///
     /// Chrome only controls the *title bar*. Whether the modal auto-resizes to
     /// fit its content is a separate axis, see [`Self::auto_resize`].
-    pub window_chrome: bool,
+    pub chrome: bool,
     /// Whether the modal auto-resizes to fit its content height.
     ///
     /// On every layout pass a content-fit callback measures the rendered
@@ -195,9 +191,8 @@ pub struct DisplayConfig {
     /// modal auto-fits. Set `false` for a fixed-size window.
     ///
     /// This is *not* about user drag-to-resize (the window manager owns that);
-    /// it only toggles Aura's own content-fit. Independent of
-    /// [`Self::window_chrome`]: the auto-fit behaves the same with or without
-    /// the native title bar.
+    /// it only toggles Aura's own content-fit. Independent of [`Self::chrome`]:
+    /// the auto-fit behaves the same with or without the native title bar.
     #[serde(default)]
     pub auto_resize: Option<bool>,
     /// Optional upper bound (in logical pixels) on the modal's auto-fit
@@ -209,79 +204,16 @@ pub struct DisplayConfig {
     /// Ignored when [`Self::auto_resize`] is false (no auto-fit to cap).
     #[serde(default)]
     pub max_height: Option<u32>,
-    /// Swap the modal's user-facing copy for an aggressive / unhinged variant
-    /// ("Goblin Mode"). Default false. Toggling reloads on the next refresh —
-    /// no restart. See `docs/goblin-mode.md`.
-    #[serde(default)]
-    pub goblin_mode: bool,
-    /// Keep the tray icon's tooltip and gauge up to date with the active
-    /// profile's quota. Default true — that's what makes the icon an
-    /// *indicator* rather than a button.
-    ///
-    /// The master switch for the whole feature: turning it off stops the
-    /// background poll and leaves the icon static, whatever
-    /// [`Self::tray_progress`] / [`Self::tray_color`] / [`Self::tray_pulse`]
-    /// say.
-    ///
-    /// While the modal is closed this costs one quota lookup every
-    /// [`Self::tray_status_interval_secs`] seconds, which for the API-backed
-    /// agents is a network request. Set to false to disable updates and leave
-    /// the icon static.
-    #[serde(default = "default_tray_status")]
-    pub tray_status: bool,
-    /// Fill the tray icon's ring in proportion to peak quota usage. Default
-    /// true. Off, the complete ring is drawn at full opacity and usage lives
-    /// in the tooltip only.
-    #[serde(default = "default_true")]
-    pub tray_progress: bool,
-    /// Move the tray icon's color up the purple → yellow → orange → red ramp
-    /// as usage climbs. Default true. Off, the icon stays Aura purple at
-    /// every level (and on macOS keeps the menu bar's own foreground color,
-    /// like every other status item).
-    #[serde(default = "default_true")]
-    pub tray_color: bool,
-    /// Ask the desktop to draw attention to the tray icon once usage reaches
-    /// 90%. **Default false**, unlike the other two: this is the one tray
-    /// visual that is not Aura drawing its own icon but a request to the
-    /// desktop, and hosts answer it loudly — Plasma pulls the item out of the
-    /// overflow group and animates it, which is not something to turn on for
-    /// someone without being asked.
-    ///
-    /// Linux only in practice: it maps to the StatusNotifierItem
-    /// `NeedsAttention` status. macOS and Windows have no equivalent request,
-    /// so there the red end of [`Self::tray_color`] is the whole signal.
-    #[serde(default)]
-    pub tray_pulse: bool,
-    /// Seconds between background tray-status refreshes. Ignored when
-    /// [`Self::tray_status`] is false. Default 1200 (20 minutes); values below
-    /// 30 are clamped up by [`Self::tray_status_interval`] so a typo can't
-    /// turn the indicator into a hot loop against a rate-limited endpoint.
-    #[serde(default = "default_tray_status_interval_secs")]
-    pub tray_status_interval_secs: u64,
 }
 
-/// Default for [`DisplayConfig::linux_backend`]. `"auto"` prefers X11 (via
+/// Default for [`WindowConfig::linux_backend`]. `"auto"` prefers X11 (via
 /// XWayland on a Wayland session) because window placement is the whole point
 /// of a tray popup and Wayland does not offer it.
 fn default_linux_backend() -> String {
     "auto".to_string()
 }
 
-fn default_tray_status() -> bool {
-    true
-}
-
-/// `#[serde(default)]` on a `bool` yields `false`; the tray visuals that
-/// default *on* need this instead.
-fn default_true() -> bool {
-    true
-}
-
-fn default_tray_status_interval_secs() -> u64 {
-    1200
-}
-
-/// Per-OS default for [`DisplayConfig::anchor`]. Windows ships with a bottom
+/// Per-OS default for [`WindowConfig::anchor`]. Windows ships with a bottom
 /// taskbar, so the modal grows upward off the tray (`"bottom"`); macOS (menu
 /// bar at the top) and Linux open at their natural corner without an active
 /// reposition (`"none"`).
@@ -289,7 +221,7 @@ fn default_tray_status_interval_secs() -> u64 {
 /// Linux stays on `"none"` because panel placement varies far more there than
 /// on Windows — a top-panel GNOME session and a bottom-panel Plasma one are
 /// equally normal. Bottom-anchoring works fine once
-/// [`DisplayConfig::linux_backend`] has secured an X11 connection; it is just
+/// [`WindowConfig::linux_backend`] has secured an X11 connection; it is just
 /// not a safe assumption to bake in, so it stays opt-in.
 ///
 /// Evaluated at compile time for the target this binary is built for, so the
@@ -308,48 +240,150 @@ fn default_anchor() -> String {
     }
 }
 
-impl DisplayConfig {
+impl WindowConfig {
     /// Effective auto-fit behaviour: `auto_resize` unset (`None`) means the
     /// modal auto-resizes to fit its content height. `false` makes it a
-    /// fixed-size window. Applies whether or not [`Self::window_chrome`] is on.
+    /// fixed-size window. Applies whether or not [`Self::chrome`] is on.
     pub fn auto_resize(&self) -> bool {
         self.auto_resize.unwrap_or(true)
     }
+}
 
-    /// Effective background tray-status interval: `None` when the feature is
-    /// off, otherwise the configured value floored at 30 s.
-    ///
-    /// The floor is not a style preference. Each tick can hit the agent's
-    /// quota endpoint, so an accidental `tray_status_interval_secs = 1` would
-    /// hammer a rate-limited API from a background thread the user can't see.
-    pub fn tray_status_interval(&self) -> Option<std::time::Duration> {
-        if !self.tray_status {
-            return None;
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            anchor: default_anchor(),
+            linux_backend: default_linux_backend(),
+            show_in_app_switcher: false,
+            dismiss_on_focus_loss: true,
+            chrome: false,
+            auto_resize: None,
+            max_height: None,
         }
-        Some(std::time::Duration::from_secs(
-            self.tray_status_interval_secs.max(30),
-        ))
     }
 }
 
-impl Default for DisplayConfig {
+// ── Tray ───────────────────────────────────────────────────────────────
+
+/// The icon by the clock. Separate from [`WindowConfig`] because none of it
+/// reaches the modal — these knobs decide whether the tray icon reports quota
+/// at all, and how loudly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TrayConfig {
+    /// Whether the tray icon is a live indicator or a plain button.
+    ///
+    /// Default true: the icon keeps its tooltip and gauge in sync with the
+    /// active profile's quota, which is what makes it an *indicator* rather
+    /// than something you click to find out. Set false and the icon becomes a
+    /// static button whose only job is opening the modal.
+    ///
+    /// The master switch for the whole feature: turning it off stops the
+    /// background poll and leaves the icon static, whatever [`Self::progress`]
+    /// / [`Self::color`] / [`Self::pulse`] say.
+    ///
+    /// While the modal is closed this costs one quota lookup every
+    /// [`Self::refresh_secs`] seconds, which for the API-backed agents is a
+    /// network request.
+    #[serde(default = "default_true")]
+    pub indicator: bool,
+    /// Fill the tray icon's ring in proportion to peak quota usage. Default
+    /// true. Off, the complete ring is drawn at full opacity and usage lives
+    /// in the tooltip only.
+    #[serde(default = "default_true")]
+    pub progress: bool,
+    /// Move the tray icon's color up the purple → yellow → orange → red ramp
+    /// as usage climbs. Default true. Off, the icon stays Aura purple at
+    /// every level (and on macOS keeps the menu bar's own foreground color,
+    /// like every other status item).
+    #[serde(default = "default_true")]
+    pub color: bool,
+    /// Ask the desktop to draw attention to the tray icon once usage reaches
+    /// 90%. **Default false**, unlike the other two: this is the one tray
+    /// visual that is not Aura drawing its own icon but a request to the
+    /// desktop, and hosts answer it loudly — Plasma pulls the item out of the
+    /// overflow group and animates it, which is not something to turn on for
+    /// someone without being asked.
+    ///
+    /// Linux only in practice: it maps to the StatusNotifierItem
+    /// `NeedsAttention` status. macOS and Windows have no equivalent request,
+    /// so there the red end of [`Self::color`] is the whole signal.
+    #[serde(default)]
+    pub pulse: bool,
+    /// Seconds between background refreshes of the indicator. Ignored when
+    /// [`Self::indicator`] is false. Default 1200 (20 minutes); values below
+    /// 30 are clamped up by [`Self::refresh_interval`] so a typo can't turn
+    /// the indicator into a hot loop against a rate-limited endpoint.
+    #[serde(default = "default_refresh_secs")]
+    pub refresh_secs: u64,
+}
+
+/// `#[serde(default)]` on a `bool` yields `false`; the tray knobs that
+/// default *on* need this instead.
+fn default_true() -> bool {
+    true
+}
+
+fn default_refresh_secs() -> u64 {
+    1200
+}
+
+impl TrayConfig {
+    /// Effective background refresh interval: `None` when the icon is a plain
+    /// button, otherwise the configured value floored at 30 s.
+    ///
+    /// The floor is not a style preference. Each tick can hit the agent's
+    /// quota endpoint, so an accidental `refresh_secs = 1` would hammer a
+    /// rate-limited API from a background thread the user can't see.
+    pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+        if !self.indicator {
+            return None;
+        }
+        Some(std::time::Duration::from_secs(self.refresh_secs.max(30)))
+    }
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self {
+            indicator: true,
+            progress: true,
+            color: true,
+            pulse: false,
+            refresh_secs: default_refresh_secs(),
+        }
+    }
+}
+
+// ── Content ────────────────────────────────────────────────────────
+
+/// What the modal renders and in what words — as opposed to where the window
+/// sits, which is [`WindowConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ContentConfig {
+    /// Which period to show by default: `"all"`, `"7d"`, or `"30d"`.
+    pub default_period: String,
+    /// Display order for plugin pills. Plugins whose display `name`
+    /// appears here render in the listed order; anything not named
+    /// keeps its natural order (config-then-discovered-alphabetical)
+    /// and appends after the explicitly-ordered prefix. Match is
+    /// case-insensitive.
+    #[serde(default)]
+    pub plugin_order: Vec<String>,
+    /// Swap the modal's user-facing copy for an aggressive / unhinged variant
+    /// ("Goblin Mode"). Default false. Toggling reloads on the next refresh —
+    /// no restart. See `docs/goblin-mode.md`.
+    #[serde(default)]
+    pub goblin_mode: bool,
+}
+
+impl Default for ContentConfig {
     fn default() -> Self {
         Self {
             default_period: "all".to_string(),
-            anchor: default_anchor(),
-            linux_backend: default_linux_backend(),
             plugin_order: Vec::new(),
-            show_in_app_switcher: false,
-            dismiss_on_focus_loss: true,
-            window_chrome: false,
-            auto_resize: None,
-            max_height: None,
             goblin_mode: false,
-            tray_status: default_tray_status(),
-            tray_progress: default_true(),
-            tray_color: default_true(),
-            tray_pulse: false,
-            tray_status_interval_secs: default_tray_status_interval_secs(),
         }
     }
 }
@@ -381,7 +415,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
     #[serde(default)]
-    pub display: DisplayConfig,
+    pub window: WindowConfig,
+    #[serde(default)]
+    pub tray: TrayConfig,
+    #[serde(default)]
+    pub content: ContentConfig,
     #[serde(default)]
     pub update: UpdateConfig,
 }
@@ -423,7 +461,23 @@ impl AppConfig {
 
         let content = fs::read_to_string(path)
             .with_context(|| format!("read config file {}", path.display()))?;
-        toml::from_str(&content).with_context(|| format!("parse config file {}", path.display()))
+        let (cfg, _) = Self::parse(&content)
+            .with_context(|| format!("parse config file {}", path.display()))?;
+        Ok(cfg)
+    }
+
+    /// Parse a `config.toml` body, migrating any older section layout into the
+    /// current one first (see [`crate::config_migrate`]). The returned report
+    /// says what the migration touched — empty when the file was already
+    /// current.
+    ///
+    /// The rewrite happens in memory on every load, so an un-migrated config
+    /// keeps working without the app touching the user's file. `aura config
+    /// migrate` is what writes the new shape back to disk.
+    pub fn parse(content: &str) -> Result<(Self, crate::config_migrate::MigrationReport)> {
+        let (table, report) = crate::config_migrate::normalize_str(content)?;
+        let cfg: Self = table.try_into().context("deserialize config")?;
+        Ok((cfg, report))
     }
 
     /// Sensible out-of-the-box config: detected agents only, no bundled
@@ -433,7 +487,9 @@ impl AppConfig {
         Self {
             agents: known_agent_profiles(),
             plugins: Vec::new(),
-            display: DisplayConfig::default(),
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig::default(),
             update: UpdateConfig::default(),
         }
     }
@@ -444,7 +500,7 @@ impl AppConfig {
     /// in-memory only — the on-disk config is not rewritten, so removing a
     /// binary from the plugins dir makes it disappear cleanly on the next
     /// launch. Finally, [`Self::apply_plugin_order`] reorders the merged
-    /// list to honour `display.plugin_order`.
+    /// list to honour `content.plugin_order`.
     pub fn load_with_discovery(path: &Path) -> Result<Self> {
         let mut cfg = Self::load(path)?;
         let plugins_dir = crate::plugin::plugins_dir_for_config(path);
@@ -454,18 +510,18 @@ impl AppConfig {
         Ok(cfg)
     }
 
-    /// Reorder `self.plugins` according to `self.display.plugin_order`.
+    /// Reorder `self.plugins` according to `self.content.plugin_order`.
     /// Plugins whose display name appears in the order list move to the
     /// front in the listed order; anything not named keeps its relative
     /// position and is appended after the ordered prefix. Match is
     /// case-insensitive. No-op when `plugin_order` is empty.
     pub fn apply_plugin_order(&mut self) {
-        if self.display.plugin_order.is_empty() {
+        if self.content.plugin_order.is_empty() {
             return;
         }
         let mut remaining = std::mem::take(&mut self.plugins);
         let mut ordered: Vec<PluginConfig> = Vec::with_capacity(remaining.len());
-        for wanted in &self.display.plugin_order {
+        for wanted in &self.content.plugin_order {
             if let Some(pos) = remaining
                 .iter()
                 .position(|p| p.name.eq_ignore_ascii_case(wanted))
@@ -517,7 +573,7 @@ impl AppConfig {
     }
 
     /// Detect installed agents and either create a fresh config containing
-    /// only the detected ones (plus the default plugins/display) or merge any
+    /// only the detected ones (plus the default plugins/sections) or merge any
     /// newly-detected agents into an existing config without disturbing the
     /// user's other edits. Returns a report describing what changed.
     pub fn run_setup(path: &Path) -> Result<SetupReport> {
@@ -531,7 +587,9 @@ impl AppConfig {
         let (mut config, created) = if path.exists() {
             let content = fs::read_to_string(path)
                 .with_context(|| format!("read config file {}", path.display()))?;
-            let cfg: AppConfig = toml::from_str(&content)
+            // Through `parse` so setup on an older config also migrates it —
+            // the rewrite below then lands the current shape on disk.
+            let (cfg, _) = Self::parse(&content)
                 .with_context(|| format!("parse config file {}", path.display()))?;
             (cfg, false)
         } else {
@@ -683,9 +741,11 @@ mod tests {
         let mut cfg = AppConfig {
             agents: vec![],
             plugins: vec![plug("Alpha"), plug("Beta"), plug("Gamma"), plug("Delta")],
-            display: DisplayConfig {
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig {
                 plugin_order: vec!["Gamma".into(), "Alpha".into()],
-                ..DisplayConfig::default()
+                ..ContentConfig::default()
             },
             update: UpdateConfig::default(),
         };
@@ -700,9 +760,11 @@ mod tests {
         let mut cfg = AppConfig {
             agents: vec![],
             plugins: vec![plug("RTK Gains"), plug("Hello")],
-            display: DisplayConfig {
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig {
                 plugin_order: vec!["hello".into(), "Nonexistent".into()],
-                ..DisplayConfig::default()
+                ..ContentConfig::default()
             },
             update: UpdateConfig::default(),
         };
@@ -716,7 +778,9 @@ mod tests {
         let mut cfg = AppConfig {
             agents: vec![],
             plugins: vec![plug("Alpha"), plug("Beta")],
-            display: DisplayConfig::default(),
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig::default(),
             update: UpdateConfig::default(),
         };
         cfg.apply_plugin_order();
@@ -733,7 +797,9 @@ mod tests {
         assert_eq!(parsed.agents.len(), cfg.agents.len());
         assert_eq!(parsed.agents[0].name, cfg.agents[0].name);
         assert_eq!(parsed.plugins.len(), cfg.plugins.len());
-        assert_eq!(parsed.display, cfg.display);
+        assert_eq!(parsed.window, cfg.window);
+        assert_eq!(parsed.tray, cfg.tray);
+        assert_eq!(parsed.content, cfg.content);
         assert_eq!(parsed.update, cfg.update);
     }
 
@@ -791,7 +857,9 @@ dismiss_all = true
                 tray_color_source: None,
             }],
             plugins: vec![],
-            display: DisplayConfig::default(),
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig::default(),
             update: UpdateConfig::default(),
         };
 
@@ -835,7 +903,9 @@ dismiss_all = true
                 tray_color_source: None,
             }],
             plugins: vec![],
-            display: DisplayConfig::default(),
+            window: WindowConfig::default(),
+            tray: TrayConfig::default(),
+            content: ContentConfig::default(),
             update: UpdateConfig::default(),
         };
 
@@ -1008,16 +1078,70 @@ kind = "claude-code"
     }
 
     #[test]
-    fn display_config_defaults_on_missing_fields() {
+    fn sections_default_on_missing_fields() {
         let cfg: AppConfig = toml::from_str("").unwrap();
-        assert_eq!(cfg.display.default_period, "all");
+        assert_eq!(cfg.content.default_period, "all");
         // `anchor` defaults per-OS (see `default_anchor`).
-        assert_eq!(cfg.display.anchor, default_anchor());
+        assert_eq!(cfg.window.anchor, default_anchor());
         // Existing config files predate these keys; the indicator should gain
         // its drawn visuals without opting into desktop attention.
-        assert!(cfg.display.tray_progress);
-        assert!(cfg.display.tray_color);
-        assert!(!cfg.display.tray_pulse);
+        assert!(cfg.tray.indicator);
+        assert!(cfg.tray.progress);
+        assert!(cfg.tray.color);
+        assert!(!cfg.tray.pulse);
+    }
+
+    #[test]
+    fn parse_migrates_a_legacy_display_section() {
+        let legacy = r#"
+[display]
+anchor = "top"
+window_chrome = true
+tray_color = false
+tray_status_interval_secs = 600
+goblin_mode = true
+plugin_order = ["RTK Gains"]
+"#;
+        let (cfg, report) = AppConfig::parse(legacy).unwrap();
+        assert!(!report.is_noop());
+        assert_eq!(cfg.window.anchor, "top");
+        assert!(cfg.window.chrome);
+        assert!(!cfg.tray.color);
+        assert_eq!(cfg.tray.refresh_secs, 600);
+        assert!(cfg.content.goblin_mode);
+        assert_eq!(cfg.content.plugin_order, vec!["RTK Gains"]);
+        // Untouched keys keep their defaults rather than being zeroed.
+        assert!(cfg.tray.indicator);
+        assert!(cfg.tray.progress);
+    }
+
+    #[test]
+    fn load_reads_a_legacy_config_without_rewriting_it() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let legacy = "[display]\nanchor = \"top\"\ntray_pulse = true\n";
+        fs::write(&path, legacy).unwrap();
+
+        let cfg = AppConfig::load(&path).unwrap();
+        assert_eq!(cfg.window.anchor, "top");
+        assert!(cfg.tray.pulse);
+        // Loading is read-only: migrating the file on disk is `aura config
+        // migrate`'s job, not something a launch does behind the user's back.
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn tray_refresh_interval_is_floored_and_gated() {
+        let mut tray = TrayConfig {
+            refresh_secs: 1,
+            ..TrayConfig::default()
+        };
+        assert_eq!(
+            tray.refresh_interval(),
+            Some(std::time::Duration::from_secs(30))
+        );
+        tray.indicator = false;
+        assert_eq!(tray.refresh_interval(), None);
     }
 
     #[test]

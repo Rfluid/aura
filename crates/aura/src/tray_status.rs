@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aura_core::{
-    config::{AgentConfig, AgentKind, AppConfig, DisplayConfig},
+    config::{AgentConfig, AgentKind, AppConfig, TrayConfig},
     quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
     state::AppState,
 };
@@ -37,12 +37,12 @@ const DEFAULT_PROGRESS_SOURCE: u32 = 0;
 /// you're spending.
 const DEFAULT_COLOR_SOURCE: u32 = 1;
 
-/// Read the three `display.tray_*` visual toggles.
-pub fn visuals(display: &DisplayConfig) -> TrayVisuals {
+/// Read the three drawn-visual toggles off the `[tray]` config.
+pub fn visuals(tray: &TrayConfig) -> TrayVisuals {
     TrayVisuals {
-        progress: display.tray_progress,
-        color: display.tray_color,
-        pulse: display.tray_pulse,
+        progress: tray.progress,
+        color: tray.color,
+        pulse: tray.pulse,
     }
 }
 
@@ -62,10 +62,10 @@ pub fn visuals(display: &DisplayConfig) -> TrayVisuals {
 pub fn summarize(
     agent: &AgentConfig,
     quota: Option<&QuotaSnapshot>,
-    display: &DisplayConfig,
+    tray: &TrayConfig,
 ) -> TrayStatus {
     let profile = &agent.name;
-    let visuals = visuals(display);
+    let visuals = visuals(tray);
     let unreadable = |summary: String| TrayStatus {
         summary,
         gauge_percent: None,
@@ -158,7 +158,7 @@ fn poll_once(config_path: &Path) -> Option<TrayStatus> {
         AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
     };
 
-    Some(summarize(agent, Some(&quota), &config.display))
+    Some(summarize(agent, Some(&quota), &config.tray))
 }
 
 /// Start the background refresh thread.
@@ -169,7 +169,7 @@ fn poll_once(config_path: &Path) -> Option<TrayStatus> {
 /// is actually looking. A detached thread (rather than a GPUI task) keeps the
 /// blocking HTTP call off the foreground executor entirely.
 ///
-/// Does nothing when `interval` is zero, which is how `display.tray_status =
+/// Does nothing when `interval` is zero, which is how `tray.indicator =
 /// false` turns the feature off.
 pub fn spawn_poll(config_path: PathBuf, interval: Duration) {
     if interval.is_zero() {
@@ -208,12 +208,12 @@ mod tests {
 
     /// Every visual on, so the tests exercise the full indicator. `pulse` is
     /// off in the shipped default — see [`pulse_is_opt_in`].
-    fn all_on() -> DisplayConfig {
-        DisplayConfig {
-            tray_progress: true,
-            tray_color: true,
-            tray_pulse: true,
-            ..DisplayConfig::default()
+    fn all_on() -> TrayConfig {
+        TrayConfig {
+            progress: true,
+            color: true,
+            pulse: true,
+            ..TrayConfig::default()
         }
     }
 
@@ -332,10 +332,10 @@ mod tests {
 
     #[test]
     fn pulse_is_opt_in() {
-        // Past the threshold, but `display.tray_pulse` is off: the gauge
+        // Past the threshold, but `tray.pulse` is off: the gauge
         // still reads 95% and turns red, the desktop is not asked to shout.
         let snap = snapshot(vec![window("5h", Some(95.0))]);
-        let status = summarize(&agent("Claude"), Some(&snap), &DisplayConfig::default());
+        let status = summarize(&agent("Claude"), Some(&snap), &TrayConfig::default());
         assert_eq!(status.gauge_percent, Some(95));
         assert!(!status.attention());
     }
@@ -344,11 +344,11 @@ mod tests {
     fn the_visual_toggles_ride_along_on_the_status() {
         // The backends render from the status alone, so whatever config said
         // has to survive the trip.
-        let display = DisplayConfig {
-            tray_progress: false,
-            tray_color: false,
-            tray_pulse: false,
-            ..DisplayConfig::default()
+        let tray = TrayConfig {
+            progress: false,
+            color: false,
+            pulse: false,
+            ..TrayConfig::default()
         };
         let off = TrayVisuals {
             progress: false,
@@ -357,24 +357,24 @@ mod tests {
         };
         let snap = snapshot(vec![window("5h", Some(95.0))]);
         let agent = agent("Claude");
-        assert_eq!(summarize(&agent, Some(&snap), &display).visuals, off);
+        assert_eq!(summarize(&agent, Some(&snap), &tray).visuals, off);
         // Turning the visuals off doesn't cost the tooltip its numbers.
         assert_eq!(
-            summarize(&agent, Some(&snap), &display).summary,
+            summarize(&agent, Some(&snap), &tray).summary,
             "Claude · 5h 95%"
         );
     }
 
     #[test]
-    fn visuals_come_straight_from_the_display_config() {
-        let display = DisplayConfig {
-            tray_progress: false,
-            tray_color: true,
-            tray_pulse: true,
-            ..DisplayConfig::default()
+    fn visuals_come_straight_from_the_tray_config() {
+        let tray = TrayConfig {
+            progress: false,
+            color: true,
+            pulse: true,
+            ..TrayConfig::default()
         };
         assert_eq!(
-            visuals(&display),
+            visuals(&tray),
             TrayVisuals {
                 progress: false,
                 color: true,

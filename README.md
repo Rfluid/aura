@@ -50,17 +50,28 @@ the README.
 -->
 
 <p align="center">
-  <img src="assets/screenshots/tray-icon.png"
-       alt="Aura tray icon sitting in the KDE Plasma system tray, between the wifi and volume icons"
-       width="320"/>
-  <br/><em>The Aura indicator lives next to wifi / volume — left-click to open.</em>
+  <img src="assets/screenshots/tray-tooltip.png"
+       alt="The Aura tray icon in the KDE Plasma system tray with its tooltip open, reading 'Personal - Current session 11% - Current week (all models) 61%'. The icon's ring is barely filled and tinted yellow."
+       width="420"/>
+  <br/><em>An indicator, not a launcher — it lives next to wifi / volume and
+  reports without being clicked. The ring fills with the current session (11%)
+  while its color tracks the week (61% — past the 50% mark, so yellow); hover
+  for the exact numbers. Left-click to open.</em>
 </p>
 
 <p align="center">
   <img src="assets/screenshots/modal-quota.png"
-       alt="Aura modal open on the Quota tab: Claude max subscription, Current session 6% used, Current week (all models) 69% used, Current week (Sonnet only) 8% used, each with a progress bar and a 'Resets …' timestamp"
+       alt="Aura modal open on the Quota tab: Subscription team, Current session 26% used, Current week (all models) 63% used, each with a progress bar and a 'Resets …' timestamp"
        width="540"/>
   <br/><em>Quota tab — live subscription windows from Claude's API.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/modal-forecast.png"
+       alt="Aura modal on the Forecast tab: Current session marked 'On track' at 30% used against a 48% projection, Current week (all models) marked 'Overshoot' at 64% used against a 104% projection, each with the reset time underneath"
+       width="540"/>
+  <br/><em>Forecast tab — where each window lands at reset if you keep burning
+  at the current rate.</em>
 </p>
 
 <p align="center">
@@ -82,13 +93,6 @@ the README.
        alt="Top of the Aura modal showing agent profile pills: Peh (Claude), Personal, Codex, Gemini, with the active profile highlighted"
        width="540"/>
   <br/><em>One click to switch agent profiles — last selection is persisted.</em>
-</p>
-
-<p align="center">
-  <img src="assets/screenshots/right-click-menu.png"
-       alt="Right-click context menu on the Aura tray icon with two items: Show Aura, Quit Aura"
-       width="240"/>
-  <br/><em>Right-click for explicit Show / Quit.</em>
 </p>
 
 <p align="center">
@@ -141,7 +145,7 @@ aura plugin run "RTK Gains" --period 7d              # debug-print panel JSON
 
 Anything in `~/.config/aura/plugins/` is auto-discovered at modal open —
 no `config.toml` edit required. To pin the order of the pill row, set
-`[display] plugin_order = ["Hello", "RTK Gains"]` in `config.toml`
+`[content] plugin_order = ["Hello", "RTK Gains"]` in `config.toml`
 (see [`docs/configuration.md`](docs/configuration.md)). See
 [`docs/plugin-authoring.md`](docs/plugin-authoring.md) for the full wire
 contract and authoring checklist.
@@ -194,12 +198,24 @@ kind = "codex"
 name = "Gemini"
 kind = "gemini"
 
-# Optional display tweaks. All keys are optional; defaults shown.
-[display]
-default_period         = "today"      # "today" | "this_month" | "all_time"
-anchor                 = "auto"       # "auto" | "top" | "bottom" | "left" | "right"
+# Optional tweaks. All keys are optional; defaults shown.
+
+# Where the window goes and how big it gets.
+[window]
+anchor                 = "none"       # "none" | "bottom" | "top"
 dismiss_on_focus_loss  = true         # set false to make the modal sticky
 show_in_app_switcher   = false        # show Aura in Cmd+Tab / Alt+Tab / WM switcher
+# max_height           = 500          # tighter ceiling than the screen work area
+
+# The icon by the clock.
+[tray]
+indicator              = true         # false = a plain button that opens the modal
+color                  = true         # purple → yellow → orange → red as usage climbs
+refresh_secs           = 1200         # background refresh interval, floored at 30
+
+# What the modal renders.
+[content]
+default_period         = "all"        # "all" | "7d" | "30d"
 # plugin_order         = ["Hello", "RTK Gains"]
 ```
 
@@ -266,13 +282,13 @@ with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
 (Windows) are equivalent CLI exits.
 
 Hovering the icon shows the active profile's current quota
-(`Claude · 5h 72% · week 31%`). The two halves of the icon read two different
+(`Personal · Current session 11% · Current week (all models) 61%`). The two halves of the icon read two different
 quota windows: by default the complete ring around Aura's center dot fills with
 your **current session**, while its **color** tracks your **week** — purple,
 then yellow at 50%, orange at 75%, and red at 90%. One glance carries both the
 burst you're in and the budget you're spending. Either half can be pointed at
 another quota window per agent (`tray_progress_source` / `tray_color_source`).
-Set `display.tray_status = false` to turn live updates off; the progress,
+Set `tray.indicator = false` to turn live updates off; the progress,
 color, and desktop-attention signals can also be controlled independently — see
 [Configuration](docs/configuration.md).
 
@@ -301,15 +317,15 @@ with an invisible process.
 The modal opens centred on the tray icon and clear of the taskbar. That
 requires the app to choose its own window position, which the Wayland
 protocol forbids for a regular toplevel surface — on a native Wayland session
-the compositor places the window instead, `display.anchor` stops having any
+the compositor places the window instead, `window.anchor` stops having any
 effect, and an auto-hidden panel can slide out over the modal.
 
 Every mainstream Wayland desktop ships XWayland, so Aura uses GPUI's X11
 backend whenever `$DISPLAY` is set. Nothing to configure — this is the
-`display.linux_backend = "auto"` default.
+`window.linux_backend = "auto"` default.
 
 If XWayland looks soft on a fractional-scale display, set
-`display.linux_backend = "wayland"` and place the modal with a KWin rule
+`window.linux_backend = "wayland"` and place the modal with a KWin rule
 instead:
 
 1. **System Settings → Window Management → Window Rules → Add New**.
@@ -639,7 +655,7 @@ Wayland's `xdg_toplevel` protocol [forbids client-side
 positioning](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/xdg-shell/xdg-shell.xml)
 — the compositor decides where windows go. GPUI 0.2 always uses
 `xdg_toplevel` (never `xdg_popup`), so KWin / Mutter / sway ignore our
-requested origin and typically center the modal. That kills `display.anchor`,
+requested origin and typically center the modal. That kills `window.anchor`,
 taskbar avoidance, and centring the modal under the tray icon in one go.
 
 GPUI chooses its Linux backend in `guess_compositor()`, which takes Wayland
@@ -647,7 +663,7 @@ whenever `$WAYLAND_DISPLAY` is non-empty and exposes no override. So Aura
 hides that variable across the one `Application::new()` call and restores it
 straight after — GPUI connects through XWayland, where positioning works, and
 child processes still see the real session environment.
-`display.linux_backend = "wayland"` opts back out; use a compositor window
+`window.linux_backend = "wayland"` opts back out; use a compositor window
 rule for placement if you do.
 
 ### Why we cap the modal height (and how)

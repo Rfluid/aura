@@ -66,22 +66,29 @@ aura config show               # print loaded config (--format text|json)
 aura config describe [<key>]   # list every field (type/default/docs), or explain one
                                #   (--format json emits the full schema)
 aura config get <key>          # print a single field's current value
-aura config set <key> <value>  # validate and set one field (e.g. set display.anchor top)
+aura config set <key> <value>  # validate and set one field (e.g. set window.anchor top)
 aura config wizard             # walk every field interactively; blank keeps current
 aura config init [--force]     # write a fresh, fully-commented config.toml
 aura config document           # rewrite the existing config in place with inline
                                #   docs, keeping every current value
+aura config migrate [--check]  # rewrite an older section layout into the current
+                               #   one; --check reports and exits 1 if pending
 aura config edit               # open in $EDITOR (creates defaults if missing)
 aura config validate           # parse-check
 ```
 
-Keys are dotted paths into the `[display]` / `[update]` tables, e.g.
-`display.anchor`, `display.max_height`, `update.dismiss_all`. `set` validates
-the value (rejecting bad enums/booleans and suggesting near-miss keys); pass
-`none` to clear an optional field. The on-disk `config.toml` is written with a
-`#` comment above each key, so the file documents itself. The repeatable
-`[[agents]]` / `[[plugins]]` tables are documented by `describe` but edited via
-`aura config edit`, `aura agents`, or `aura plugin`.
+Keys are dotted paths into the `[window]` / `[tray]` / `[content]` / `[update]`
+tables, e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. `set`
+validates the value (rejecting bad enums/booleans and suggesting near-miss
+keys); pass `none` to clear an optional field. The on-disk `config.toml` is
+written with a `#` comment above each key, so the file documents itself. The
+repeatable `[[agents]]` / `[[plugins]]` tables are documented by `describe` but
+edited via `aura config edit`, `aura agents`, or `aura plugin`.
+
+A key from an older layout still resolves: `aura config get display.anchor`
+answers with `window.anchor` and prints a note naming the current key.
+`aura config migrate` rewrites the file itself — see
+[Migrating an older config](configuration.md#migrating-an-older-config).
 
 ## `aura state`
 

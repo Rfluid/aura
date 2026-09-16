@@ -174,7 +174,7 @@ pub struct AuraView {
     /// Cached vertical extent of the window manager's frame, once we have
     /// seen a non-zero one.
     ///
-    /// Only consulted when `display.window_chrome` is on — a chromeless
+    /// Only consulted when `window.chrome` is on — a chromeless
     /// window has no frame to measure, and the lookup is an X round trip on
     /// its own connection, far too expensive to run on every layout pass.
     /// Caching only a non-zero reading matters because the frame does not
@@ -225,7 +225,7 @@ impl AuraView {
             .or_else(|| config.agents.first().map(|a| a.name.clone()))
             .unwrap_or_else(|| "(none)".to_string());
 
-        let active_period = match config.display.default_period.as_str() {
+        let active_period = match config.content.default_period.as_str() {
             "7d" => Period::Last7Days,
             "30d" => Period::Last30Days,
             _ => Period::AllTime,
@@ -388,7 +388,7 @@ impl AuraView {
         // the cheap half of the indicator: the quota snapshot was just loaded
         // for the UI, so reusing it costs nothing and is always fresher than
         // whatever the background poll last managed.
-        if self.config.display.tray_status {
+        if self.config.tray.indicator {
             if let Some(agent) = self
                 .config
                 .agents
@@ -398,7 +398,7 @@ impl AuraView {
                 crate::tray::set_status(crate::tray_status::summarize(
                     agent,
                     self.quota.as_ref(),
-                    &self.config.display,
+                    &self.config.tray,
                 ));
             }
         }
@@ -757,6 +757,10 @@ impl AuraView {
         open_url(updater::UPDATE_INSTRUCTIONS_URL);
     }
 
+    fn open_config_tutorial(&mut self, _cx: &mut Context<Self>) {
+        open_url(CONFIG_TUTORIAL_URL);
+    }
+
     /// Persist the dismissal so the button stays hidden across relaunches
     /// for *this* version. A newer release than `info.latest` re-shows the
     /// button automatically because `show_update_button` compares strings.
@@ -861,20 +865,20 @@ impl Render for AuraView {
         let last_height = self.last_window_height.clone();
         let last_origin = self.last_origin_request.clone();
         let frame_extents = self.frame_extents.clone();
-        let has_chrome = self.config.display.window_chrome;
+        let has_chrome = self.config.window.chrome;
         let body_scroll = self.body_scroll.clone();
-        // `display.auto_resize` governs the content-fit auto-resize that grows /
+        // `window.auto_resize` governs the content-fit auto-resize that grows /
         // shrinks the window to fit its content on every layout pass. It is
         // independent of `window_chrome`, so the auto-fit works the same with
-        // or without native chrome. Default on (see `DisplayConfig::auto_resize`).
-        let auto_fit = self.config.display.auto_resize();
-        let user_max_height = self.config.display.max_height;
+        // or without native chrome. Default on (see `WindowConfig::auto_resize`).
+        let auto_fit = self.config.window.auto_resize();
+        let user_max_height = self.config.window.max_height;
         // A refresh is in flight, so the body is showing placeholders that are
         // shorter than the loaded content. See the floor in the fit callback.
         let loading = self.is_loading;
         // How the modal re-anchors after the auto-fit resize (see
         // `placement::Anchor`). Only `Bottom` triggers an active move.
-        let anchor = crate::placement::Anchor::from_config(&self.config.display.anchor);
+        let anchor = crate::placement::Anchor::from_config(&self.config.window.anchor);
         // Captured by value: the callback runs on every layout pass and must
         // not borrow `self`.
         let display_id = self.display_id;
@@ -955,7 +959,7 @@ impl Render for AuraView {
                 // with different taskbars, and capping against the wrong one
                 // either clips the modal short or lets it grow under a panel.
                 // Vertical extent of the window manager's frame — a title bar,
-                // when `display.window_chrome` is on. It belongs to the window
+                // when `window.chrome` is on. It belongs to the window
                 // but not to the content being fitted, so it comes off the
                 // room available and shifts every move request.
                 //
@@ -986,7 +990,7 @@ impl Render for AuraView {
                     // How much room the window has depends on whether its
                     // top edge is about to move — see `placement::fit_cap`.
                     // The window manager's frame (a title bar, when
-                    // `display.window_chrome` is on) is part of the window but
+                    // `window.chrome` is on) is part of the window but
                     // not of the content we fit to, so it comes off the top of
                     // whatever room there is. Zero without chrome.
                     let max_h = px(crate::placement::fit_cap(
@@ -1238,7 +1242,7 @@ impl AuraView {
         let Some(info) = &self.update else {
             return div().into_any_element();
         };
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         let accent = self.theme.colors.accent;
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;
@@ -1361,7 +1365,7 @@ impl AuraView {
 
     fn render_plugin_pills(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.config.plugins.is_empty() {
-            let lex = lexicon::pick(self.config.display.goblin_mode);
+            let lex = lexicon::pick(self.config.content.goblin_mode);
             return div()
                 .text_xs()
                 .text_color(rgb(self.theme.colors.text_dim))
@@ -1418,7 +1422,7 @@ impl AuraView {
     }
 
     fn render_mode_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         let modes = [
             ("Agents", Mode::Agent, "mode-agent"),
             (lex.tab_plugins, Mode::Plugin, "mode-plugin"),
@@ -1453,7 +1457,7 @@ impl AuraView {
     }
 
     fn render_period_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         let periods = [
             (lex.period_all, Period::AllTime, "period-all"),
             (lex.period_7d, Period::Last7Days, "period-7"),
@@ -1514,7 +1518,7 @@ impl AuraView {
             .border_color(rgb(self.theme.colors.border))
             .bg(rgb(self.theme.colors.surface));
 
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         match self.mode {
             Mode::Agent => {
                 let sections = [
@@ -1576,7 +1580,7 @@ impl AuraView {
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         let inner: AnyElement = if let Some(err) = &self.error {
             div()
                 .flex()
@@ -1644,7 +1648,7 @@ impl AuraView {
             .flex()
             .flex_col()
             .min_h_0()
-            .when(!self.config.display.auto_resize(), |d| d.flex_1())
+            .when(!self.config.window.auto_resize(), |d| d.flex_1())
             .overflow_y_scroll()
             .track_scroll(&self.body_scroll)
             .child(inner)
@@ -1652,7 +1656,7 @@ impl AuraView {
     }
 
     fn render_plugin_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         if self.action_inflight {
             // A button click is running (possibly blocked on a dialog the
             // plugin opened); show progress where the panel body was.
@@ -2743,11 +2747,11 @@ fn progress_bar(theme: &Theme, fraction: f64, accent: u32, height: f32) -> impl 
 
 impl AuraView {
     fn render_more_modal(&self, cx: &mut Context<Self>) -> AnyElement {
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
         // Append the running version so users can confirm the build they're
         // on without trawling stderr or `aura --version`.
         let updates_label = (lex.check_updates_fmt)(env!("CARGO_PKG_VERSION"));
-        let items: [(&'static str, &'static str, String, ModalAction); 4] = [
+        let items: [(&'static str, &'static str, String, ModalAction); 5] = [
             (
                 "modal-updates",
                 "icons/download.svg",
@@ -2771,6 +2775,12 @@ impl AuraView {
                 "icons/circle_help.svg",
                 "Report issue".to_string(),
                 ModalAction::Reports,
+            ),
+            (
+                "modal-config-tutorial",
+                "icons/info.svg",
+                "Configuration guide".to_string(),
+                ModalAction::ConfigTutorial,
             ),
         ];
 
@@ -2855,7 +2865,7 @@ impl AuraView {
         let text = self.theme.colors.text;
         let text_dim = self.theme.colors.text_dim;
         let surface_hi = self.theme.colors.surface_hi;
-        let lex = lexicon::pick(self.config.display.goblin_mode);
+        let lex = lexicon::pick(self.config.content.goblin_mode);
 
         // ── Open config file ─────────────────────────────────────────────────
         card = card.child(
@@ -2875,6 +2885,28 @@ impl AuraView {
                 .child(lex.menu_open_config)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.open_config(cx);
+                    view.close_settings_panel(cx);
+                })),
+        );
+
+        // ── Configuration guide ─────────────────────────────────────────────
+        card = card.child(
+            div()
+                .id("settings-config-tutorial")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_md()
+                .text_xs()
+                .text_color(rgb(text))
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .child(svg_icon("icons/info.svg", text_dim, 14.0))
+                .child("Configuration guide")
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.open_config_tutorial(cx);
                     view.close_settings_panel(cx);
                 })),
         );
@@ -2910,6 +2942,7 @@ impl AuraView {
             ModalAction::Sponsor => open_url(SPONSOR_URL),
             ModalAction::Github => open_url(GITHUB_REPO_URL),
             ModalAction::Reports => open_url(GITHUB_ISSUES_URL),
+            ModalAction::ConfigTutorial => open_url(CONFIG_TUTORIAL_URL),
         }
         self.close_more_modal(cx);
     }
@@ -2921,12 +2954,15 @@ enum ModalAction {
     Sponsor,
     Github,
     Reports,
+    ConfigTutorial,
 }
 
 const GITHUB_REPO_URL: &str = "https://github.com/Rfluid/aura";
 const GITHUB_RELEASES_URL: &str = "https://github.com/Rfluid/aura/releases";
 const GITHUB_ISSUES_URL: &str = "https://github.com/Rfluid/aura/issues";
 const SPONSOR_URL: &str = "https://github.com/Rfluid/aura/blob/main/SPONSOR.md";
+pub const CONFIG_TUTORIAL_URL: &str =
+    "https://github.com/Rfluid/aura/blob/main/docs/configuration.md";
 
 fn open_url(url: &str) {
     crate::platform::open_url(url);

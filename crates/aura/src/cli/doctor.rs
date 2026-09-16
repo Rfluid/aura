@@ -2,7 +2,7 @@
 //! theme load result. Pure local introspection; no network calls.
 
 use anyhow::Result;
-use aura_core::{config::AppConfig, plugin, state::AppState, theme::Theme};
+use aura_core::{config::AppConfig, config_migrate, plugin, state::AppState, theme::Theme};
 use clap::Args;
 use serde::Serialize;
 
@@ -38,6 +38,10 @@ struct ConfigStatus {
     exists: bool,
     parse_ok: bool,
     error: Option<String>,
+    /// Keys still written in an older section layout. Aura reads them fine
+    /// (they migrate in memory on load), but `aura config migrate` would
+    /// rewrite the file so the docs and the file agree.
+    pending_migrations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +126,7 @@ fn collect() -> DoctorReport {
                     exists: config_path.exists(),
                     parse_ok: true,
                     error: None,
+                    pending_migrations: pending_migrations(&config_path),
                 },
                 agents,
                 plugins,
@@ -132,6 +137,7 @@ fn collect() -> DoctorReport {
                 exists: config_path.exists(),
                 parse_ok: false,
                 error: Some(format!("{e:#}")),
+                pending_migrations: Vec::new(),
             },
             Vec::new(),
             PluginStatus {
@@ -189,6 +195,23 @@ fn collect() -> DoctorReport {
     }
 }
 
+/// Key moves `aura config migrate` would apply to the config at `path`. An
+/// unreadable file reports nothing — `parse_ok` already covers that case.
+fn pending_migrations(path: &std::path::Path) -> Vec<String> {
+    let Ok(report) = config_migrate::check_file(path) else {
+        return Vec::new();
+    };
+    if report.is_noop() {
+        return Vec::new();
+    }
+    report
+        .changes
+        .iter()
+        .filter(|c| !matches!(c, config_migrate::Change::Unrecognized { .. }))
+        .map(|c| c.to_string())
+        .collect()
+}
+
 fn render_text(r: &DoctorReport) {
     println!("Paths:");
     println!("  config       {}", r.paths.config);
@@ -202,6 +225,15 @@ fn render_text(r: &DoctorReport) {
     );
     if let Some(err) = &r.config.error {
         println!("  error: {err}");
+    }
+    if !r.config.pending_migrations.is_empty() {
+        println!(
+            "  {} key(s) use an older layout — run `aura config migrate`:",
+            r.config.pending_migrations.len()
+        );
+        for change in &r.config.pending_migrations {
+            println!("    {change}");
+        }
     }
     println!(
         "State:  exists={}  active_profile={}",

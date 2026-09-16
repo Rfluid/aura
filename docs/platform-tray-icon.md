@@ -94,7 +94,7 @@ Two producers feed `tray::set_status`:
 1. `app.rs::apply_refresh_result` — free, since the modal just loaded a
    snapshot anyway.
 2. `tray_status::spawn_poll` — a detached thread on a long interval
-   (`display.tray_status_interval_secs`, default 1200 s, floored at 30 s) for
+   (`tray.refresh_secs`, default 1200 s, floored at 30 s) for
    the stretches when the modal is closed. Blocking HTTP, hence a thread
    rather than a GPUI task.
 
@@ -103,9 +103,9 @@ thread from the poll loop, because AppKit refuses `NSStatusItem` mutation from
 anywhere else. It also diffs against the last applied value, so a poll that
 produces identical numbers costs no D-Bus or AppKit traffic.
 
-`display.tray_status` is the master switch for the background poll and all
-live updates. `display.tray_progress` and `display.tray_color` independently
-control the two drawn signals. `display.tray_pulse` is opt-in and maps usage at
+`tray.indicator` is the master switch for the background poll and all
+live updates. `tray.progress` and `tray.color` independently
+control the two drawn signals. `tray.pulse` is opt-in and maps usage at
 or above 90% to SNI's `NeedsAttention` state on Linux; it has no equivalent on
 macOS or Windows.
 
@@ -118,7 +118,7 @@ peak across all windows cannot.
 
 The active agent's own `tray_progress_source` / `tray_color_source` repoint
 either half at another position in the window list *that agent* reports. They
-sit on `[[agents]]` rather than `[display]` because the positions are only
+sit on `[[agents]]` rather than `[tray]` because the positions are only
 meaningful against one agent's windows. Backends push only the windows they
 actually have (an idle Claude session has no 5h window; a plan without Opus has
 no Opus week), so positions shift — a selector that lands past the end, or on a
@@ -181,7 +181,7 @@ profile picked in the modal isn't clobbered.
 None of the above is possible on a native Wayland surface: `xdg_toplevel`
 has no position in the protocol, so the compositor places the modal, the
 requested origin is discarded, and `platform::set_window_origin` has no
-window id to move. `display.anchor`, taskbar avoidance and icon-centring all
+window id to move. `window.anchor`, taskbar avoidance and icon-centring all
 go quiet at once — and an auto-hidden panel will happily slide out over the
 modal, because nothing reserved space for it.
 
@@ -193,7 +193,7 @@ from the returned guard's `Drop`. GPUI connects over XWayland, where all the
 positioning above works, and child processes (plugin commands, `xdg-open`)
 still inherit the session's real environment.
 
-`display.linux_backend` controls it: `"auto"` (default) prefers X11 whenever
+`window.linux_backend` controls it: `"auto"` (default) prefers X11 whenever
 `$DISPLAY` resolves, `"x11"` additionally warns when it doesn't, `"wayland"`
 opts back into the native backend for users who find XWayland soft on a
 fractional-scale display. The decision table is a pure function,
@@ -344,7 +344,7 @@ hitting the file system / D-Bus on every resize frame.
 
 ## Show-in-app-switcher (cross-platform)
 
-`display.show_in_app_switcher` controls whether Aura's modal appears in
+`window.show_in_app_switcher` controls whether Aura's modal appears in
 each OS's "where are my windows" surfaces:
 
 | Platform | `false` (default)                                        | `true`                                                          |

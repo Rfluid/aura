@@ -1,5 +1,5 @@
 //! User-facing UI copy for the modal, swappable at runtime via
-//! `display.goblin_mode`. See `docs/goblin-mode.md` for the design rationale.
+//! `content.goblin_mode`. See `docs/goblin-mode.md` for the design rationale.
 //!
 //! Adding a new user-facing string ⇒ new `Lexicon` field, in **both**
 //! personas, in the same PR.

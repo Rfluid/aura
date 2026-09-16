@@ -87,17 +87,17 @@ Out of scope for v1:
 
 ### Trigger / config
 
-Add one field under `[display]` in `crates/aura-core/src/config.rs`:
+Add one field under `[content]` in `crates/aura-core/src/config.rs`:
 
 ```toml
-[display]
+[content]
 # Swap the modal's UI copy for an aggressive / unhinged variant.
 # Default false. Toggling reloads on the next refresh — no restart.
 goblin_mode = false
 ```
 
 ```rust
-// crates/aura-core/src/config.rs — DisplayConfig
+// crates/aura-core/src/config.rs — ContentConfig
 #[serde(default)]
 pub goblin_mode: bool,
 ```
@@ -245,7 +245,7 @@ instead. Cataloged from `app.rs` / `format.rs` at time of writing
     [Dependency](#dependency-forecast-tab-first)).
 
 `AuraView` reads the active lexicon once per render via
-`lexicon::pick(self.config.display.goblin_mode)`. No new state field —
+`lexicon::pick(self.config.content.goblin_mode)`. No new state field —
 the config is already on `self`.
 
 ### Hot reload
@@ -286,7 +286,7 @@ All of those are baked into the Goblin lexicon above. **Forecast
 ships first**, with strings hard-coded in the natural way; Goblin
 Mode is the immediate follow-up PR that:
 
-1. Lands `lexicon.rs` and the `display.goblin_mode` config field.
+1. Lands `lexicon.rs` and the `content.goblin_mode` config field.
 2. Refactors every catalogued site (including the brand-new Forecast
    sites) to read from the lexicon.
 3. Ships `POLITE` (verbatim current copy) + `GOBLIN` (drafts above).
@@ -310,7 +310,7 @@ until Forecast is in `main`.
 
 - Add `lexicon.rs` with the `Lexicon` struct and `POLITE` constant
   matching today's copy verbatim (no behavior change).
-- Add `display.goblin_mode: bool` to `DisplayConfig` with
+- Add `content.goblin_mode: bool` to `ContentConfig` with
   `#[serde(default)]`.
 - Refactor every site in the [Wiring sites](#wiring-sites) catalog
   to read from `lexicon::pick(...)`. Diff should be 1:1 — same

@@ -270,6 +270,22 @@ echo "▸ Installed aura to $BIN_DIR"
 echo "  Plugins (incl. RTK Gains) are installed separately — see"
 echo "  docs/plugin-authoring.md and each plugin's README."
 
+# ── Migrate an older config.toml to the current layout ───────────────────────
+# An upgrade can land on a config written against an older section layout (the
+# pre-0.2 [display] block, say). Aura reads those fine — every load migrates in
+# memory — but rewriting the file here keeps what is on disk matching the
+# documented key names, so 'aura config describe' and the user's file agree.
+#
+# No-op on a fresh install (no file yet) and on an already-current config.
+# Failure is non-fatal: the in-memory migration still covers the app.
+
+if [ -x "$BIN_DIR/aura" ]; then
+    echo "▸ Checking config layout…"
+    if ! "$BIN_DIR/aura" config migrate; then
+        echo "warning: 'aura config migrate' failed; Aura will still read your existing config" >&2
+    fi
+fi
+
 # ── Detect agents and seed/merge config ──────────────────────────────────────
 # Runs before autostart so the service picks up the populated config on its
 # first launch. Failure here is non-fatal: AppConfig::load() will write a
@@ -543,32 +559,32 @@ case "$OS" in
         echo "  panel. Which edge it holds on to is up to you:"
         echo ""
         echo "    Panel at the BOTTOM (Plasma, XFCE, Cinnamon defaults)"
-        echo "        aura config set display.anchor bottom"
+        echo "        aura config set window.anchor bottom"
         echo "        Window sits just above the panel and grows upward."
         echo ""
         echo "    Panel at the TOP (GNOME, Budgie, a top-bar tiling setup)"
-        echo "        aura config set display.anchor top"
+        echo "        aura config set window.anchor top"
         echo "        Window hangs just below the bar and grows downward."
         echo ""
         echo "    Dock, auto-hide panel, vertical panel, or you'd rather your"
         echo "    window manager decide"
-        echo "        aura config set display.anchor none   # the default"
+        echo "        aura config set window.anchor none   # the default"
         echo "        Window opens at the natural tray corner and stays put."
         echo ""
         echo "  Two more worth knowing:"
         echo ""
         echo "    Show the window in Alt+Tab and the taskbar"
-        echo "        aura config set display.show_in_app_switcher true"
+        echo "        aura config set window.show_in_app_switcher true"
         echo ""
         echo "    Keep the window open when it loses focus (handy for copying)"
-        echo "        aura config set display.dismiss_on_focus_loss false"
+        echo "        aura config set window.dismiss_on_focus_loss false"
         echo ""
         echo "  Run 'aura config describe' for every setting, or edit"
         echo "  ~/.config/aura/config.toml directly. Changes apply the next time"
         echo "  the window opens — no restart."
 
         if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-            print_hint "You are on a Wayland session. Wayland does not let an app place its own window, so Aura talks to X11 through XWayland to keep the anchoring above working. If it looks soft on a fractional-scale display, run 'aura config set display.linux_backend wayland' and position the window with a compositor window rule instead."
+            print_hint "You are on a Wayland session. Wayland does not let an app place its own window, so Aura talks to X11 through XWayland to keep the anchoring above working. If it looks soft on a fractional-scale display, run 'aura config set window.linux_backend wayland' and position the window with a compositor window rule instead."
         fi
         ;;
 

@@ -141,8 +141,8 @@ fn main() -> Result<()> {
 
     // Background indicator refresh. Runs on its own thread (the quota lookup
     // is blocking I/O), pushes into `tray::set_status`, and is drained on the
-    // main thread by the poll loop below. Disabled by `display.tray_status`.
-    if let Some(interval) = config.display.tray_status_interval() {
+    // main thread by the poll loop below. Disabled by `tray.indicator`.
+    if let Some(interval) = config.tray.refresh_interval() {
         tray_status::spawn_poll(config_path.clone(), interval);
     }
 
@@ -163,12 +163,12 @@ fn main() -> Result<()> {
     //
     // On Linux the backend GPUI picks is not incidental: Wayland forbids a
     // client from positioning its own toplevel, which silently disables
-    // `display.anchor` and every other placement decision Aura makes. The
-    // guard below applies `display.linux_backend` for exactly the duration of
+    // `window.anchor` and every other placement decision Aura makes. The
+    // guard below applies `window.linux_backend` for exactly the duration of
     // `Application::new()` (see `platform::select_display_backend`) and then
     // puts the environment back, so child processes are unaffected.
     let app = {
-        let _backend = platform::select_display_backend(&config.display.linux_backend);
+        let _backend = platform::select_display_backend(&config.window.linux_backend);
         Application::new().with_assets(EmbeddedAssets)
     };
     app.run(move |cx| {
@@ -451,6 +451,12 @@ fn main() -> Result<()> {
                                 }
                             }
                         }
+                        TrayEvent::OpenConfig => {
+                            open_config_file(&config_path);
+                        }
+                        TrayEvent::OpenConfigTutorial => {
+                            platform::open_url(app::CONFIG_TUTORIAL_URL);
+                        }
                         TrayEvent::Quit => {
                             // Explicit user exit from the right-click
                             // menu. cx.quit() tears down the GPUI
@@ -468,6 +474,16 @@ fn main() -> Result<()> {
     });
 
     Ok(())
+}
+
+fn open_config_file(config_path: &std::path::Path) {
+    if !config_path.exists() {
+        if let Err(e) = AppConfig::load(config_path) {
+            eprintln!("aura: could not create config before opening it: {e}");
+            return;
+        }
+    }
+    platform::open_path(config_path);
 }
 
 /// Empty root view for the hidden keepalive window. The view is never
@@ -619,7 +635,7 @@ fn toggle_window(
         AppState::default()
     });
 
-    let anchor = placement::Anchor::from_config(&config.display.anchor);
+    let anchor = placement::Anchor::from_config(&config.window.anchor);
     // `display_id` rides along to `AuraView` so the auto-fit callback caps the
     // modal's height against the screen it actually opened on. Reading
     // `primary_display()` there instead would measure the wrong taskbar the
@@ -629,7 +645,7 @@ fn toggle_window(
     // frame after it appears. `MODAL_H` on the first open of the process.
     let open_h = runtime::last_modal_height().unwrap_or(placement::MODAL_H);
     let (bounds, display_id) = placement::modal_bounds(cx, tray_anchor, anchor, open_h);
-    // `display.show_in_app_switcher` controls whether the modal appears in
+    // `window.show_in_app_switcher` controls whether the modal appears in
     // the OS's "where are my windows" surfaces — Cmd+Tab + Dock on macOS,
     // Alt+Tab + taskbar on Windows, panel + window switcher on Linux.
     //
@@ -656,17 +672,17 @@ fn toggle_window(
     #[cfg(target_os = "macos")]
     let kind = WindowKind::Normal;
     #[cfg(not(target_os = "macos"))]
-    let kind = if config.display.show_in_app_switcher || config.display.window_chrome {
+    let kind = if config.window.show_in_app_switcher || config.window.chrome {
         WindowKind::Normal
     } else {
         WindowKind::PopUp
     };
-    // `display.window_chrome` controls only the native title bar:
+    // `window.chrome` controls only the native title bar:
     //   false (default): chromeless tray-popup, fixed width.
     //   true: native OS chrome (title bar + min/max/close). window_decorations:
     //     Server asks Wayland compositors to draw SSD.
     // Whether the modal auto-fits its content height is a separate axis,
-    // governed by `display.auto_resize` in app.rs (see on_children_prepainted) —
+    // governed by `window.auto_resize` in app.rs (see on_children_prepainted) —
     // independent of chrome, so the auto-fit works in both modes.
     //
     // window_decorations must be `Some(..)` in both branches, not `None` for
@@ -683,7 +699,7 @@ fn toggle_window(
     // "hide decorations" hint/request instead. (macOS and Windows don't
     // override `request_decorations` at all — this field is a no-op there;
     // chrome is controlled by `titlebar`/`kind` alone on those platforms.)
-    let (titlebar, is_resizable, window_decorations) = if config.display.window_chrome {
+    let (titlebar, is_resizable, window_decorations) = if config.window.chrome {
         (
             Some(TitlebarOptions::default()),
             true,
@@ -727,7 +743,7 @@ fn toggle_window(
     // it to chrome would leave a chromeless + fixed-size window (auto_resize =
     // false) cloaked forever, since no uncloak step ever runs.
     #[cfg(target_os = "windows")]
-    let cloak = config.display.auto_resize();
+    let cloak = config.window.auto_resize();
 
     match cx.open_window(opts, |_window, cx| {
         cx.new(|cx| AuraView::new(config, config_path, state, display_id, tray_anchor, cx))

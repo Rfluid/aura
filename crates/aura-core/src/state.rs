@@ -16,7 +16,7 @@ pub struct AppState {
     /// Purely a placement hint. The modal opens at this height so the auto-fit
     /// pass has nothing to correct, which is what stops the window appearing
     /// at one size and jumping to another a frame later. It matters most for
-    /// `display.anchor = "none"`, which never repositions: opened at the
+    /// `window.anchor = "none"`, which never repositions: opened at the
     /// fallback height the window would keep a top edge chosen for a much
     /// taller window and float well clear of the panel for the whole session.
     ///

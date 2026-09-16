@@ -9,7 +9,7 @@
 //! across the screen on every click (issue #27) — keeping the math here,
 //! sourced only from the work area, removes any opportunity for that drift.
 //!
-//! The [`Anchor`] (from `display.anchor` in the config) selects how the modal
+//! The [`Anchor`] (from `window.anchor` in the config) selects how the modal
 //! behaves as it auto-fits its content height. Two callers share the module:
 //!
 //! 1. [`modal_bounds`] — `main.rs::toggle_window` uses it for the initial
@@ -65,13 +65,13 @@ pub const MIN_FIT_H: f32 = 200.0;
 const MENU_BAR_H: f32 = 25.0;
 
 /// How the modal anchors as it auto-fits its content height. Parsed from the
-/// `display.anchor` config string (see [`Anchor::from_config`]).
+/// `window.anchor` config string (see [`Anchor::from_config`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
     /// Open at the platform's natural tray corner and grow downward from
     /// there (GPUI's default resize behaviour); never reposition after a
     /// resize. The only thing a native Wayland surface can deliver, since the
-    /// compositor owns placement there — see `display.linux_backend`.
+    /// compositor owns placement there — see `window.linux_backend`.
     None,
     /// Pin the bottom edge above a bottom taskbar so the modal grows *upward*.
     /// GPUI's `resize()` keeps the top fixed and grows downward, so this is
@@ -97,7 +97,7 @@ impl Anchor {
         }
     }
 
-    /// Parse the `display.anchor` config string. Unrecognised values
+    /// Parse the `window.anchor` config string. Unrecognised values
     /// (including the legacy `"auto"`) fall back to the per-OS default so old
     /// configs keep working.
     pub fn from_config(s: &str) -> Self {

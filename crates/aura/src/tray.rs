@@ -128,6 +128,10 @@ pub enum TrayEvent {
     /// host sent it — `None` when the trigger was a menu item, which doesn't
     /// surface a position.
     Show { anchor: Option<TrayAnchor> },
+    /// "Open config file" picked from the right-click context menu.
+    OpenConfig,
+    /// "Configuration guide" picked from the right-click context menu.
+    OpenConfigTutorial,
     /// "Quit Aura" picked from the right-click context menu — the user
     /// wants the process to actually exit (tray icon goes away,
     /// systemd's `Restart=on-failure` respects the clean exit).
@@ -135,7 +139,7 @@ pub enum TrayEvent {
 }
 
 /// Which parts of the indicator are switched on, mirroring the
-/// `display.tray_*` config keys.
+/// `tray.*` config keys.
 ///
 /// Carried on [`TrayStatus`] rather than read from config down here so the
 /// rendering path stays a pure function of the status it is handed — the same
@@ -153,7 +157,7 @@ pub struct TrayVisuals {
 impl Default for TrayVisuals {
     /// Progress and color on, pulse off. Drawing our own icon differently is
     /// ours to decide; making the desktop shout is not — see
-    /// `DisplayConfig::tray_pulse`.
+    /// `TrayConfig::pulse`.
     fn default() -> Self {
         Self {
             progress: true,
@@ -209,7 +213,7 @@ impl Default for TrayStatus {
 impl TrayStatus {
     /// Whether to ask the desktop to emphasise the icon. Drives
     /// `NeedsAttention` + `AttentionIconPixmap` on StatusNotifierItem hosts.
-    /// Always false unless the user opted into `display.tray_pulse`.
+    /// Always false unless the user opted into `tray.pulse`.
     pub fn attention(&self) -> bool {
         self.visuals.pulse
             && self
@@ -598,6 +602,22 @@ mod linux {
                     ..Default::default()
                 }
                 .into(),
+                StandardItem {
+                    label: "Open config file".into(),
+                    activate: Box::new(|tray: &mut AuraTray| {
+                        let _ = tray.tx.send(TrayEvent::OpenConfig);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+                StandardItem {
+                    label: "Configuration guide".into(),
+                    activate: Box::new(|tray: &mut AuraTray| {
+                        let _ = tray.tx.send(TrayEvent::OpenConfigTutorial);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
                 ksni::MenuItem::Separator,
                 StandardItem {
                     label: "Quit Aura".into(),
@@ -712,6 +732,8 @@ mod non_linux {
     };
 
     pub(super) const MENU_ID_SHOW: &str = "aura.show";
+    pub(super) const MENU_ID_OPEN_CONFIG: &str = "aura.open-config";
+    pub(super) const MENU_ID_CONFIG_TUTORIAL: &str = "aura.config-tutorial";
     pub(super) const MENU_ID_QUIT: &str = "aura.quit";
 
     /// AppKit draws the status item at 18 pt. Rasterising at the largest size
@@ -804,6 +826,18 @@ mod non_linux {
 
         let menu = Menu::new();
         let show = MenuItem::with_id(MenuId::new(MENU_ID_SHOW), "Show Aura", true, None);
+        let open_config = MenuItem::with_id(
+            MenuId::new(MENU_ID_OPEN_CONFIG),
+            "Open config file",
+            true,
+            None,
+        );
+        let config_tutorial = MenuItem::with_id(
+            MenuId::new(MENU_ID_CONFIG_TUTORIAL),
+            "Configuration guide",
+            true,
+            None,
+        );
         // Cmd+Q / Ctrl+Q is what users reach for to close a menu-bar app, and
         // an accelerator is the only way to offer it here: Aura has no
         // application menu bar to hang a standard Quit item off.
@@ -811,6 +845,10 @@ mod non_linux {
         // Note: quitting removes the tray icon; the LaunchAgent will restart
         // aura automatically in ~5 seconds (KeepAlive + ThrottleInterval).
         menu.append(&show).context("menu append Show")?;
+        menu.append(&open_config)
+            .context("menu append Open config file")?;
+        menu.append(&config_tutorial)
+            .context("menu append Configuration guide")?;
         menu.append(&PredefinedMenuItem::separator())
             .context("menu separator")?;
         menu.append(&quit).context("menu append Quit")?;
@@ -859,6 +897,8 @@ mod non_linux {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
                 MENU_ID_SHOW => return Some(TrayEvent::Show { anchor: None }),
+                MENU_ID_OPEN_CONFIG => return Some(TrayEvent::OpenConfig),
+                MENU_ID_CONFIG_TUTORIAL => return Some(TrayEvent::OpenConfigTutorial),
                 MENU_ID_QUIT => return Some(TrayEvent::Quit),
                 _ => {}
             }

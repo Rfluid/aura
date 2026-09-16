@@ -47,7 +47,7 @@ _Goal: working widget for Claude Code usage with RTK Gains plugin_
 - Per-project usage breakdown (if agents expose project-scoped data)
 - Historical usage charts (daily/weekly trend in the modal)
 - **In-modal config editor page** — a settings page inside the modal that
-  exposes every `[display]` / agent / plugin field as a real form, so
+  exposes every scalar / agent / plugin config field as a real form, so
   users don't have to open `~/.config/aura/config.toml` to change
   anything. Replaces the ad-hoc "Open config file" / per-field toggle
   approach that grew during 0.1. Should reuse the `runtime` bus so

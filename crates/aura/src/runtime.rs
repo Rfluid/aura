@@ -16,12 +16,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use aura_core::config::AppConfig;
 
-/// Mirrors `AppConfig.display.dismiss_on_focus_loss`. The poll loop
+/// Mirrors `AppConfig.window.dismiss_on_focus_loss`. The poll loop
 /// reads it every 150 ms; the modal's refresh task updates it whenever
 /// the user clicks the refresh icon.
 static DISMISS_ON_FOCUS_LOSS: AtomicBool = AtomicBool::new(true);
 
-/// Mirrors `AppConfig.display.show_in_app_switcher`. Used by main.rs
+/// Mirrors `AppConfig.window.show_in_app_switcher`. Used by main.rs
 /// when opening the modal (picks `WindowKind`) and as the source of
 /// truth for the macOS process-wide NSApp activation policy applied at
 /// startup and on every refresh.
@@ -69,7 +69,7 @@ pub fn last_modal_height() -> Option<f32> {
 ///
 /// Without this the first open falls back to `placement::MODAL_H`, and the
 /// window is positioned for a height its content will not have. With
-/// `display.anchor = "bottom"` the auto-fit corrects that a frame later; with
+/// `window.anchor = "bottom"` the auto-fit corrects that a frame later; with
 /// `"none"`, which never repositions, it does not correct at all — the modal
 /// keeps a top edge chosen for a 640px window and floats clear of the panel
 /// for the rest of the session.
@@ -100,7 +100,7 @@ pub fn set_last_modal_height(height: f32) {
     }
 }
 
-/// Returns the latest snapshot of `display.dismiss_on_focus_loss`.
+/// Returns the latest snapshot of `window.dismiss_on_focus_loss`.
 pub fn dismiss_on_focus_loss() -> bool {
     DISMISS_ON_FOCUS_LOSS.load(Ordering::Relaxed)
 }
@@ -125,7 +125,7 @@ pub fn set_plugin_action_inflight(inflight: bool) {
     PLUGIN_ACTION_INFLIGHT.store(inflight, Ordering::Relaxed);
 }
 
-/// Returns the latest snapshot of `display.show_in_app_switcher`.
+/// Returns the latest snapshot of `window.show_in_app_switcher`.
 pub fn show_in_app_switcher() -> bool {
     SHOW_IN_APP_SWITCHER.load(Ordering::Relaxed)
 }
@@ -136,7 +136,7 @@ pub fn show_in_app_switcher() -> bool {
 /// `AppConfig` lands — at startup, on each tray click (before opening
 /// the modal), and at the end of every refresh.
 pub fn set_from_config(config: &AppConfig) {
-    DISMISS_ON_FOCUS_LOSS.store(config.display.dismiss_on_focus_loss, Ordering::Relaxed);
-    SHOW_IN_APP_SWITCHER.store(config.display.show_in_app_switcher, Ordering::Relaxed);
-    crate::platform::apply_app_switcher_policy(config.display.show_in_app_switcher);
+    DISMISS_ON_FOCUS_LOSS.store(config.window.dismiss_on_focus_loss, Ordering::Relaxed);
+    SHOW_IN_APP_SWITCHER.store(config.window.show_in_app_switcher, Ordering::Relaxed);
+    crate::platform::apply_app_switcher_policy(config.window.show_in_app_switcher);
 }
