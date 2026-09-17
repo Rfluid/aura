@@ -187,6 +187,23 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// A `PATH` value spelled the way the host does it — `:` on Unix, `;` on
+    /// Windows. Building one by hand with `:` made these tests silently
+    /// degenerate on Windows: the whole string parsed as a single entry, which
+    /// then failed the `is_dir` filter and vanished.
+    fn path_env(dirs: &[&Path]) -> OsString {
+        std::env::join_paths(dirs).unwrap()
+    }
+
+    /// A real directory to stand in for an inherited `PATH` entry. It has to
+    /// exist, because `search_dirs_from` drops entries that don't — so
+    /// hardcoding `/usr/bin` tested nothing on Windows.
+    fn existing_dir(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
     #[cfg(unix)]
     fn write_exe(dir: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -203,13 +220,15 @@ mod tests {
         // what the user installed there.
         let home = tempdir().unwrap();
         fs::create_dir_all(home.path().join(".local/bin")).unwrap();
+        let inherited = existing_dir(home.path(), "inherited-bin");
 
         let dirs = search_dirs_from(
             &[],
             Some(home.path().to_path_buf()),
-            Some(OsString::from("/usr/bin:/bin")),
+            Some(path_env(&[&inherited])),
         );
         assert_eq!(dirs.first(), Some(&home.path().join(".local/bin")));
+        assert!(dirs.contains(&inherited));
     }
 
     #[test]
@@ -234,7 +253,7 @@ mod tests {
         let dirs = search_dirs_from(
             &[],
             Some(home.path().to_path_buf()),
-            Some(OsString::from(local.to_str().unwrap())),
+            Some(path_env(&[&local])),
         );
         assert_eq!(dirs.iter().filter(|d| **d == local).count(), 1);
     }
@@ -244,13 +263,18 @@ mod tests {
         let home = tempdir().unwrap();
         fs::create_dir_all(home.path().join(".local/bin")).unwrap();
 
+        let inherited = existing_dir(home.path(), "inherited-bin");
+
         let merged = augmented_path_from(
             Some(home.path().to_path_buf()),
-            Some(OsString::from("/usr/bin:/bin")),
+            Some(path_env(&[&inherited])),
         );
         let entries: Vec<PathBuf> = std::env::split_paths(&merged).collect();
-        assert!(entries.contains(&PathBuf::from("/usr/bin")));
-        assert!(entries.contains(&home.path().join(".local/bin")));
+        assert!(entries.contains(&inherited), "{entries:?}");
+        assert!(
+            entries.contains(&home.path().join(".local/bin")),
+            "{entries:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -309,10 +333,11 @@ mod tests {
         fs::create_dir_all(&extra).unwrap();
         fs::create_dir_all(home.path().join(".local/bin")).unwrap();
 
+        let inherited = existing_dir(home.path(), "inherited-bin");
         let dirs = search_dirs_from(
             std::slice::from_ref(&extra),
             Some(home.path().to_path_buf()),
-            Some(OsString::from("/usr/bin")),
+            Some(path_env(&[&inherited])),
         );
         assert_eq!(dirs.first(), Some(&extra));
     }
@@ -323,10 +348,11 @@ mod tests {
         // must not end up naming a directory that cannot exist there.
         let home = tempdir().unwrap();
         let missing = home.path().join("not-installed");
+        let inherited = existing_dir(home.path(), "inherited-bin");
         let dirs = search_dirs_from(
             std::slice::from_ref(&missing),
             Some(home.path().to_path_buf()),
-            Some(OsString::from("/usr/bin")),
+            Some(path_env(&[&inherited])),
         );
         assert!(!dirs.contains(&missing));
     }
