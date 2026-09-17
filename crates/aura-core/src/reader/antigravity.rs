@@ -723,10 +723,22 @@ mod tests {
         assert_eq!(snap.total_messages, 6);
     }
 
+    /// A directory name carrying the characters SQLite's URI parser treats as
+    /// syntax, narrowed to what the host allows in a filename. Windows rejects
+    /// `?` outright (`< > : " / \\ | ? *`), so it gets `#` and `%` — which is
+    /// the set that can actually reach the parser there anyway.
+    fn tricky_dir_name() -> &'static str {
+        if cfg!(windows) {
+            "we#rd%dir"
+        } else {
+            "we?rd#dir%x"
+        }
+    }
+
     #[test]
-    fn a_path_with_a_question_mark_still_opens() {
+    fn a_path_full_of_uri_syntax_still_opens() {
         let dir = tempdir().unwrap();
-        let odd = dir.path().join("we?rd#dir");
+        let odd = dir.path().join(tricky_dir_name());
         std::fs::create_dir_all(&odd).unwrap();
         seed(
             &odd,
