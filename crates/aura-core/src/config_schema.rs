@@ -303,14 +303,22 @@ pub fn agent_fields() -> &'static [SectionField] {
         SectionField {
             key: "kind",
             type_label: "string",
-            allowed: &["claude-code", "codex", "gemini"],
+            allowed: &["claude-code", "codex", "gemini", "antigravity"],
             summary: "Which agent this profile reads.",
         },
         SectionField {
             key: "config_path",
             type_label: "string?",
             allowed: &[],
-            summary: "Agent config dir; defaults to ~/.claude, ~/.codex, ~/.gemini per kind.",
+            summary: "Agent config dir; defaults to ~/.claude, ~/.codex, ~/.gemini, \
+                ~/.gemini/antigravity-cli per kind.",
+        },
+        SectionField {
+            key: "command",
+            type_label: "string?",
+            allowed: &[],
+            summary: "Executable for agents Aura reads by running them (antigravity). \
+                Unset = the agent's usual binary name on $PATH.",
         },
         SectionField {
             key: "color",
@@ -915,6 +923,7 @@ mod tests {
                 name: "Work Claude".to_string(),
                 kind: AgentKind::ClaudeCode,
                 config_path: Some("~/.claude-work".to_string()),
+                command: None,
                 color: Some("#abcdef".to_string()),
                 tray_progress_source: None,
                 tray_color_source: None,

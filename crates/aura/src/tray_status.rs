@@ -19,7 +19,10 @@ use std::time::Duration;
 
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, TrayConfig},
-    quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow},
+    quota::{
+        AntigravityQuota, CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource,
+        QuotaWindow,
+    },
     state::AppState,
 };
 
@@ -226,6 +229,9 @@ fn poll_once(config_path: &Path) -> Option<TrayStatus> {
         AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
         AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
         AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
+        AgentKind::Antigravity => {
+            AntigravityQuota::new(agent_path, agent.command.as_deref()).snapshot()
+        }
     };
 
     Some(summarize_sticky(agent, Some(&quota), &config.tray))
@@ -305,6 +311,7 @@ mod tests {
             name: name.to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -644,6 +651,34 @@ mod tests {
         };
         let status = sticky(&agent, Some(&local), &all_on(), &mut last);
         assert_eq!(status.gauge_percent, Some(12));
+    }
+
+    #[test]
+    fn an_antigravity_spawn_failure_holds_the_last_good_reading() {
+        // Antigravity's quota comes from spawning `agy`, so it fails in ways
+        // the HTTP-backed agents never do — the binary missing, the user
+        // logged out, the process hanging. Every one of them has to reach the
+        // tray as a held reading rather than a blanked icon, which is what
+        // `AntigravityQuota` sets `api_failed` for. Driven through the real
+        // source (against a command that cannot exist) so the two halves stay
+        // wired together, not through a hand-built snapshot.
+        let mut last = None;
+        let mut agent = agent("Antigravity");
+        agent.kind = AgentKind::Antigravity;
+        let good = snapshot(vec![
+            window("Gemini · 5h", Some(64.0)),
+            window("Gemini · week", Some(22.0)),
+        ]);
+        let first = sticky(&agent, Some(&good), &all_on(), &mut last);
+        assert_eq!(first.gauge_percent, Some(64));
+
+        let failed = AntigravityQuota::new(
+            std::env::temp_dir(),
+            Some("aura-tray-test-no-such-agy-77c1"),
+        )
+        .snapshot();
+        assert_eq!(failed.source, QuotaSource::Unavailable);
+        assert_eq!(sticky(&agent, Some(&failed), &all_on(), &mut last), first);
     }
 
     #[test]

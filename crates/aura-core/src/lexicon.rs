@@ -34,6 +34,10 @@ pub struct Lexicon {
     pub no_quota_data: &'static str,
     pub no_plugins_configured: &'static str,
     pub no_plugin_selected: &'static str,
+    /// Stat-card value for a token figure the active agent never publishes,
+    /// in place of a `0` that would read as "you used nothing". Set for the
+    /// agents whose readers flag `UsageSnapshot::tokens_unreported`.
+    pub tokens_not_reported: &'static str,
 
     // ── Quota row chrome ────────────────────────────────────────────────────
     pub subscription_fmt: fn(sub: &str) -> String,
@@ -111,6 +115,7 @@ pub const POLITE: Lexicon = Lexicon {
     no_quota_data: "No quota data available.",
     no_plugins_configured: "No plugins configured",
     no_plugin_selected: "No plugin selected",
+    tokens_not_reported: "Not reported",
 
     subscription_fmt: polite_subscription,
     resets_fmt: polite_resets,
@@ -147,6 +152,7 @@ pub const GOBLIN: Lexicon = Lexicon {
     no_quota_data: "Nothing. Empty. Dry.",
     no_plugins_configured: "No hangers-on",
     no_plugin_selected: "Pick one, coward",
+    tokens_not_reported: "Won't say",
 
     subscription_fmt: goblin_subscription,
     resets_fmt: goblin_resets,
@@ -222,6 +228,11 @@ mod tests {
                 "no_plugin_selected",
                 POLITE.no_plugin_selected,
                 GOBLIN.no_plugin_selected,
+            ),
+            (
+                "tokens_not_reported",
+                POLITE.tokens_not_reported,
+                GOBLIN.tokens_not_reported,
             ),
             (
                 "menu_open_config",

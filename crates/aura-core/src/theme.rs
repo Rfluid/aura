@@ -242,6 +242,10 @@ pub fn agent_kind_default_color(kind: AgentKind) -> u32 {
         AgentKind::ClaudeCode => 0xd97757,
         AgentKind::Codex => 0xffffff,
         AgentKind::Gemini => 0x4285f4,
+        // The Antigravity mark renders as a monochrome arc, so there is no
+        // brand color to borrow. Violet keeps it distinct from the Google
+        // blue next to it in the profile list.
+        AgentKind::Antigravity => 0x7c5cff,
     }
 }
 
@@ -610,6 +614,7 @@ accent = "#112233"
             name: "Claude Code".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             // config.toml override should LOSE to theme.toml override.
             color: Some("#222222".to_string()),
             tray_progress_source: None,
@@ -626,6 +631,7 @@ accent = "#112233"
             name: "Claude Code".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             color: Some("#333333".to_string()),
             tray_progress_source: None,
             tray_color_source: None,
@@ -637,6 +643,7 @@ accent = "#112233"
             name: "Claude Code".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -653,6 +660,7 @@ accent = "#112233"
             name: "Codex".to_string(),
             kind: AgentKind::Codex,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,

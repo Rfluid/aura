@@ -15,6 +15,7 @@ icon_assets! {
     (CLAUDE,           "claude.svg"),
     (OPENAI,           "openai.svg"),
     (GEMINI,           "gemini.svg"),
+    (ANTIGRAVITY,      "antigravity.svg"),
     (DEFAULT,          "default.svg"),
     (CLOSE,            "close.svg"),
     (ROTATE_CW,        "rotate_cw.svg"),

@@ -114,8 +114,8 @@ aura agents list                    # --format text|json
 ```
 
 Shows each configured profile, its kind (`claude-code` / `codex` /
-`gemini`), the resolved `config_path`, and whether that directory exists
-on disk.
+`gemini` / `antigravity`), the resolved `config_path`, and whether that
+directory exists on disk.
 
 ## `aura plugin`
 
@@ -138,8 +138,12 @@ build.
 aura usage [--profile <name>] [--period all|7d|30d] [--format text|json]
 ```
 
-Reads the active profile's local data (Claude Code JSONL,
-Codex/Gemini sessions) and prints a snapshot.
+Reads the active profile's local data (Claude Code JSONL, Codex/Gemini
+sessions, Antigravity's `conversation_summaries.db`) and prints a snapshot.
+
+Antigravity publishes no token counts, so its snapshot reports
+`Tokens: not reported by this agent` instead of a zero; sessions, messages,
+active days, streaks and peak hour are all present.
 
 ## `aura quota`
 
@@ -150,7 +154,13 @@ aura quota [--profile <name>] [--format text|json]
 For `claude-code` profiles this hits `/api/oauth/usage` using the
 credentials in `~/.claude/.credentials.json` (or Keychain / Credential
 Manager). For `codex` / `gemini` it computes windows locally from session
-data. The `source` field in the output (`"api"`, `"fallback"`, or
+data. For `antigravity` it runs `agy -p "/usage" --output-format json`,
+which returns the same backend numbers the Antigravity IDE shows — four
+windows (`Gemini · 5h`, `Gemini · week`, `Claude/GPT · 5h`,
+`Claude/GPT · week`) with percentages but no token counts, because
+Antigravity meters cost-weighted fractions rather than tokens.
+
+The `source` field in the output (`"api"`, `"fallback"`, or
 `"unavailable"`) tells you which path produced the numbers.
 
 ## `aura doctor`

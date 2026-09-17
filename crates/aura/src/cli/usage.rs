@@ -70,14 +70,21 @@ impl UsageCli {
 
 fn render_text(profile: &str, s: &UsageSnapshot) {
     println!("Profile: {profile}");
-    println!(
-        "Tokens:  {} total  ({} in, {} out)",
-        s.total_tokens, s.total_input_tokens, s.total_output_tokens
-    );
-    println!(
-        "Cache:   {} read, {} write",
-        s.total_cache_read_tokens, s.total_cache_write_tokens
-    );
+    if s.tokens_unreported {
+        // Printing "0 total" here would read as "you used nothing" rather than
+        // "this agent doesn't publish token counts" — see
+        // `UsageSnapshot::tokens_unreported`.
+        println!("Tokens:  not reported by this agent");
+    } else {
+        println!(
+            "Tokens:  {} total  ({} in, {} out)",
+            s.total_tokens, s.total_input_tokens, s.total_output_tokens
+        );
+        println!(
+            "Cache:   {} read, {} write",
+            s.total_cache_read_tokens, s.total_cache_write_tokens
+        );
+    }
     println!(
         "Sessions: {} ({} messages)",
         s.total_sessions, s.total_messages
