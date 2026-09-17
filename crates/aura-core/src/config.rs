@@ -14,6 +14,29 @@ pub enum AgentKind {
     ClaudeCode,
     Codex,
     Gemini,
+    /// Google's Antigravity CLI (`agy`). Quota comes from the binary itself
+    /// rather than a file or an endpoint — see `quota::AntigravityQuota`.
+    Antigravity,
+}
+
+impl AgentKind {
+    /// Whether this agent publishes token counts.
+    ///
+    /// Antigravity does not: its trajectories are schema-less protobuf with
+    /// no plaintext model names, so there are no per-model tokens to attribute
+    /// and no totals to sum. Callers use this to tell "absent" from "zero" —
+    /// the modal drops the Models tab entirely rather than render it empty,
+    /// and the token stat cards read "not reported" instead of `0`.
+    ///
+    /// Paired with [`crate::reader::UsageSnapshot::tokens_unreported`], which
+    /// carries the same fact on a loaded snapshot. This one is available
+    /// synchronously, before any read, which is what the tab row needs.
+    pub fn reports_tokens(self) -> bool {
+        match self {
+            Self::ClaudeCode | Self::Codex | Self::Gemini => true,
+            Self::Antigravity => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +46,14 @@ pub struct AgentConfig {
     /// Path to the agent's config directory. Falls back to the agent's default
     /// when absent (e.g. `~/.claude` for `claude-code`).
     pub config_path: Option<String>,
+    /// The agent's executable, for an install that isn't on `PATH`. Only
+    /// meaningful for agents Aura reaches by running them: today that is
+    /// `antigravity`, whose quota comes from `agy -p "/usage"` because the
+    /// CLI keeps its credentials in the OS keyring and its quota RPC is
+    /// gated on the CLI's own client identity. Unset means "the agent's
+    /// usual binary name, resolved on `PATH`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// Optional override for the agent's accent color. Hex string with a
     /// leading `#` (3- or 6-digit). When absent, the per-kind default applies.
     #[serde(default)]
@@ -63,6 +94,10 @@ impl AgentConfig {
                 AgentKind::ClaudeCode => home_dir().join(".claude"),
                 AgentKind::Codex => home_dir().join(".codex"),
                 AgentKind::Gemini => home_dir().join(".gemini"),
+                // A sibling of the Gemini CLI's own subtree, not a parent of
+                // it: `~/.gemini/tmp/<project>/chats/` belongs to `gemini`,
+                // so the two agents share `~/.gemini` without colliding.
+                AgentKind::Antigravity => home_dir().join(".gemini").join("antigravity-cli"),
             },
         }
     }
@@ -643,6 +678,7 @@ pub fn known_agent_profiles() -> Vec<AgentConfig> {
             name: "Claude Code".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -651,6 +687,7 @@ pub fn known_agent_profiles() -> Vec<AgentConfig> {
             name: "Claude Code (Enterprise)".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-enterprise".to_string()),
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -659,6 +696,7 @@ pub fn known_agent_profiles() -> Vec<AgentConfig> {
             name: "Codex".to_string(),
             kind: AgentKind::Codex,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -667,6 +705,16 @@ pub fn known_agent_profiles() -> Vec<AgentConfig> {
             name: "Gemini".to_string(),
             kind: AgentKind::Gemini,
             config_path: None,
+            command: None,
+            color: None,
+            tray_progress_source: None,
+            tray_color_source: None,
+        },
+        AgentConfig {
+            name: "Antigravity".to_string(),
+            kind: AgentKind::Antigravity,
+            config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -838,11 +886,12 @@ dismiss_all = true
 
         // File should now exist.
         assert!(path.exists());
-        // Should have the four default profiles.
-        assert_eq!(cfg.agents.len(), 4);
+        // Should have the five default profiles.
+        assert_eq!(cfg.agents.len(), 5);
         assert_eq!(cfg.agents[0].kind, AgentKind::ClaudeCode);
         assert_eq!(cfg.agents[2].kind, AgentKind::Codex);
         assert_eq!(cfg.agents[3].kind, AgentKind::Gemini);
+        assert_eq!(cfg.agents[4].kind, AgentKind::Antigravity);
     }
 
     #[test]
@@ -852,6 +901,7 @@ dismiss_all = true
                 name: "User-renamed Claude".to_string(),
                 kind: AgentKind::ClaudeCode,
                 config_path: None, // resolves to ~/.claude
+                command: None,
                 color: Some("#abcdef".to_string()),
                 tray_progress_source: None,
                 tray_color_source: None,
@@ -868,6 +918,7 @@ dismiss_all = true
                 name: "Claude Code".to_string(),
                 kind: AgentKind::ClaudeCode,
                 config_path: None,
+                command: None,
                 color: None,
                 tray_progress_source: None,
                 tray_color_source: None,
@@ -876,6 +927,7 @@ dismiss_all = true
                 name: "Codex".to_string(),
                 kind: AgentKind::Codex,
                 config_path: None,
+                command: None,
                 color: None,
                 tray_progress_source: None,
                 tray_color_source: None,
@@ -898,6 +950,7 @@ dismiss_all = true
                 name: "Claude Code".to_string(),
                 kind: AgentKind::ClaudeCode,
                 config_path: None,
+                command: None,
                 color: None,
                 tray_progress_source: None,
                 tray_color_source: None,
@@ -913,6 +966,7 @@ dismiss_all = true
             name: "Claude Code (Enterprise)".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-enterprise".to_string()),
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -1150,6 +1204,7 @@ plugin_order = ["RTK Gains"]
             name: "test".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: Some("~/.claude-test".to_string()),
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,
@@ -1165,6 +1220,7 @@ plugin_order = ["RTK Gains"]
             name: "test".to_string(),
             kind: AgentKind::ClaudeCode,
             config_path: None,
+            command: None,
             color: None,
             tray_progress_source: None,
             tray_color_source: None,

@@ -29,7 +29,13 @@ anyhow                = "1"
 chrono                = { version = "0.4", default-features = false, features = ["std", "clock", "serde", "unstable-locales"] }
 clap                  = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete         = "4"
+# Antigravity keeps its conversation summaries in a SQLite DB
+# (`~/.gemini/antigravity-cli/conversation_summaries.db`) rather than JSONL.
+# `libsqlite3-sys/bundled` compiles the amalgamation in-tree so no host
+# libsqlite3 is required on any of the six release targets.
+diesel                = { version = "2.3", default-features = false, features = ["sqlite"] }
 dirs                  = "7"
+libsqlite3-sys        = { version = "0.38", features = ["bundled"] }
 notify-debouncer-mini = "0.7"
 semver                = { version = "1", features = ["serde"] }
 serde                 = { version = "1", features = ["derive"] }

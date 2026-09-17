@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use aura_core::{
     config::{AgentKind, AppConfig},
-    quota::{CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot},
+    quota::{AntigravityQuota, CodexQuota, GeminiQuota, QuotaApi, QuotaSnapshot},
     state::AppState,
 };
 use clap::Args;
@@ -31,6 +31,10 @@ impl QuotaCli {
             AgentKind::ClaudeCode => QuotaApi::new(agent.resolved_config_path()).snapshot(),
             AgentKind::Codex => CodexQuota::new(agent.resolved_config_path()).snapshot(),
             AgentKind::Gemini => GeminiQuota::new(agent.resolved_config_path()).snapshot(),
+            AgentKind::Antigravity => {
+                AntigravityQuota::new(agent.resolved_config_path(), agent.command.as_deref())
+                    .snapshot()
+            }
         };
         match self.format {
             OutputFormat::Json => print_json(&snapshot),
@@ -56,7 +60,10 @@ fn render_text(profile: &str, q: &QuotaSnapshot) {
         return;
     }
     println!();
-    println!("{:<14} {:>8} {:>12} RESETS_AT", "WINDOW", "USED%", "TOKENS");
+    // Wide enough for the longest label any backend produces — Antigravity's
+    // "Claude/GPT · week" at 17. A narrower column pushed every following
+    // column out of alignment on that row alone.
+    println!("{:<18} {:>8} {:>12} RESETS_AT", "WINDOW", "USED%", "TOKENS");
     for w in &q.windows {
         let pct = w
             .used_percentage
@@ -70,6 +77,6 @@ fn render_text(profile: &str, q: &QuotaSnapshot) {
             .resets_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_else(|| "—".to_string());
-        println!("{:<14} {:>8} {:>12} {}", w.label, pct, toks, reset);
+        println!("{:<18} {:>8} {:>12} {}", w.label, pct, toks, reset);
     }
 }

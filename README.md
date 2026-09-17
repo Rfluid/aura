@@ -111,7 +111,7 @@ running a CLI command.
 
 ## Features
 
-- **Multi-agent support** — Claude Code, Codex, and Gemini out of the box; custom command agents on the roadmap.
+- **Multi-agent support** — Claude Code, Codex, Gemini, and Antigravity out of the box; custom command agents on the roadmap.
 - **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin. First-party plugins (incl. RTK Gains for [RTK](https://github.com/rtk) token-savings) are installed separately.
 - **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit; Escape closes.
@@ -197,6 +197,11 @@ kind = "codex"
 [[agents]]
 name = "Gemini"
 kind = "gemini"
+
+[[agents]]
+name = "Antigravity"
+kind = "antigravity"
+# command = "agy"      # only when `agy` isn't on $PATH
 
 # Optional tweaks. All keys are optional; defaults shown.
 
@@ -683,6 +688,7 @@ Shipped
 - [x] Claude Code usage integration (`~/.claude` JSONL scan, OAuth via Keychain / Credential Manager)
 - [x] Codex usage integration (`~/.codex` session scan)
 - [x] Gemini usage integration (`~/.gemini` session scan)
+- [x] Antigravity usage integration (`~/.gemini/antigravity-cli` activity; live quota via `agy -p "/usage"`)
 - [x] Multi-profile config + persisted selection across sessions
 - [x] Plugin runner (subprocess + JSON IPC); RTK Gains shipped as opt-in plugin
 - [x] Linux support (systemd user service · ksni StatusNotifierItem · KDE / GNOME / sway compatible)

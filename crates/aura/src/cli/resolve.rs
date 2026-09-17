@@ -40,5 +40,6 @@ pub fn agent_kind_str(kind: AgentKind) -> &'static str {
         AgentKind::ClaudeCode => "claude-code",
         AgentKind::Codex => "codex",
         AgentKind::Gemini => "gemini",
+        AgentKind::Antigravity => "antigravity",
     }
 }

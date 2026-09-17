@@ -5,8 +5,8 @@ use aura_core::{
     lexicon::{self, Lexicon},
     plugin::{PluginContent, PluginControl, PluginPanel, PluginRunner, PluginSection},
     quota::{
-        forecast, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow, GeminiQuota,
-        QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
+        forecast, AntigravityQuota, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
+        GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
     },
     reader::{make_reader, Period, UsageSnapshot},
     state::AppState,
@@ -64,6 +64,10 @@ enum AgentSection {
 }
 
 impl AgentSection {
+    /// Every section, in tab order. What each agent actually shows is
+    /// [`AuraView::visible_agent_sections`].
+    const ALL: [Self; 4] = [Self::Quota, Self::Forecast, Self::Summary, Self::Models];
+
     fn label(self, lex: &Lexicon) -> &'static str {
         match self {
             Self::Quota => lex.tab_quota,
@@ -91,6 +95,31 @@ impl AgentSection {
             Self::Summary | Self::Models => true,
         }
     }
+}
+
+/// Which sections an agent shows.
+///
+/// Models is dropped for an agent that publishes no token counts: both halves
+/// of that tab — the tokens-per-day chart and the per-model bars — are
+/// token-derived, so it would be a permanently empty page. Driven by the
+/// agent's kind rather than a loaded snapshot so the tab row is right on the
+/// first frame, before any read has finished.
+fn visible_sections(reports_tokens: bool) -> Vec<AgentSection> {
+    AgentSection::ALL
+        .into_iter()
+        .filter(|s| reports_tokens || *s != AgentSection::Models)
+        .collect()
+}
+
+/// Resolve the selection against what's actually on offer, falling back to the
+/// first available section — switching from Claude to Antigravity while
+/// sitting on Models, say. Derived at render time rather than clamped into
+/// state, so the selection and what's drawn can never disagree.
+fn effective_section(active: AgentSection, visible: &[AgentSection]) -> AgentSection {
+    if visible.contains(&active) {
+        return active;
+    }
+    visible.first().copied().unwrap_or(AgentSection::Quota)
 }
 
 pub struct AuraView {
@@ -617,6 +646,9 @@ fn do_refresh(
         AgentKind::ClaudeCode => QuotaApi::new(agent_path).snapshot(),
         AgentKind::Codex => CodexQuota::new(agent_path).snapshot(),
         AgentKind::Gemini => GeminiQuota::new(agent_path).snapshot(),
+        AgentKind::Antigravity => {
+            AntigravityQuota::new(agent_path, agent.command.as_deref()).snapshot()
+        }
     });
 
     // Forecast piggybacks on the just-loaded quota snapshot. Same refresh
@@ -796,6 +828,21 @@ impl AuraView {
         cx.notify();
     }
 
+    /// Sections the active agent actually has something to show in.
+    fn visible_agent_sections(&self) -> Vec<AgentSection> {
+        visible_sections(
+            self.current_agent()
+                .map(|a| a.kind.reports_tokens())
+                .unwrap_or(true),
+        )
+    }
+
+    /// The section to render, which is the selected one unless the active
+    /// agent doesn't have it.
+    fn effective_agent_section(&self) -> AgentSection {
+        effective_section(self.active_agent_section, &self.visible_agent_sections())
+    }
+
     fn current_agent(&self) -> Option<&AgentConfig> {
         self.config
             .agents
@@ -822,7 +869,7 @@ impl AuraView {
     /// active period. Drives whether the period-pill row is rendered.
     fn current_section_uses_period(&self) -> bool {
         match self.mode {
-            Mode::Agent => self.active_agent_section.uses_period(),
+            Mode::Agent => self.effective_agent_section().uses_period(),
             Mode::Plugin => self
                 .current_plugin_panel()
                 .and_then(|p| {
@@ -1521,14 +1568,9 @@ impl AuraView {
         let lex = lexicon::pick(self.config.content.goblin_mode);
         match self.mode {
             Mode::Agent => {
-                let sections = [
-                    AgentSection::Quota,
-                    AgentSection::Forecast,
-                    AgentSection::Summary,
-                    AgentSection::Models,
-                ];
-                for s in sections {
-                    let active = self.active_agent_section == s;
+                let effective = self.effective_agent_section();
+                for s in self.visible_agent_sections() {
+                    let active = effective == s;
                     row = row.child(
                         div()
                             .id(SharedString::from(format!("agent-section-{}", s.id())))
@@ -1604,7 +1646,7 @@ impl AuraView {
         } else {
             let accent = self.current_accent();
             match self.mode {
-                Mode::Agent => match self.active_agent_section {
+                Mode::Agent => match self.effective_agent_section() {
                     AgentSection::Quota => render_quota(
                         &self.theme,
                         lex,
@@ -1620,7 +1662,7 @@ impl AuraView {
                         self.spinner_frame,
                     ),
                     AgentSection::Summary => match self.snapshot.as_ref() {
-                        Some(snap) => render_summary(&self.theme, snap),
+                        Some(snap) => render_summary(&self.theme, lex, snap),
                         None => render_loading(&self.theme, lex, self.spinner_frame),
                     },
                     AgentSection::Models => match self.snapshot.as_ref() {
@@ -2316,15 +2358,31 @@ fn render_forecast_window(
 
 // ── Summary (the old "Overview" — stat-card grid) ────────────────────────────
 
-fn render_summary(theme: &Theme, snap: &UsageSnapshot) -> AnyElement {
+fn render_summary(theme: &Theme, lex: &Lexicon, snap: &UsageSnapshot) -> AnyElement {
+    // An agent that publishes no token counts at all reports that, rather than
+    // showing the `0` its empty token fields would otherwise render — the same
+    // distinction the quota rows already draw between "0%" and "no percentage".
+    let unreported = || lex.tokens_not_reported.to_string();
+
     let rows = [
         (
             "Favorite model",
-            snap.favorite_model
-                .clone()
-                .unwrap_or_else(|| "—".to_string()),
+            if snap.tokens_unreported {
+                unreported()
+            } else {
+                snap.favorite_model
+                    .clone()
+                    .unwrap_or_else(|| "—".to_string())
+            },
         ),
-        ("Total tokens", thousands(snap.total_tokens)),
+        (
+            "Total tokens",
+            if snap.tokens_unreported {
+                unreported()
+            } else {
+                thousands(snap.total_tokens)
+            },
+        ),
         ("Sessions", thousands(snap.total_sessions)),
         (
             "Longest session",
@@ -3025,6 +3083,7 @@ fn agent_icon(agent: &AgentConfig, theme: &Theme) -> impl IntoElement {
         AgentKind::ClaudeCode => "icons/claude.svg",
         AgentKind::Codex => "icons/openai.svg",
         AgentKind::Gemini => "icons/gemini.svg",
+        AgentKind::Antigravity => "icons/antigravity.svg",
     };
     svg()
         .path(path)
@@ -3070,6 +3129,79 @@ mod tests {
         UpdateInfo {
             latest: Version::parse(v).unwrap(),
         }
+    }
+
+    #[test]
+    fn models_tab_is_offered_to_agents_that_report_tokens() {
+        assert_eq!(visible_sections(true), AgentSection::ALL.to_vec());
+    }
+
+    #[test]
+    fn models_tab_is_dropped_for_agents_that_do_not() {
+        let visible = visible_sections(false);
+        assert!(!visible.contains(&AgentSection::Models));
+        // Only Models goes; the other three are unaffected and keep their order.
+        assert_eq!(
+            visible,
+            [
+                AgentSection::Quota,
+                AgentSection::Forecast,
+                AgentSection::Summary
+            ]
+        );
+    }
+
+    #[test]
+    fn every_agent_kind_agrees_with_its_section_list() {
+        for kind in [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::Gemini,
+            AgentKind::Antigravity,
+        ] {
+            let visible = visible_sections(kind.reports_tokens());
+            assert_eq!(
+                visible.contains(&AgentSection::Models),
+                kind.reports_tokens(),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_survives_when_the_section_is_still_available() {
+        let visible = visible_sections(true);
+        assert_eq!(
+            effective_section(AgentSection::Models, &visible),
+            AgentSection::Models
+        );
+    }
+
+    #[test]
+    fn selecting_models_then_switching_to_antigravity_falls_back() {
+        // The reason this is derived rather than stored: the user can be
+        // sitting on Models when the active profile changes under them.
+        let visible = visible_sections(false);
+        assert_eq!(
+            effective_section(AgentSection::Models, &visible),
+            AgentSection::Quota
+        );
+        // Every other selection is left alone.
+        for s in [
+            AgentSection::Quota,
+            AgentSection::Forecast,
+            AgentSection::Summary,
+        ] {
+            assert_eq!(effective_section(s, &visible), s);
+        }
+    }
+
+    #[test]
+    fn an_empty_section_list_still_resolves() {
+        assert_eq!(
+            effective_section(AgentSection::Models, &[]),
+            AgentSection::Quota
+        );
     }
 
     #[test]

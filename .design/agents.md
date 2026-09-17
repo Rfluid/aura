@@ -15,6 +15,7 @@ Source: `crates/aura/src/app.rs:25-27` and `app.rs:848-862`.
 | `AgentKind::ClaudeCode` | `#d97757` | Anthropic's published Claude orange.            | `app.rs:854`  |
 | `AgentKind::Codex`      | `#ffffff` | OpenAI's pure-white mark — **needs fallback**.  | `app.rs:855`  |
 | `AgentKind::Gemini`     | `#4285f4` | Google Blue — readable as-is on dark surfaces.  | `app.rs:856`  |
+| `AgentKind::Antigravity` | `#7c5cff` | The mark is a monochrome arc with no brand color to borrow; violet keeps it distinct from the Google blue beside it. | `theme.rs:248` |
 
 ## The luminance fallback rule
 
@@ -56,6 +57,7 @@ fn agent_accent(kind: AgentKind) -> u32 {
         AgentKind::ClaudeCode => COLOR_CLAUDE, // 0xd97757
         AgentKind::Codex      => COLOR_OPENAI, // 0xffffff
         AgentKind::Gemini     => COLOR_GEMINI, // 0x4285f4
+        AgentKind::Antigravity => COLOR_ANTIGRAVITY, // 0x7c5cff
     };
     if relative_luminance(brand) > 0.85 {
         0xb8b8c0

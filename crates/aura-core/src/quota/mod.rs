@@ -5,6 +5,7 @@
 //! then call `https://api.anthropic.com/api/oauth/usage`. If any of that
 //! fails, callers can fall back to local counts derived from JSONL data.
 
+mod antigravity;
 mod api;
 mod codex;
 mod codex_oauth;
@@ -12,6 +13,7 @@ pub mod forecast;
 mod gemini;
 mod oauth;
 
+pub use antigravity::AntigravityQuota;
 pub use api::{QuotaApi, QuotaSource};
 pub use codex::CodexQuota;
 pub use forecast::{forecast, ForecastSnapshot, ForecastStatus, ForecastWindow};

@@ -229,6 +229,7 @@ pub(crate) fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> Us
         daily_activity: daily_activity_vec,
         first_session_date: first_date,
         last_session_date: last_date,
+        tokens_unreported: false,
     }
 }
 

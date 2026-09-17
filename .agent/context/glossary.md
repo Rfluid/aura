@@ -15,7 +15,7 @@ Domain terms specific to Aura. Add as you encounter unfamiliar terminology.
 
 ## Terms
 
-**Agent** — an AI coding assistant whose usage Aura monitors. Currently: Claude Code, Codex. Future: custom command agents.
+**Agent** — an AI coding assistant whose usage Aura monitors. Currently: Claude Code, Codex, Gemini, Antigravity. Future: custom command agents.
 
 **Agent profile** — a named configuration entry pointing at a specific agent kind and config path. One user can have multiple profiles for the same agent kind (e.g., personal vs. enterprise).
 

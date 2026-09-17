@@ -240,8 +240,9 @@ Controls the "Update available" header button.
 | Field | Type | Allowed | Summary |
 |---|---|---|---|
 | `name` | string | — | Display name for this agent profile. |
-| `kind` | string | `claude-code` \| `codex` \| `gemini` | Which agent this profile reads. |
-| `config_path` | string? | — | Agent config dir; defaults to `~/.claude`, `~/.codex`, `~/.gemini` per kind. |
+| `kind` | string | `claude-code` \| `codex` \| `gemini` \| `antigravity` | Which agent this profile reads. |
+| `config_path` | string? | — | Agent config dir; defaults to `~/.claude`, `~/.codex`, `~/.gemini`, `~/.gemini/antigravity-cli` per kind. |
+| `command` | string? | — | Executable for agents Aura reads by running them (`antigravity`). Unset = the agent's usual binary name on `$PATH`. |
 | `color` | string? | — | Accent color override, hex like `#rrggbb` or `#rgb`. |
 | `tray_progress_source` | u32? | — | Quota window that fills the tray ring, by position. Unset = `0`, the session. |
 | `tray_color_source` | u32? | — | Quota window that drives the tray color ramp, by position. Unset = `1`, the week. |
@@ -536,8 +537,66 @@ indicator or a plain button that opens the modal.
 | `claude-code` | Claude Code CLI agent | `~/.claude` (dir containing `stats-cache.json` / `projects/`) |
 | `codex` | OpenAI Codex CLI | `~/.codex` (dir containing `sessions/`) |
 | `gemini` | Gemini CLI | `~/.gemini` |
+| `antigravity` | Google Antigravity CLI (`agy`) | `~/.gemini/antigravity-cli` (dir containing `conversation_summaries.db`) |
 
 A leading `~` in `config_path` is expanded to the user's home directory.
+
+`antigravity` shares `~/.gemini` with the Gemini CLI but reads a disjoint
+subtree, so the two profiles can both be configured without colliding.
+
+### The `command` key
+
+Most agents are read purely off disk. Antigravity is not: `agy` keeps its
+OAuth credentials in the OS keyring and its quota RPC is gated on the CLI's
+own client identity, so Aura gets quota by running
+`agy -p "/usage" --output-format json` — a documented public flag. The call
+is free (it starts no LLM turn and consumes no quota) and its result is
+cached for 20 s so a tray tick and a modal open share one reading.
+
+Aura resolves `agy` to an absolute path before spawning it, searching ahead
+of the inherited `$PATH`:
+
+| Platform | Searched |
+|---|---|
+| Linux / macOS | `~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin` |
+| Windows | `%LOCALAPPDATA%\agy\bin`, plus the same per-user directories where they exist |
+
+That is deliberate. Aura runs from a GUI launcher, a systemd user unit or a
+launchd agent, and none of those source your shell rc files:
+
+- **Linux** — the systemd user manager's `PATH` typically omits
+  `~/.local/bin` entirely, which is exactly where `agy`'s installer puts the
+  binary.
+- **macOS** — launchd hands a bundled app only
+  `/usr/bin:/bin:/usr/sbin:/sbin`, so neither `~/.local/bin` (where `agy`
+  lands) nor Homebrew is visible. The `agy` installer adds its directory by
+  appending to your *shell profile*, which a launchd agent never reads.
+- **Windows** — `agy` installs to `%LOCALAPPDATA%\agy\bin` and registers it
+  in the user `PATH`, but a process started before the install, or a user who
+  ran the installer with `--skip-path`, won't see it.
+
+In every case the binary resolves fine from a terminal and is invisible to
+the tray process, which makes this a confusing failure to hit.
+
+`command` points that at an install outside all of those:
+
+```toml
+[[agents]]
+name = "Antigravity"
+kind = "antigravity"
+command = "/opt/antigravity/bin/agy"
+```
+
+When `agy` is missing or you are not logged in, the Quota tab shows an
+`unavailable` note explaining which — the tray keeps its last good reading
+rather than degrading.
+
+Antigravity reports no token counts at all (its trajectories are
+schema-less protobuf). The modal drops the **Models** tab entirely for it —
+both the tokens-per-day chart and the per-model bars are token-derived, so
+the page would have nothing on it — and the token stat cards on Summary read
+"not reported" rather than `0`. Sessions, messages, active days, streaks and
+peak hour all work normally.
 
 ## State file
 

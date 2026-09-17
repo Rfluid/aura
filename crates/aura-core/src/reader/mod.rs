@@ -1,3 +1,4 @@
+pub mod antigravity;
 pub mod claude_code;
 pub mod codex;
 pub(crate) mod codex_scan;
@@ -9,6 +10,7 @@ pub(crate) mod scan;
 mod stats_cache;
 mod watcher;
 
+pub use antigravity::AntigravityReader;
 pub use claude_code::ClaudeCodeReader;
 pub use codex::CodexReader;
 pub use gemini::GeminiReader;
@@ -24,6 +26,7 @@ pub fn make_reader(agent: &AgentConfig) -> Box<dyn AgentReader> {
         AgentKind::ClaudeCode => Box::new(ClaudeCodeReader::new(path)),
         AgentKind::Codex => Box::new(CodexReader::new(path)),
         AgentKind::Gemini => Box::new(GeminiReader::new(path)),
+        AgentKind::Antigravity => Box::new(AntigravityReader::new(path)),
     }
 }
 
@@ -124,6 +127,18 @@ pub struct UsageSnapshot {
 
     pub first_session_date: Option<String>,
     pub last_session_date: Option<String>,
+
+    // ── Capability ────────────────────────────────────────────────────────────
+    /// The agent publishes no token counts at all, so every token field above
+    /// is absent rather than measured as zero. Readers set this when their
+    /// agent has nothing to report; the UI then drops the Models tab and
+    /// reads "not reported" rather than a `0` that would mean "you used
+    /// nothing".
+    ///
+    /// Mirrors [`crate::config::AgentKind::reports_tokens`], which answers the
+    /// same question without needing a read.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tokens_unreported: bool,
 }
 
 // ── AgentReader ───────────────────────────────────────────────────────────────
