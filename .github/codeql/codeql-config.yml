@@ -1,0 +1,46 @@
+# CodeQL configuration for Aura.
+#
+# Read by `github/codeql-action/init` via `config-file:` in
+# .github/workflows/codeql-analysis.yml.
+#
+# Why `paths-ignore` works here: CodeQL analyses Rust with build mode `none`,
+# building its database without compiling the crate. `paths` / `paths-ignore`
+# apply to an interpreted language, or to a compiled language analysed without
+# a build — which is this case. They would be silently ignored if CodeQL were
+# tracing a real `cargo build`.
+
+name: Aura CodeQL config
+
+paths-ignore:
+    # Vendored third-party source. `vendor/gpui` is a patched copy of Zed's
+    # gpui, carried so we can keep the macOS 26 (Tahoe) NSApplication fix —
+    # see the `[patch.crates-io]` note in Cargo.toml. We do not author it and
+    # cannot act on findings inside it, so scanning it only produces alerts
+    # nobody can close: today that is a standing `rust/access-invalid-pointer`
+    # in `platform/windows/platform.rs`.
+    - vendor
+
+query-filters:
+    # `rust/cleartext-logging` fires on `aura quota`'s output. `ClaudeOauth`
+    # (deserialised from ~/.claude/.credentials.json, quota/oauth.rs) holds
+    # `access_token` and `refresh_token` in the same struct as
+    # `subscription_type`, and CodeQL's taint tracking is field-insensitive —
+    # so any field of that struct reaching a print is flagged. The only value
+    # that actually reaches stdout is the plan tier ("pro" / "max"), via
+    # `QuotaSnapshot::subscription_type` (quota/api.rs:221). The tokens are
+    # used solely to build the authorization header (quota/api.rs:144) and
+    # never enter `QuotaSnapshot`.
+    #
+    # CAUTION: this exclusion is repo-wide. CodeQL has no path-scoped rule
+    # filter, and Rust has no inline `// codeql[...]` suppression
+    # (github/codeql#21637), so there is no way to scope it to the three
+    # `println!`s that prompted it. It therefore also silences a *genuine*
+    # future leak — which matters in a process that holds live OAuth
+    # credentials for four agents.
+    #
+    # The narrower control is per-alert dismissal in the Security tab, which
+    # is already in place for alerts 5, 6 and 7 and persists on its own. If
+    # you would rather keep the rule armed, delete this `query-filters` block;
+    # nothing else depends on it.
+    - exclude:
+          id: rust/cleartext-logging
