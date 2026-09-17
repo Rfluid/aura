@@ -178,9 +178,12 @@ pub(crate) fn build_snapshot(accum: ScanAccum, cache: Option<&StatsCache>) -> Us
     active_dates.sort_unstable();
     let (current_streak, longest_streak) = compute_streaks(&active_dates);
 
+    // `hour_counts` is a HashMap, and `max_by_key` keeps the last maximum it
+    // sees — so on a tie the answer used to depend on hash order and changed
+    // between runs on the same data. Ties now resolve to the earliest hour.
     let peak_hour = hour_counts
         .iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by_key(|(hour, count)| (**count, std::cmp::Reverse(**hour)))
         .map(|(h, _)| *h);
 
     // ── Daily breakdown vectors ───────────────────────────────────────────────
@@ -236,6 +239,29 @@ mod tests {
     use super::*;
     use std::{fs, io::Write};
     use tempfile::tempdir;
+
+    #[test]
+    fn peak_hour_breaks_ties_deterministically() {
+        // Two hours tied at two starts each. Whichever we pick, we must pick
+        // the same one every time — a stat that flips between refreshes on
+        // unchanged data reads as a bug. Sparse histories (a handful of
+        // sessions) hit this constantly.
+        let mut accum = ScanAccum::default();
+        accum.hour_counts.insert(9, 2);
+        accum.hour_counts.insert(17, 2);
+        accum.hour_counts.insert(3, 1);
+
+        let first = build_snapshot(accum, None).peak_hour;
+        assert_eq!(first, Some(9), "ties resolve to the earliest hour");
+
+        for _ in 0..64 {
+            let mut accum = ScanAccum::default();
+            accum.hour_counts.insert(9, 2);
+            accum.hour_counts.insert(17, 2);
+            accum.hour_counts.insert(3, 1);
+            assert_eq!(build_snapshot(accum, None).peak_hour, first);
+        }
+    }
 
     fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[&str]) -> PathBuf {
         let path = dir.join(name);
