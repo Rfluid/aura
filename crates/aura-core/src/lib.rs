@@ -1,3 +1,4 @@
+pub mod bin_path;
 pub mod config;
 pub mod config_migrate;
 pub mod config_schema;
