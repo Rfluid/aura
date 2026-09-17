@@ -34,6 +34,7 @@ jobs:
               uses: github/codeql-action/init@v4
               with:
                   languages: ${{ matrix.language }}
+                  config-file: ./.github/codeql/codeql-config.yml
 
             # GPUI + tray-icon (gtk) link GTK / xkbcommon / xcb / fontconfig
             # via pkg-config; the build script panics without dev headers.
