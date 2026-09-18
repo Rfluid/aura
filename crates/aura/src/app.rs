@@ -174,6 +174,14 @@ pub struct AuraView {
     show_more_modal: bool,
     show_settings_panel: bool,
     is_loading: bool,
+    /// The current refresh task. Replacing it cancels the foreground task and
+    /// prevents an obsolete result from being delivered after a newer refresh
+    /// has started.
+    refresh_task: Option<gpui::Task<()>>,
+    /// Identifies the newest refresh independently of its profile and period.
+    /// The task handle normally provides cancellation; this generation also
+    /// protects against a completion that was already queued when replaced.
+    refresh_generation: u64,
     /// A plugin action (button click) is being executed. Unlike
     /// `is_loading` this doesn't blank the whole body — only the active
     /// plugin's panel shows a spinner — and it suppresses the focus-loss
@@ -288,6 +296,8 @@ impl AuraView {
             show_more_modal: false,
             show_settings_panel: false,
             is_loading: false,
+            refresh_task: None,
+            refresh_generation: 0,
             action_inflight: false,
             armed_action: None,
             spinner_frame: 0,
@@ -350,14 +360,19 @@ impl AuraView {
     }
 
     fn refresh_inner(&mut self, cx: &mut Context<Self>, period_only: bool) {
-        if self.is_loading {
-            // A refresh is already in flight; don't double-spawn.
-            return;
-        }
+        // Dropping a GPUI task cancels it. The generation check below is a
+        // second line of defence for a completion already queued on the UI
+        // executor when this task is replaced.
+        self.refresh_task = None;
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        let refresh_generation = self.refresh_generation;
+        let was_loading = self.is_loading;
         self.is_loading = true;
         self.error = None;
         cx.notify();
-        self.spawn_spinner_tick(cx);
+        if !was_loading {
+            self.spawn_spinner_tick(cx);
+        }
 
         let config_path = self.config_path.clone();
         let theme_path = self.theme_path.clone();
@@ -369,7 +384,7 @@ impl AuraView {
             Vec::new()
         };
 
-        cx.spawn(async move |this, cx| {
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -384,11 +399,12 @@ impl AuraView {
                 .await;
 
             this.update(cx, |view, cx| {
-                view.apply_refresh_result(result, cx);
+                if view.refresh_generation == refresh_generation {
+                    view.apply_refresh_result(result, cx);
+                }
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
     /// Apply a `RefreshResult` back to the view on the foreground thread.
