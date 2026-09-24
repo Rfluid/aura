@@ -6,6 +6,7 @@ mod app;
 mod assets;
 mod cli;
 mod format;
+mod keys;
 mod placement;
 mod platform;
 mod runtime;
@@ -79,6 +80,15 @@ fn main() -> Result<()> {
     // through to the tray entry point below.
     let cli = cli::Cli::parse();
     if let Some(command) = cli.command {
+        // Rust ignores SIGPIPE, which turns `aura keys describe | head` into
+        // a "failed printing to stdout" panic. A CLI should just stop quietly
+        // when its reader goes away, as every Unix tool does.
+        #[cfg(unix)]
+        // SAFETY: restoring the default disposition of a signal, before any
+        // other thread exists.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
         return cli::dispatch(command);
     }
 
@@ -191,9 +201,14 @@ fn main() -> Result<()> {
             },
         )
         .detach();
+        //
+        // With the keymap installed (`keybindings.enabled`), Escape is an
+        // ordinary binding (`dismiss` / `close_overlay`) that does the same
+        // ordering itself, and that the user may remap or unbind — so this
+        // observer only covers the keymap-off case.
         cx.observe_keystrokes(|event, window, cx| {
             // Something with focus already claimed this keystroke.
-            if event.action.is_some() {
+            if event.action.is_some() || runtime::keybindings_active() {
                 return;
             }
             let keystroke = &event.keystroke;
@@ -635,6 +650,11 @@ fn toggle_window(
         AppState::default()
     });
 
+    // Same reasoning for the keymap: re-read `keybindings.toml` on every open
+    // so an edit applies without a restart.
+    let keymap = aura_core::keymap::Keymap::load(&aura_core::keymap::Keymap::default_path());
+    keys::install(cx, &keymap, config.keybindings.enabled);
+
     let anchor = placement::Anchor::from_config(&config.window.anchor);
     // `display_id` rides along to `AuraView` so the auto-fit callback caps the
     // modal's height against the screen it actually opened on. Reading
@@ -745,8 +765,23 @@ fn toggle_window(
     #[cfg(target_os = "windows")]
     let cloak = config.window.auto_resize();
 
-    match cx.open_window(opts, |_window, cx| {
-        cx.new(|cx| AuraView::new(config, config_path, state, display_id, tray_anchor, cx))
+    match cx.open_window(opts, |window, cx| {
+        cx.new(|cx| {
+            let view = AuraView::new(
+                config,
+                config_path,
+                state,
+                keymap,
+                display_id,
+                tray_anchor,
+                cx,
+            );
+            // Key bindings dispatch from the focused element, and nothing
+            // else in the modal takes focus, so the root holds it for the
+            // window's lifetime (a click anywhere re-focuses it).
+            window.focus(&view.focus_handle);
+            view
+        })
     }) {
         Ok(handle) => {
             // On macOS, if we are running as NSApplicationActivationPolicyAccessory

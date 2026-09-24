@@ -441,6 +441,27 @@ pub struct UpdateConfig {
     pub dismiss_all: bool,
 }
 
+// ── Keybindings ──────────────────────────────────────────────────────────────
+
+/// Master switch for the modal's keyboard shortcuts. The bindings themselves
+/// live in their own file, `keybindings.toml` (see [`crate::keymap`]); this
+/// section only decides whether that keymap is installed at all.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct KeybindingsConfig {
+    /// Install the keymap (built-in defaults plus `keybindings.toml`).
+    /// Default true. Set false to turn every shortcut off: the modal is then
+    /// mouse-only, apart from Escape closing it, which works either way.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -457,6 +478,8 @@ pub struct AppConfig {
     pub content: ContentConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
 }
 
 impl AppConfig {
@@ -526,6 +549,7 @@ impl AppConfig {
             tray: TrayConfig::default(),
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         }
     }
 
@@ -796,6 +820,7 @@ mod tests {
                 ..ContentConfig::default()
             },
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -815,6 +840,7 @@ mod tests {
                 ..ContentConfig::default()
             },
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -830,6 +856,7 @@ mod tests {
             tray: TrayConfig::default(),
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -911,6 +938,7 @@ dismiss_all = true
             tray: TrayConfig::default(),
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -960,6 +988,7 @@ dismiss_all = true
             tray: TrayConfig::default(),
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {
