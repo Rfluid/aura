@@ -2,7 +2,9 @@
 //! theme load result. Pure local introspection; no network calls.
 
 use anyhow::Result;
-use aura_core::{config::AppConfig, config_migrate, plugin, state::AppState, theme::Theme};
+use aura_core::{
+    config::AppConfig, config_migrate, keymap::Keymap, plugin, state::AppState, theme::Theme,
+};
 use clap::Args;
 use serde::Serialize;
 
@@ -21,6 +23,7 @@ struct DoctorReport {
     config: ConfigStatus,
     state: StateStatus,
     theme: ThemeStatus,
+    keybindings: KeybindingsStatus,
     agents: Vec<AgentRow>,
     plugins: PluginStatus,
 }
@@ -30,6 +33,7 @@ struct Paths {
     config: String,
     state: String,
     theme: String,
+    keybindings: String,
     plugins_dir: String,
 }
 
@@ -55,6 +59,15 @@ struct ThemeStatus {
     exists: bool,
     parse_ok: bool,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct KeybindingsStatus {
+    /// `[keybindings] enabled` in config.toml (true when it can't be read).
+    enabled: bool,
+    exists: bool,
+    /// Problems in keybindings.toml; the offending entries are skipped.
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,10 +102,13 @@ fn collect() -> DoctorReport {
     let config_path = AppConfig::default_path();
     let state_path = AppState::state_path();
     let theme_path = Theme::default_path();
+    let keymap_path = Keymap::default_path();
     let plugins_dir = plugin::user_plugins_dir();
+    let mut keybindings_enabled = true;
 
     let (config_status, agents, plugins) = match AppConfig::load_with_discovery(&config_path) {
         Ok(cfg) => {
+            keybindings_enabled = cfg.keybindings.enabled;
             let agents: Vec<AgentRow> = cfg
                 .agents
                 .iter()
@@ -180,16 +196,28 @@ fn collect() -> DoctorReport {
         }
     };
 
+    let keybindings = KeybindingsStatus {
+        enabled: keybindings_enabled,
+        exists: keymap_path.exists(),
+        warnings: Keymap::load(&keymap_path)
+            .warnings
+            .into_iter()
+            .map(|w| w.message)
+            .collect(),
+    };
+
     DoctorReport {
         paths: Paths {
             config: config_path.to_string_lossy().into_owned(),
             state: state_path.to_string_lossy().into_owned(),
             theme: theme_path.to_string_lossy().into_owned(),
+            keybindings: keymap_path.to_string_lossy().into_owned(),
             plugins_dir: plugins_dir.to_string_lossy().into_owned(),
         },
         config: config_status,
         state: state_status,
         theme: theme_status,
+        keybindings,
         agents,
         plugins,
     }
@@ -217,6 +245,7 @@ fn render_text(r: &DoctorReport) {
     println!("  config       {}", r.paths.config);
     println!("  state        {}", r.paths.state);
     println!("  theme        {}", r.paths.theme);
+    println!("  keybindings  {}", r.paths.keybindings);
     println!("  plugins dir  {}", r.paths.plugins_dir);
     println!();
     println!(
@@ -246,6 +275,15 @@ fn render_text(r: &DoctorReport) {
     );
     if let Some(err) = &r.theme.error {
         println!("  error: {err}");
+    }
+    println!(
+        "Keys:   enabled={}  exists={}  warnings={}",
+        r.keybindings.enabled,
+        r.keybindings.exists,
+        r.keybindings.warnings.len()
+    );
+    for w in &r.keybindings.warnings {
+        println!("  warning: {w}");
     }
     println!();
     println!("Agents:");

@@ -32,6 +32,7 @@ icon_assets! {
     (CHEVRON_DOWN,     "chevron_down.svg"),
     (CHEVRON_UP,       "chevron_up.svg"),
     (INFO,             "info.svg"),
+    (KEYBOARD,         "keyboard.svg"),
     (RTK,              "rtk.svg"),
 }
 

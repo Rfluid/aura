@@ -105,7 +105,7 @@ pub fn dismiss_on_focus_loss() -> bool {
     DISMISS_ON_FOCUS_LOSS.load(Ordering::Relaxed)
 }
 
-/// Ask the poll loop to close the modal (Escape was pressed).
+/// Ask the poll loop to close the modal (Escape, or the `dismiss` binding).
 pub fn request_dismiss() {
     DISMISS_REQUESTED.store(true, Ordering::Relaxed);
 }
@@ -113,6 +113,21 @@ pub fn request_dismiss() {
 /// Consume a pending dismiss request, if any.
 pub fn take_dismiss_request() -> bool {
     DISMISS_REQUESTED.swap(false, Ordering::Relaxed)
+}
+
+/// Whether the keymap is installed (`keybindings.enabled`). While it is, Escape
+/// is an ordinary binding the user can remap or unbind; while it isn't, the
+/// fallback Escape observer in `main.rs` keeps Escape closing the modal.
+static KEYBINDINGS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// See [`KEYBINDINGS_ACTIVE`].
+pub fn keybindings_active() -> bool {
+    KEYBINDINGS_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Set by `keys::install` whenever the keymap is (re)installed.
+pub fn set_keybindings_active(active: bool) {
+    KEYBINDINGS_ACTIVE.store(active, Ordering::Relaxed);
 }
 
 /// See [`PLUGIN_ACTION_INFLIGHT`].

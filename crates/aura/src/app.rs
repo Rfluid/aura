@@ -2,6 +2,7 @@ use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
+    keymap::{ActionGroup, BindingContext, KeyAction, Keymap},
     lexicon::{self, Lexicon},
     plugin::{PluginContent, PluginControl, PluginPanel, PluginRunner, PluginSection},
     quota::{
@@ -14,8 +15,8 @@ use aura_core::{
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, ElementId, Pixels,
-    ScrollHandle, SharedString, Window,
+    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, ElementId, FocusHandle,
+    Pixels, ScrollHandle, SharedString, Window,
 };
 use gpui_selectable_text::{set_selection_theme, SelectableText, SelectionScope, SelectionStyle};
 
@@ -122,6 +123,42 @@ fn effective_section(active: AgentSection, visible: &[AgentSection]) -> AgentSec
     visible.first().copied().unwrap_or(AgentSection::Quota)
 }
 
+/// The overlays a key binding can toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    More,
+    Settings,
+    Help,
+}
+
+/// How far a scroll binding moves.
+#[derive(Debug, Clone, Copy)]
+enum Scroll {
+    /// Signed number of lines (positive is down).
+    Lines(f32),
+    /// Signed fraction of the visible height.
+    Pages(f32),
+    Top,
+    Bottom,
+}
+
+/// One `j` / `k` step, in logical pixels — roughly one row of body text.
+const SCROLL_LINE_PX: f32 = 40.0;
+
+/// Index `delta` steps from `current` in a list of `len`, wrapping around.
+/// Starts from the first item when nothing is selected yet. `None` for an
+/// empty list.
+fn cycle(len: usize, current: Option<usize>, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let Some(current) = current else {
+        return Some(0);
+    };
+    let len = len as isize;
+    Some((current as isize + delta).rem_euclid(len) as usize)
+}
+
 pub struct AuraView {
     config: AppConfig,
     config_path: PathBuf,
@@ -173,6 +210,16 @@ pub struct AuraView {
 
     show_more_modal: bool,
     show_settings_panel: bool,
+    /// The keyboard-shortcut cheat sheet (`?`).
+    show_help: bool,
+    /// Effective keymap (defaults + `keybindings.toml`), kept for the help
+    /// overlay and the warning chip. Installing it into GPUI is
+    /// `keys::install`'s job; this copy is only read for display.
+    keymap: Keymap,
+    keymap_path: PathBuf,
+    /// Held by the root element for the window's lifetime: key bindings
+    /// dispatch from the focused element, and nothing else here is focusable.
+    pub(crate) focus_handle: FocusHandle,
     is_loading: bool,
     /// The current refresh task. Replacing it cancels the foreground task and
     /// prevents an obsolete result from being delivered after a newer refresh
@@ -222,6 +269,9 @@ pub struct AuraView {
     /// allowed to shrink below its content when the window hits the screen
     /// cap; without this we couldn't tell capped layouts from natural ones).
     body_scroll: ScrollHandle,
+    /// Scroll state of the help overlay's list, which the scroll bindings
+    /// drive instead of the body while it is open.
+    help_scroll: ScrollHandle,
     /// On Windows the modal is DWM-cloaked on open to hide the first-frame
     /// resize (open height → content height). This flag drives the uncloak that
     /// fires in `on_next_frame` after the first resize, so the window becomes
@@ -238,6 +288,8 @@ struct RefreshResult {
     config: Option<AppConfig>,
     /// Reloaded theme — `None` means "keep the old one".
     theme: Option<Theme>,
+    /// Reloaded keymap. Always present: loading falls back to the defaults.
+    keymap: Keymap,
     /// `Some` if the active profile had to fall back to the first agent.
     fallback_profile: Option<String>,
     snapshot: Option<UsageSnapshot>,
@@ -252,6 +304,7 @@ impl AuraView {
         config: AppConfig,
         config_path: PathBuf,
         state: AppState,
+        keymap: Keymap,
         display_id: Option<gpui::DisplayId>,
         tray_anchor: Option<crate::tray::TrayAnchor>,
         cx: &mut Context<Self>,
@@ -295,6 +348,10 @@ impl AuraView {
             update: None,
             show_more_modal: false,
             show_settings_panel: false,
+            show_help: false,
+            keymap,
+            keymap_path: Keymap::default_path(),
+            focus_handle: cx.focus_handle(),
             is_loading: false,
             refresh_task: None,
             refresh_generation: 0,
@@ -306,6 +363,7 @@ impl AuraView {
             last_origin_request: Rc::new(Cell::new(None)),
             frame_extents: Rc::new(Cell::new(0.0)),
             body_scroll: ScrollHandle::new(),
+            help_scroll: ScrollHandle::new(),
             needs_uncloak: Rc::new(Cell::new(cfg!(target_os = "windows"))),
         };
         // Initial load: kick off the async refresh now so the spinner can
@@ -376,6 +434,7 @@ impl AuraView {
 
         let config_path = self.config_path.clone();
         let theme_path = self.theme_path.clone();
+        let keymap_path = self.keymap_path.clone();
         let active_profile = self.active_profile.clone();
         let period = self.active_period;
         let cached_panels = if period_only {
@@ -391,6 +450,7 @@ impl AuraView {
                     do_refresh(
                         config_path,
                         theme_path,
+                        keymap_path,
                         active_profile,
                         period,
                         cached_panels,
@@ -419,6 +479,10 @@ impl AuraView {
         if let Some(theme) = result.theme {
             self.theme = theme;
         }
+        // Reinstall from the (possibly reloaded) config and keymap, so a
+        // Refresh picks up edits to either file, like it does for the theme.
+        crate::keys::install(cx, &result.keymap, self.config.keybindings.enabled);
+        self.keymap = result.keymap;
         if let Some(fallback) = result.fallback_profile {
             self.active_profile = fallback;
         }
@@ -583,6 +647,7 @@ fn reusable_panel<'a>(cached: &'a [(String, PluginPanel)], name: &str) -> Option
 fn do_refresh(
     config_path: PathBuf,
     theme_path: PathBuf,
+    keymap_path: PathBuf,
     active_profile: String,
     period: Period,
     cached_panels: Vec<(String, PluginPanel)>,
@@ -596,6 +661,7 @@ fn do_refresh(
         eprintln!("aura: theme.toml reload failed ({e}); using defaults");
         Theme::default()
     }));
+    let keymap = Keymap::load(&keymap_path);
 
     // Reload config so edits made via the settings button take effect.
     // `load_with_discovery` also picks up any binaries added to the user
@@ -607,6 +673,7 @@ fn do_refresh(
             return RefreshResult {
                 config: None,
                 theme,
+                keymap,
                 fallback_profile: None,
                 snapshot: None,
                 quota: None,
@@ -637,6 +704,7 @@ fn do_refresh(
         return RefreshResult {
             config: Some(config),
             theme,
+            keymap,
             fallback_profile,
             snapshot: None,
             quota: None,
@@ -689,6 +757,7 @@ fn do_refresh(
     RefreshResult {
         config: Some(config),
         theme,
+        keymap,
         fallback_profile,
         snapshot,
         quota,
@@ -844,6 +913,248 @@ impl AuraView {
         cx.notify();
     }
 
+    fn close_help(&mut self, cx: &mut Context<Self>) {
+        self.show_help = false;
+        cx.notify();
+    }
+
+    /// Whether any overlay is up — what puts the root in the `overlay` key
+    /// context.
+    fn overlay_open(&self) -> bool {
+        self.show_more_modal || self.show_settings_panel || self.show_help
+    }
+
+    /// Open `keybindings.toml` in the user's editor, seeding it with the
+    /// commented reference of every default on first use. Mirrors
+    /// `open_theme`.
+    fn open_keybindings(&mut self, cx: &mut Context<Self>) {
+        if !self.keymap_path.exists() {
+            if let Some(parent) = self.keymap_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    self.error = Some(format!("Could not create config dir: {e}"));
+                    cx.notify();
+                    return;
+                }
+            }
+            if let Err(e) = std::fs::write(&self.keymap_path, Keymap::default_file_contents()) {
+                self.error = Some(format!("Could not create keybindings.toml: {e}"));
+                cx.notify();
+                return;
+            }
+        }
+        self.open_in_editor(&self.keymap_path.clone(), cx);
+    }
+
+    /// Show exactly one overlay, or none if `which` is already the one up.
+    /// Keyboard toggles are exclusive so Escape never has a stack to unwind.
+    fn toggle_overlay(&mut self, which: Overlay, cx: &mut Context<Self>) {
+        let was_open = match which {
+            Overlay::More => self.show_more_modal,
+            Overlay::Settings => self.show_settings_panel,
+            Overlay::Help => self.show_help,
+        };
+        self.show_more_modal = false;
+        self.show_settings_panel = false;
+        self.show_help = false;
+        if !was_open {
+            match which {
+                Overlay::More => self.show_more_modal = true,
+                Overlay::Settings => self.show_settings_panel = true,
+                Overlay::Help => {
+                    self.show_help = true;
+                    self.help_scroll.set_offset(gpui::point(px(0.), px(0.)));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Dispatch target for every keymap action (see `keys::listen`).
+    pub(crate) fn run_key_action(
+        &mut self,
+        action: KeyAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use KeyAction as K;
+        match action {
+            K::ScrollDown => self.scroll(Scroll::Lines(1.0), cx),
+            K::ScrollUp => self.scroll(Scroll::Lines(-1.0), cx),
+            K::HalfPageDown => self.scroll(Scroll::Pages(0.5), cx),
+            K::HalfPageUp => self.scroll(Scroll::Pages(-0.5), cx),
+            K::PageDown => self.scroll(Scroll::Pages(1.0), cx),
+            K::PageUp => self.scroll(Scroll::Pages(-1.0), cx),
+            K::ScrollTop => self.scroll(Scroll::Top, cx),
+            K::ScrollBottom => self.scroll(Scroll::Bottom, cx),
+            K::NextSection => self.step_section(1, cx),
+            K::PrevSection => self.step_section(-1, cx),
+            K::Section1 => self.go_to_section(0, cx),
+            K::Section2 => self.go_to_section(1, cx),
+            K::Section3 => self.go_to_section(2, cx),
+            K::Section4 => self.go_to_section(3, cx),
+            K::Section5 => self.go_to_section(4, cx),
+            K::Section6 => self.go_to_section(5, cx),
+            K::Section7 => self.go_to_section(6, cx),
+            K::Section8 => self.go_to_section(7, cx),
+            K::Section9 => self.go_to_section(8, cx),
+            K::NextProfile => self.step_profile(1, cx),
+            K::PrevProfile => self.step_profile(-1, cx),
+            K::ToggleMode => {
+                let other = match self.mode {
+                    Mode::Agent => Mode::Plugin,
+                    Mode::Plugin => Mode::Agent,
+                };
+                self.set_mode(other, cx);
+            }
+            K::NextPeriod => self.step_period(1, cx),
+            K::PrevPeriod => self.step_period(-1, cx),
+            K::Refresh => {
+                if !self.is_loading {
+                    self.refresh(cx);
+                }
+            }
+            K::ToggleSettings => self.toggle_overlay(Overlay::Settings, cx),
+            K::ToggleMore => self.toggle_overlay(Overlay::More, cx),
+            K::ToggleHelp => self.toggle_overlay(Overlay::Help, cx),
+            // Both keep Escape's layering: a live text selection is cleared
+            // before anything closes.
+            K::CloseOverlay => {
+                if !gpui_selectable_text::registry::clear_active_selection(window, cx) {
+                    self.show_more_modal = false;
+                    self.show_settings_panel = false;
+                    self.show_help = false;
+                    cx.notify();
+                }
+            }
+            K::Dismiss => {
+                if !gpui_selectable_text::registry::clear_active_selection(window, cx) {
+                    crate::runtime::request_dismiss();
+                }
+            }
+            K::Quit => cx.quit(),
+            K::OpenConfig => self.open_config(cx),
+            K::OpenTheme => self.open_theme(cx),
+            K::OpenKeybindings => self.open_keybindings(cx),
+            K::OpenUpdate => {
+                if self.show_update_button() {
+                    self.open_update_instructions(cx);
+                }
+            }
+            K::DismissUpdate => {
+                if self.show_update_button() {
+                    self.dismiss_update(cx);
+                }
+            }
+        }
+    }
+
+    /// Scroll the help list while it is open, the body otherwise.
+    fn scroll(&mut self, by: Scroll, cx: &mut Context<Self>) {
+        let handle = if self.show_help {
+            &self.help_scroll
+        } else {
+            &self.body_scroll
+        };
+        let max = f32::from(handle.max_offset().height).max(0.0);
+        let viewport = f32::from(handle.bounds().size.height);
+        let mut offset = handle.offset();
+        // Offsets grow negative as the content moves up.
+        let current = -f32::from(offset.y);
+        let target = match by {
+            Scroll::Lines(n) => current + n * SCROLL_LINE_PX,
+            // Keep one line of overlap so a full page never skips content.
+            Scroll::Pages(n) => current + n * (viewport - SCROLL_LINE_PX).max(SCROLL_LINE_PX),
+            Scroll::Top => 0.0,
+            Scroll::Bottom => max,
+        };
+        offset.y = px(-target.clamp(0.0, max));
+        handle.set_offset(offset);
+        cx.notify();
+    }
+
+    fn step_section(&mut self, delta: isize, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Agent => {
+                let visible = self.visible_agent_sections();
+                let current = self.effective_agent_section();
+                let i = visible.iter().position(|s| *s == current);
+                if let Some(next) = cycle(visible.len(), i, delta) {
+                    self.set_agent_section(visible[next], cx);
+                }
+            }
+            Mode::Plugin => {
+                let ids = self.plugin_section_ids();
+                let i = self
+                    .active_plugin_section
+                    .as_deref()
+                    .and_then(|id| ids.iter().position(|s| s == id));
+                if let Some(next) = cycle(ids.len(), i, delta) {
+                    self.set_plugin_section(ids[next].clone(), cx);
+                }
+            }
+        }
+    }
+
+    fn go_to_section(&mut self, index: usize, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Agent => {
+                if let Some(s) = self.visible_agent_sections().get(index) {
+                    self.set_agent_section(*s, cx);
+                }
+            }
+            Mode::Plugin => {
+                if let Some(id) = self.plugin_section_ids().get(index) {
+                    self.set_plugin_section(id.clone(), cx);
+                }
+            }
+        }
+    }
+
+    fn plugin_section_ids(&self) -> Vec<String> {
+        self.current_plugin_panel()
+            .map(|p| p.sections.iter().map(|s| s.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Next / previous pill in the selector row: agent profiles in Agent
+    /// mode, plugins in Plugin mode.
+    fn step_profile(&mut self, delta: isize, cx: &mut Context<Self>) {
+        match self.mode {
+            Mode::Agent => {
+                let names: Vec<String> =
+                    self.config.agents.iter().map(|a| a.name.clone()).collect();
+                let i = names.iter().position(|n| *n == self.active_profile);
+                if let Some(next) = cycle(names.len(), i, delta) {
+                    self.set_profile(names[next].clone(), cx);
+                }
+            }
+            Mode::Plugin => {
+                let names: Vec<String> =
+                    self.config.plugins.iter().map(|p| p.name.clone()).collect();
+                let i = self
+                    .active_plugin
+                    .as_deref()
+                    .and_then(|a| names.iter().position(|n| n == a));
+                if let Some(next) = cycle(names.len(), i, delta) {
+                    self.set_plugin(names[next].clone(), cx);
+                }
+            }
+        }
+    }
+
+    /// Cycle the period pills. A no-op while they are hidden, since the
+    /// section on screen doesn't filter by period.
+    fn step_period(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.current_section_uses_period() {
+            return;
+        }
+        const PERIODS: [Period; 3] = [Period::AllTime, Period::Last7Days, Period::Last30Days];
+        let i = PERIODS.iter().position(|p| *p == self.active_period);
+        if let Some(next) = cycle(PERIODS.len(), i, delta) {
+            self.set_period(PERIODS[next], cx);
+        }
+    }
+
     /// Sections the active agent actually has something to show in.
     fn visible_agent_sections(&self) -> Vec<AgentSection> {
         visible_sections(
@@ -918,7 +1229,7 @@ impl AuraView {
 // ── Render ────────────────────────────────────────────────────────────────────
 
 impl Render for AuraView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Publish the themed accent at ~20% alpha. The crate resolves this
         // during paint, so runtime theme changes retint live selections.
         set_selection_theme(
@@ -948,7 +1259,12 @@ impl Render for AuraView {
         let tray_anchor = self.tray_anchor;
         #[cfg(target_os = "windows")]
         let needs_uncloak = self.needs_uncloak.clone();
-        let mut root = div()
+        // The root holds focus so the keymap dispatches here, and carries the
+        // `overlay` key context while one is open (see `keys`).
+        let focus_root = div()
+            .track_focus(&self.focus_handle)
+            .key_context(crate::keys::root_context(self.overlay_open()));
+        let mut root = crate::keys::listen(focus_root, cx)
             .flex()
             .flex_col()
             .w_full()
@@ -1216,6 +1532,10 @@ impl Render for AuraView {
         if self.show_settings_panel {
             root = root.child(self.render_settings_panel(cx));
         }
+        if self.show_help {
+            let max_h = window.viewport_size().height - px(32.0);
+            root = root.child(self.render_help_overlay(max_h, cx));
+        }
         root
     }
 }
@@ -1268,6 +1588,9 @@ impl AuraView {
         let mut actions = div().flex().flex_row().items_center().gap_3();
         if self.show_update_button() {
             actions = actions.child(self.render_update_button(cx));
+        }
+        if self.config.keybindings.enabled && !self.keymap.warnings.is_empty() {
+            actions = actions.child(self.render_keymap_warning_chip(cx));
         }
         actions = actions
             .child(
@@ -3006,6 +3329,279 @@ impl AuraView {
                     view.close_settings_panel(cx);
                 })),
         );
+
+        // ── Keybindings ──────────────────────────────────────────────────────
+        card = card.child(
+            div()
+                .id("settings-keybindings")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .rounded_md()
+                .text_xs()
+                .text_color(rgb(text))
+                .hover(move |d| d.bg(rgb(surface_hi)))
+                .child(svg_icon("icons/keyboard.svg", text_dim, 14.0))
+                .child("Keybindings")
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.close_settings_panel(cx);
+                    view.toggle_overlay(Overlay::Help, cx);
+                })),
+        );
+
+        backdrop.child(card).into_any_element()
+    }
+
+    /// Header chip shown while `keybindings.toml` has problems. Clicking it
+    /// opens the help overlay, which lists them.
+    fn render_keymap_warning_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let warning = self.theme.colors.warning;
+        let surface_hi = self.theme.colors.surface_hi;
+        div()
+            .id("keymap-warnings")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(warning))
+            .text_xs()
+            .text_color(rgb(warning))
+            .hover(move |d| d.bg(rgb(surface_hi)))
+            .child(svg_icon("icons/keyboard.svg", warning, 12.0))
+            .child(SharedString::from(self.keymap.warnings.len().to_string()))
+            .on_click(
+                cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_overlay(Overlay::Help, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// Rows of the help overlay for one group: `(keys, description)`, with
+    /// actions that have no binding left out.
+    fn help_rows(&self, group: ActionGroup) -> Vec<(Vec<String>, &'static str)> {
+        let keys_of = |a: KeyAction| {
+            let mut keys: Vec<String> = Vec::new();
+            for context in BindingContext::ALL {
+                for k in self.keymap.keys_for(a, context) {
+                    if !keys.iter().any(|seen| seen == k) {
+                        keys.push(k.to_string());
+                    }
+                }
+            }
+            keys
+        };
+
+        // `section_1` … `section_9` on the digit keys read better as one row.
+        let sections = [
+            KeyAction::Section1,
+            KeyAction::Section2,
+            KeyAction::Section3,
+            KeyAction::Section4,
+            KeyAction::Section5,
+            KeyAction::Section6,
+            KeyAction::Section7,
+            KeyAction::Section8,
+            KeyAction::Section9,
+        ];
+        let on_digits = sections
+            .iter()
+            .enumerate()
+            .all(|(i, a)| keys_of(*a) == [(i + 1).to_string()]);
+
+        let mut rows = Vec::new();
+        for action in KeyAction::all().filter(|a| a.group() == group) {
+            if on_digits && sections.contains(&action) {
+                if action == KeyAction::Section1 {
+                    rows.push((vec!["1…9".to_string()], "Go to section N"));
+                }
+                continue;
+            }
+            let keys = keys_of(action);
+            if !keys.is_empty() {
+                rows.push((keys, action.description()));
+            }
+        }
+        rows
+    }
+
+    /// The keyboard-shortcut cheat sheet, generated from the live keymap, with
+    /// any `keybindings.toml` warnings on top.
+    fn render_help_overlay(&self, max_h: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme.colors;
+
+        let backdrop = div()
+            .id("help-backdrop")
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x000000a0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.close_help(cx)));
+
+        let close_hint = self
+            .keymap
+            .keys_for(KeyAction::CloseOverlay, BindingContext::Overlay)
+            .first()
+            .map(|k| format!("{k} to close"))
+            .unwrap_or_default();
+        let title = div()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(colors.border))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .child(svg_icon("icons/keyboard.svg", colors.text_dim, 14.0))
+                    .child("Keyboard shortcuts"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(colors.text_dim))
+                    .child(SharedString::from(close_hint)),
+            );
+
+        let mut list = div()
+            .id("help-scroll")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .overflow_y_scroll()
+            .track_scroll(&self.help_scroll);
+
+        if !self.config.keybindings.enabled {
+            list = list.child(div().text_xs().text_color(rgb(colors.text_dim)).child(sel(
+                "help-disabled",
+                "Keyboard shortcuts are off. Set `enabled = true` under \
+                         [keybindings] in config.toml to turn them on.",
+            )));
+        } else {
+            if !self.keymap.warnings.is_empty() {
+                let mut block = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(colors.warning))
+                    .text_xs()
+                    .text_color(rgb(colors.warning))
+                    .child(sel(
+                        "help-warnings-title",
+                        "keybindings.toml has problems (skipped entries):",
+                    ));
+                for (i, w) in self.keymap.warnings.iter().enumerate() {
+                    block = block.child(sel(
+                        sid(format!("help-warning-{i}")),
+                        format!("• {}", w.message),
+                    ));
+                }
+                list = list.child(block);
+            }
+
+            for group in ActionGroup::ALL {
+                let rows = self.help_rows(group);
+                if rows.is_empty() {
+                    continue;
+                }
+                let mut section = div().flex().flex_col().gap_1().child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(colors.text_dim))
+                        .child(group.label()),
+                );
+                for (keys, description) in rows {
+                    let mut chips = div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_1()
+                        .w(px(132.0))
+                        .flex_shrink_0();
+                    for k in keys {
+                        chips = chips.child(
+                            div()
+                                .px_1()
+                                .rounded_sm()
+                                .bg(rgb(colors.surface_hi))
+                                .text_color(rgb(colors.text))
+                                .child(SharedString::from(k)),
+                        );
+                    }
+                    section = section.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap_2()
+                            .text_xs()
+                            .child(chips)
+                            .child(div().text_color(rgb(colors.text_dim)).child(description)),
+                    );
+                }
+                list = list.child(section);
+            }
+        }
+
+        let surface_hi = colors.surface_hi;
+        let footer = div()
+            .id("help-edit-keybindings")
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_t_1()
+            .border_color(rgb(colors.border))
+            .text_xs()
+            .text_color(rgb(colors.text))
+            .hover(move |d| d.bg(rgb(surface_hi)))
+            .child(svg_icon("icons/arrow_up_right.svg", colors.text_dim, 14.0))
+            .child("Edit keybindings.toml")
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.open_keybindings(cx);
+                view.close_help(cx);
+            }));
+
+        let card = div()
+            .id("help-card")
+            .flex()
+            .flex_col()
+            .w(px(WINDOW_WIDTH - 32.0))
+            .max_h(max_h)
+            .bg(rgb(colors.surface))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(colors.border))
+            .on_click(cx.listener(|_, _: &ClickEvent, _, _| {}))
+            .child(title)
+            .child(list)
+            .child(footer);
 
         backdrop.child(card).into_any_element()
     }

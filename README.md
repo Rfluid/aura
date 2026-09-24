@@ -115,6 +115,7 @@ running a CLI command.
 - **Agent profiles** — configure multiple instances of the same agent (e.g. personal vs. enterprise workspaces) and toggle between them; last selection is persisted across sessions.
 - **Plugin system** — extend Aura with custom metrics panels; anyone can author a plugin. First-party plugins (incl. RTK Gains for [RTK](https://github.com/rtk) token-savings) are installed separately.
 - **Single-click activation** — left-click the tray icon to open / close the modal; right-click for Show / Quit; Escape closes.
+- **Keyboard-driven** — vim-style shortcuts out of the box (`j`/`k` scroll, `h`/`l` sections, `H`/`L` profiles, `q` closes, `?` lists them all), remappable in `keybindings.toml` with warnings for bad entries. See [`docs/keybindings.md`](docs/keybindings.md).
 - **A real indicator, not a launcher** — the tooltip carries live quota usage, the ring fills with your session while its color tracks your week, and the icon turns red near the limit — without opening anything.
 - **Tray-native** — uses [`ksni`](https://github.com/iovxw/ksni) on Linux for direct StatusNotifierItem (Plasma / GNOME / sway / etc.) and `tray-icon` on macOS / Windows for AppKit / Win32 menu-bar integration.
 
@@ -229,6 +230,27 @@ modal's refresh button both re-read the file, so edits take effect
 without restarting Aura. See
 [`docs/configuration.md`](docs/configuration.md) for the full schema.
 
+## Keybindings
+
+The modal is keyboard-driven with vim-style defaults:
+
+| Keys | Does |
+| ---- | ---- |
+| `j` / `k`, `ctrl-d` / `ctrl-u`, `g g` / `G` | Scroll line, half page, top / bottom |
+| `h` / `l`, `tab`, `1`–`9` | Previous / next / Nth section tab |
+| `H` / `L`, `[` / `]` | Previous / next agent (or plugin) |
+| `m`, `p` / `P` | Toggle agents ↔ plugins, cycle the period |
+| `r`, `,`, `.`, `?` | Refresh, settings, more menu, shortcut list |
+| `esc`, `q` | Close the open overlay / close the window |
+
+Override or unbind any of them in `keybindings.toml` next to `config.toml`,
+by hand or from the CLI — `aura keys set ctrl-j scroll_down`, `aura keys
+wizard`, `aura keys merge team.toml`, `aura keys describe` to see every
+action (edits keep your comments). `aura keys validate` reports unknown
+actions, bad keystrokes and conflicts. Turn shortcuts off entirely
+with `[keybindings] enabled = false` in `config.toml`. Full reference:
+[`docs/keybindings.md`](docs/keybindings.md).
+
 ## Themes
 
 Aura's color tokens are user-customizable via a sibling file:
@@ -282,7 +304,9 @@ moment you log in:
 **Left-click** the tray icon to open Aura's modal; left-click again to
 close. **Middle-click** does the same. **Right-click** for an explicit menu
 with **Show Aura** and **Quit Aura** (Cmd/Ctrl+Q while the menu is open).
-**Escape** closes the modal, as does clicking anywhere outside it.
+**Escape** closes the modal (or the open menu first), as does **q** or
+clicking anywhere outside it. Press **?** in the modal for every keyboard
+shortcut — see [Keybindings](#keybindings).
 `just stop` / `systemctl --user stop aura` (Linux) and `just stop-windows`
 (Windows) are equivalent CLI exits.
 

@@ -7,7 +7,7 @@
 //! - `aura config wizard`
 //!
 //! Every settable scalar field under `[window]` / `[tray]` / `[content]` /
-//! `[update]` has a [`FieldDescriptor`] here. A unit test
+//! `[update]` / `[keybindings]` has a [`FieldDescriptor`] here. A unit test
 //! (`registry_covers_every_field`) serializes a default config and asserts
 //! each leaf key is described, so adding a struct field without documenting
 //! it breaks the build.
@@ -60,7 +60,7 @@ pub struct SectionField {
 /// The scalar `[section]`s of the config, in template-emission order. The
 /// repeatable `[[agents]]` / `[[plugins]]` tables are not here — they are
 /// documented by [`agent_fields`] / [`plugin_fields`] and edited elsewhere.
-pub const SECTIONS: &[&str] = &["window", "tray", "content", "update"];
+pub const SECTIONS: &[&str] = &["window", "tray", "content", "update", "keybindings"];
 
 /// All settable scalar fields, in template-emission order ([`SECTIONS`]).
 pub fn fields() -> &'static [FieldDescriptor] {
@@ -288,6 +288,21 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 default.",
             example: "false",
         },
+        // ── [keybindings] ──
+        FieldDescriptor {
+            key: "keybindings.enabled",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "true",
+            summary: "Turn the modal's keyboard shortcuts on or off.",
+            description: "Install the modal's keymap: the built-in vim-style defaults (j/k to \
+                scroll, h/l for sections, q to close, ? for help, …) plus anything in \
+                keybindings.toml next to this file. Default true. Set false to turn every \
+                shortcut off and leave the modal mouse-only; Escape still closes it. Run \
+                `aura keys list` to see the active bindings and `aura keys validate` to check \
+                keybindings.toml.",
+            example: "true",
+        },
     ]
 }
 
@@ -497,6 +512,7 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .clone()
             .unwrap_or_else(|| "(unset)".to_string()),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -530,6 +546,7 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "content.goblin_mode" => cfg.content.goblin_mode = parse_bool(key, raw)?,
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
+        "keybindings.enabled" => cfg.keybindings.enabled = parse_bool(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -704,6 +721,7 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "content.goblin_mode" => cfg.content.goblin_mode.to_string(),
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
+        "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
         _ => return None,
     })
 }
@@ -764,7 +782,8 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentKind, ContentConfig, PluginConfig, TrayConfig, UpdateConfig, WindowConfig,
+        AgentConfig, AgentKind, ContentConfig, KeybindingsConfig, PluginConfig, TrayConfig,
+        UpdateConfig, WindowConfig,
     };
 
     /// Walk a serialized default config and assert every leaf key under each
@@ -909,6 +928,7 @@ mod tests {
         assert_eq!(parsed.tray, cfg.tray);
         assert_eq!(parsed.content, cfg.content);
         assert_eq!(parsed.update, cfg.update);
+        assert_eq!(parsed.keybindings, cfg.keybindings);
     }
 
     #[test]
@@ -959,6 +979,7 @@ mod tests {
                 dismissed_version: Some("0.1.18".to_string()),
                 dismiss_all: true,
             },
+            keybindings: KeybindingsConfig { enabled: false },
         };
         assert_round_trips(&cfg);
     }

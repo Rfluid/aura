@@ -2,11 +2,12 @@
 title: Configuration
 status: current
 version: 0.2.0
-last_updated: 2026-09-16
-last_verified: 2026-09-16
+last_updated: 2026-09-23
+last_verified: 2026-09-23
 source_refs:
   - crates/aura-core/src/config.rs
   - crates/aura-core/src/config_schema.rs
+  - crates/aura-core/src/keymap.rs
   - crates/aura-core/src/state.rs
   - crates/aura/src/cli/config.rs
   - crates/aura/src/runtime.rs
@@ -68,14 +69,15 @@ for fine tuning.
 The generated `config.toml` starts with a link back to this tutorial and then
 documents each field above the value it controls. Repeatable `[[agents]]` and
 `[[plugins]]` blocks are ordinary TOML arrays of tables; scalar settings live
-under `[window]`, `[tray]`, `[content]`, and `[update]`.
+under `[window]`, `[tray]`, `[content]`, `[update]`, and `[keybindings]`.
 
 ## File locations
 
 | File | Path | What it holds | Edited by |
 |---|---|---|---|
-| Config | `~/.config/aura/config.toml` | Agents, plugins, `[window]`, `[tray]`, `[content]`, `[update]` | You (CLI / editor) |
+| Config | `~/.config/aura/config.toml` | Agents, plugins, `[window]`, `[tray]`, `[content]`, `[update]`, `[keybindings]` | You (CLI / editor) |
 | Theme | `~/.config/aura/theme.toml` | Color / font / spinner overrides | You (CLI / editor) |
+| Keybindings | `~/.config/aura/keybindings.toml` | Keyboard-shortcut overrides — see [keybindings.md](keybindings.md) | You (CLI / editor) |
 | State | `~/.local/share/aura/state.json` | Active profile selection | Aura (do not hand-edit) |
 | Plugins dir | `~/.config/aura/plugins/` | Auto-discovered plugin binaries | `aura plugin add` |
 
@@ -88,7 +90,7 @@ writes a fully-commented default `config.toml` on first run if none exists.
 Config flows through five layers, top (authoring) to bottom (consumption):
 
 1. **Typed structs** — `crates/aura-core/src/config.rs`. `AppConfig` is the
-   root (`agents`, `plugins`, `window`, `tray`, `content`, `update`); each sub-struct derives
+   root (`agents`, `plugins`, `window`, `tray`, `content`, `update`, `keybindings`); each sub-struct derives
    `Serialize`/`Deserialize` and a `Default`, so the whole tree round-trips
    through TOML and an empty/partial file still parses (missing fields fall back
    to `Default`). This is the **source of truth** — the shape of a config is
@@ -138,6 +140,9 @@ the config (and `theme.toml`) reloaded, at three moments:
 - **Refresh button** — `app::do_refresh` reloads config + theme on a background
   thread; a malformed `theme.toml` logs a warning and falls back to defaults
   rather than blanking the UI.
+
+`keybindings.toml` follows the same schedule: it is re-read, and the keymap
+reinstalled, on every open and every refresh.
 
 A failed reload falls back to the last good in-memory snapshot, so a transient
 I/O error never breaks the toggle.
@@ -234,6 +239,15 @@ Controls the "Update available" header button.
 |---|---|---|---|---|
 | `dismissed_version` | string? | — | unset | Last release dismissed via the button's ×; a newer release re-shows it. |
 | `dismiss_all` | bool | `true` \| `false` | `false` | Master mute: never render the button or fire the GitHub check. |
+
+### `[keybindings]`
+
+Master switch for the modal's keyboard shortcuts. The bindings themselves live
+in `keybindings.toml` — see [keybindings.md](keybindings.md).
+
+| Key | Type | Allowed | Default | Summary |
+|---|---|---|---|---|
+| `enabled` | bool | `true` \| `false` | `true` | Install the keymap (vim-style defaults + `keybindings.toml`). `false` leaves the modal mouse-only; Escape still closes it. |
 
 ### `[[agents]]` (repeatable)
 

@@ -2,8 +2,8 @@
 title: CLI reference
 status: current
 version: 0.1.0
-last_updated: 2026-05-24
-last_verified: 2026-05-24
+last_updated: 2026-09-23
+last_verified: 2026-09-23
 source_refs: ["crates/aura/src/cli/"]
 owner: "@rfluid"
 tags: [cli, docs]
@@ -31,6 +31,7 @@ consume aura's data without scraping human output.
 | `aura config <…>` | Manage `~/.config/aura/config.toml`. |
 | `aura state <…>` | Inspect / modify `~/.local/share/aura/state.json`. |
 | `aura theme <…>` | Inspect / seed `~/.config/aura/theme.toml`. |
+| `aura keys <…>` | List, check and seed `~/.config/aura/keybindings.toml`. Alias: `aura keybindings`. |
 | `aura agents list` | Configured profiles + detection status. |
 | `aura plugin <…>` | Manage user plugins. Alias: `aura plugins`. |
 | `aura usage` | Token-usage snapshot for an agent profile. |
@@ -106,6 +107,28 @@ aura theme path
 aura theme edit                     # opens in $EDITOR; seeds defaults if missing
 aura theme init [--force]           # writes the bundled defaults to disk
 ```
+
+## `aura keys`
+
+```text
+aura keys path
+aura keys list [--context global|overlay] [--format text|json]
+aura keys describe [<action>|<keys>] [--format text|json]   # alias: aura keys actions
+aura keys get <keys> [--context global|overlay] [--format text|json]
+aura keys set <keys> <action> [--context …]     # `none` as the action unbinds
+aura keys unbind <keys> [--context …]
+aura keys reset <keys> | --action <name> | --all [--context …]
+aura keys wizard [--context …]
+aura keys merge <file|-> [--prefer theirs|ours] [--check] [--format text|json]
+aura keys export                                # complete keymap as TOML on stdout
+aura keys init [--force] [--full]               # starter file; --full = every default live
+aura keys document [--force]                    # rewrite with inline docs
+aura keys validate [--format text|json]         # exit 1 on problems
+aura keys edit
+```
+
+Write commands edit `keybindings.toml` in place and keep your comments.
+See [keybindings.md](keybindings.md#cli) for the full semantics.
 
 ## `aura agents`
 

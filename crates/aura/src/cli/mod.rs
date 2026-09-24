@@ -15,6 +15,7 @@ mod completions;
 mod config;
 mod doctor;
 mod format;
+mod keys;
 mod plugin;
 mod quota;
 mod resolve;
@@ -53,6 +54,11 @@ pub enum Command {
     /// Inspect and seed the user theme (`~/.config/aura/theme.toml`).
     Theme(theme::ThemeCli),
 
+    /// Inspect, check and seed the modal's keyboard shortcuts
+    /// (`~/.config/aura/keybindings.toml`).
+    #[command(alias = "keybindings")]
+    Keys(keys::KeysCli),
+
     /// List configured agent profiles and their detection status.
     Agents(agents::AgentsCli),
 
@@ -90,6 +96,7 @@ pub fn dispatch(command: Command) -> Result<()> {
         Command::Config(args) => args.run(),
         Command::State(args) => args.run(),
         Command::Theme(args) => args.run(),
+        Command::Keys(args) => args.run(),
         Command::Agents(args) => args.run(),
         Command::Plugin(args) => args.run(),
         Command::Usage(args) => args.run(),
