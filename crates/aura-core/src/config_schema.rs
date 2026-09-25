@@ -7,7 +7,7 @@
 //! - `aura config wizard`
 //!
 //! Every settable scalar field under `[window]` / `[tray]` / `[content]` /
-//! `[update]` / `[keybindings]` has a [`FieldDescriptor`] here. A unit test
+//! `[update]` / `[keybindings]` / `[sponsor]` has a [`FieldDescriptor`] here. A unit test
 //! (`registry_covers_every_field`) serializes a default config and asserts
 //! each leaf key is described, so adding a struct field without documenting
 //! it breaks the build.
@@ -60,7 +60,14 @@ pub struct SectionField {
 /// The scalar `[section]`s of the config, in template-emission order. The
 /// repeatable `[[agents]]` / `[[plugins]]` tables are not here — they are
 /// documented by [`agent_fields`] / [`plugin_fields`] and edited elsewhere.
-pub const SECTIONS: &[&str] = &["window", "tray", "content", "update", "keybindings"];
+pub const SECTIONS: &[&str] = &[
+    "window",
+    "tray",
+    "content",
+    "update",
+    "keybindings",
+    "sponsor",
+];
 
 /// All settable scalar fields, in template-emission order ([`SECTIONS`]).
 pub fn fields() -> &'static [FieldDescriptor] {
@@ -303,6 +310,19 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 keybindings.toml.",
             example: "true",
         },
+        // ── [sponsor] ──
+        FieldDescriptor {
+            key: "sponsor.nudge",
+            type_label: "bool",
+            allowed: &["true", "false"],
+            default: "true",
+            summary: "Show the one-time sponsor card a week after the first run.",
+            description: "Show a small, dismissible \"consider sponsoring\" card in the modal \
+                once, seven days after Aura first ran. The sponsor links leave it open; only its × retires it \
+                for good (recorded in state.json, not here). Default true. Set false to never \
+                show it.",
+            example: "false",
+        },
     ]
 }
 
@@ -513,6 +533,7 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .unwrap_or_else(|| "(unset)".to_string()),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
+        "sponsor.nudge" => cfg.sponsor.nudge.to_string(),
         _ => return Err(unknown_key(key)),
     };
     Ok(v)
@@ -547,6 +568,7 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
         "keybindings.enabled" => cfg.keybindings.enabled = parse_bool(key, raw)?,
+        "sponsor.nudge" => cfg.sponsor.nudge = parse_bool(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -722,6 +744,7 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
+        "sponsor.nudge" => cfg.sponsor.nudge.to_string(),
         _ => return None,
     })
 }
@@ -782,8 +805,8 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentConfig, AgentKind, ContentConfig, KeybindingsConfig, PluginConfig, TrayConfig,
-        UpdateConfig, WindowConfig,
+        AgentConfig, AgentKind, ContentConfig, KeybindingsConfig, PluginConfig, SponsorConfig,
+        TrayConfig, UpdateConfig, WindowConfig,
     };
 
     /// Walk a serialized default config and assert every leaf key under each
@@ -929,6 +952,7 @@ mod tests {
         assert_eq!(parsed.content, cfg.content);
         assert_eq!(parsed.update, cfg.update);
         assert_eq!(parsed.keybindings, cfg.keybindings);
+        assert_eq!(parsed.sponsor, cfg.sponsor);
     }
 
     #[test]
@@ -980,6 +1004,7 @@ mod tests {
                 dismiss_all: true,
             },
             keybindings: KeybindingsConfig { enabled: false },
+            sponsor: SponsorConfig { nudge: false },
         };
         assert_round_trips(&cfg);
     }

@@ -18,6 +18,7 @@ Auto-grown list of memory entries. Agents append after each task that produced n
 - [2026-05-21-claude-code-stats-cache-stale](facts/2026-05-21-claude-code-stats-cache-stale.md) — `stats-cache.json` is a stale periodic rollup; live token data lives in per-session JSONL files under `projects/`
 - [2026-05-21-claude-usage-display-format](facts/2026-05-21-claude-usage-display-format.md) — Exact fields, computation logic, and date-range strategy of `claude /usage`; total tokens = input+output only (cache excluded)
 - [2026-09-23-gpui-keymap-dispatch](facts/2026-09-23-gpui-keymap-dispatch.md) — GPUI bindings need a focused root element; same-node contexts tie on depth so insertion order decides; `NoAction` masks lower contexts
+- [2026-09-24-state-json-shared-writers](facts/2026-09-24-state-json-shared-writers.md) — `state.json` has several writers (tray loop, startup, modal, CLI); update one field read-modify-write; app-recorded facts go there, not config
 
 ## patterns/
 

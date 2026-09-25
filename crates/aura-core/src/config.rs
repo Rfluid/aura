@@ -462,6 +462,26 @@ impl Default for KeybindingsConfig {
     }
 }
 
+// ── Sponsor ──────────────────────────────────────────────────────────────────
+
+/// Controls the one-time "consider sponsoring" card. When it shows and whether
+/// it has been answered are tracked in `state.json` (see [`crate::sponsor`]);
+/// this section only holds the opt-out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SponsorConfig {
+    /// Show the sponsor card once, a week after the first run. Default true.
+    /// Set false to never show it.
+    #[serde(default = "default_true")]
+    pub nudge: bool,
+}
+
+impl Default for SponsorConfig {
+    fn default() -> Self {
+        Self { nudge: true }
+    }
+}
+
 // ── AppConfig ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -480,6 +500,8 @@ pub struct AppConfig {
     pub update: UpdateConfig,
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+    #[serde(default)]
+    pub sponsor: SponsorConfig,
 }
 
 impl AppConfig {
@@ -550,6 +572,7 @@ impl AppConfig {
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         }
     }
 
@@ -821,6 +844,7 @@ mod tests {
             },
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -841,6 +865,7 @@ mod tests {
             },
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -857,6 +882,7 @@ mod tests {
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         };
         cfg.apply_plugin_order();
         let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
@@ -939,6 +965,7 @@ dismiss_all = true
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![
@@ -989,6 +1016,7 @@ dismiss_all = true
             content: ContentConfig::default(),
             update: UpdateConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            sponsor: SponsorConfig::default(),
         };
 
         let added = cfg.merge_agents(vec![AgentConfig {

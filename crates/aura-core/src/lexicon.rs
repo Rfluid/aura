@@ -56,6 +56,17 @@ pub struct Lexicon {
     /// end is part of the persona — keep or replace as you see fit.
     pub update_available_fmt: fn(latest_version: &str) -> String,
 
+    // ── Sponsor nudge ───────────────────────────────────────────────────────
+    /// Header line of the one-time sponsor card (see `crate::sponsor`).
+    pub sponsor_nudge_title: &'static str,
+    /// Body of the sponsor card.
+    pub sponsor_nudge: &'static str,
+    /// Primary button: opens the GitHub Sponsors page.
+    pub sponsor_nudge_github: &'static str,
+    /// Secondary button: opens the Pix (BRL) tip page. The card's trailing ×
+    /// is an icon, so it has no string.
+    pub sponsor_nudge_pix: &'static str,
+
     // ── Period pills ────────────────────────────────────────────────────────
     pub period_all: &'static str,
     pub period_7d: &'static str,
@@ -126,6 +137,12 @@ pub const POLITE: Lexicon = Lexicon {
 
     update_available_fmt: polite_update_available,
 
+    sponsor_nudge_title: "Enjoying Aura?",
+    sponsor_nudge:
+        "Aura is free and built by one person. If it's been useful, consider sponsoring.",
+    sponsor_nudge_github: "Sponsor on GitHub",
+    sponsor_nudge_pix: "Pix (BRL)",
+
     period_all: "All time",
     period_7d: "Last 7 days",
     period_30d: "Last 30 days",
@@ -162,6 +179,11 @@ pub const GOBLIN: Lexicon = Lexicon {
     check_updates_fmt: goblin_check_updates,
 
     update_available_fmt: goblin_update_available,
+
+    sponsor_nudge_title: "Still here, huh?",
+    sponsor_nudge: "One person built this for free. If it's saved your butt, throw them a coin.",
+    sponsor_nudge_github: "Cough it up on GitHub",
+    sponsor_nudge_pix: "Pix it (BRL)",
 
     period_all: "the whole damn time",
     period_7d: "last week",
@@ -240,6 +262,22 @@ mod tests {
                 GOBLIN.menu_open_config,
             ),
             ("menu_themes", POLITE.menu_themes, GOBLIN.menu_themes),
+            (
+                "sponsor_nudge_title",
+                POLITE.sponsor_nudge_title,
+                GOBLIN.sponsor_nudge_title,
+            ),
+            ("sponsor_nudge", POLITE.sponsor_nudge, GOBLIN.sponsor_nudge),
+            (
+                "sponsor_nudge_github",
+                POLITE.sponsor_nudge_github,
+                GOBLIN.sponsor_nudge_github,
+            ),
+            (
+                "sponsor_nudge_pix",
+                POLITE.sponsor_nudge_pix,
+                GOBLIN.sponsor_nudge_pix,
+            ),
             ("period_all", POLITE.period_all, GOBLIN.period_all),
             ("period_7d", POLITE.period_7d, GOBLIN.period_7d),
             ("period_30d", POLITE.period_30d, GOBLIN.period_30d),

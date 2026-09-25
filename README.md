@@ -738,7 +738,13 @@ Later
 
 ## Sponsor
 
-See [SPONSOR.md](./SPONSOR.md) for ways to support Aura.
+See [SPONSOR.md](./SPONSOR.md) for ways to support Aura, or sponsor on
+[GitHub Sponsors](https://github.com/sponsors/Rfluid).
+
+A week after first launch, Aura shows a one-time card in the modal asking you
+to consider sponsoring. The sponsor links (GitHub Sponsors or Pix) leave it
+open; only the card's × retires it for good. To never see it, run
+`aura config set sponsor.nudge false`.
 
 ## Contributing
 

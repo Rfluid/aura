@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -25,6 +26,17 @@ pub struct AppState {
     /// when the config or theme changes.
     #[serde(default)]
     pub modal_height: Option<u32>,
+    /// When the tray app first ran on this machine. Stamped on startup by
+    /// [`crate::sponsor::record_first_run`]; `None` only until then, including
+    /// for a state file written before the field existed. Starts the clock on
+    /// the one-time sponsor nudge.
+    #[serde(default)]
+    pub first_run: Option<DateTime<Utc>>,
+    /// Set once the user closes the sponsor nudge card with its ×. The sponsor
+    /// links leave it unset, so the card stays up after one is opened.
+    /// Never cleared, so the card shows at most once per install.
+    #[serde(default)]
+    pub sponsor_nudge_done: bool,
 }
 
 impl AppState {
@@ -80,6 +92,8 @@ mod tests {
         let state = AppState {
             active_profile: Some("Claude Code (Enterprise)".to_string()),
             modal_height: Some(409),
+            first_run: Some("2026-09-01T12:00:00Z".parse().unwrap()),
+            sponsor_nudge_done: true,
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let parsed: AppState = serde_json::from_str(&json).unwrap();
@@ -96,6 +110,10 @@ mod tests {
         let loaded = AppState::load_from(&path).unwrap();
         assert_eq!(loaded.active_profile.as_deref(), Some("Personal"));
         assert_eq!(loaded.modal_height, None);
+        // Same for the sponsor-nudge fields: an upgraded install starts with
+        // no first run recorded and the nudge still pending.
+        assert_eq!(loaded.first_run, None);
+        assert!(!loaded.sponsor_nudge_done);
     }
 
     #[test]
@@ -116,6 +134,7 @@ mod tests {
         let original = AppState {
             active_profile: Some("My Profile".to_string()),
             modal_height: Some(512),
+            ..AppState::default()
         };
         original.save_to(&path).unwrap();
 

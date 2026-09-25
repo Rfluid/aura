@@ -46,6 +46,56 @@ A small clickable pill containing the agent icon + agent name.
 - Settings cog `⚙`: `COLOR_TEXT_DIM`, opens config via `xdg-open`/`$EDITOR`.
 - Title `Aura ⟳`: `COLOR_ACCENT`. Clickable; triggers `refresh()`.
 
+## Sponsor nudge
+
+**Renderer**: `AuraView::render_sponsor_nudge` — `app.rs:1722`; dismiss
+handler `AuraView::dismiss_sponsor_nudge` — `app.rs:912`.
+
+One-time card between the header and the selector row, shown a week after the
+first run until the user closes it with its × (gating:
+`aura_core::sponsor`). Warm but calm: a faint accent *wash*, not a filled
+banner, so it reads as information rather than an alert. Every color is
+derived from theme tokens with `Theme::blend`, so custom `theme.toml` palettes
+(light ones included) stay coherent — no literals.
+
+- Strip: `px_4 py_2`, border-bottom `border_1` / `COLOR_BORDER`, `flex_shrink_0`
+- Card: `flex_col`, padding `px_3 py_3`, gap `gap_2`, radius `rounded_md`,
+  `border_1`
+- Header row (`items_center`, `gap_2`): 14px `heart.svg` in `COLOR_ACCENT` ·
+  title `text_sm` / `COLOR_TEXT`, `flex_1` (lexicon `sponsor_nudge_title`) ·
+  trailing `icon_button` with `close.svg` (20×20 hit area, 14px icon)
+- Body: `text_xs` / `COLOR_TEXT_DIM` (lexicon `sponsor_nudge`)
+- Actions row: `flex_wrap`, `gap_2`, `mt_1`. Buttons are `px_2 py_1`,
+  `rounded_md`, `text_xs`, icon 12px with `gap_1p5`
+- Weight: regular (the app uses no font weights — see `tokens.md`); the
+  title's emphasis comes from `text_sm` + `COLOR_TEXT` against the dim body.
+
+| Element          | Bg / border (rest)                                                        | Text / icon                                             | Hover                                                                   |
+| ---------------- | ------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Card             | bg `blend(ACCENT, BG, 0.9)`, border `blend(ACCENT, BG, 0.7)`              | —                                                       | —                                                                       |
+| × (dismiss)      | none                                                                      | icon `COLOR_TEXT_DIM`                                   | bg `blend(ACCENT, BG, 0.8)`                                             |
+| Sponsor on GitHub| bg `blend(ACCENT, BG, 0.15)`                                              | `on_accent_text(ACCENT)`, leading `github.svg` same     | bg `COLOR_ACCENT` (brightens — never a downgrade)                       |
+| Pix (BRL)        | none, border `blend(ACCENT, BG, 0.55)`                                    | `COLOR_TEXT`, trailing `arrow_up_right.svg` `TEXT_DIM`  | bg `blend(ACCENT, BG, 0.8)`, border `blend(ACCENT, BG, 0.3)`            |
+
+| Click target      | Opens                          | Then                                   |
+| ----------------- | ------------------------------ | -------------------------------------- |
+| Sponsor on GitHub | `sponsor::SPONSOR_URL`         | card stays up                          |
+| Pix (BRL)         | `sponsor::PIX_URL`             | card stays up                          |
+| ×                 | nothing                        | `sponsor_nudge_done = true` (persisted)|
+
+Notes:
+
+- The sponsor buttons deliberately leave the card up: someone who paid via Pix
+  may still want to set up a GitHub sponsorship, or vice versa. Only the ×
+  retires it.
+
+- The Pix label is plain text, not the 🇧🇷 flag: regional-indicator flags
+  need a color-emoji font plus ligature shaping, which the monospace stack
+  does not guarantee, so the flag could render as two boxed letters.
+- No `cursor_pointer`: no other click target in the app sets one, so the card
+  follows suit.
+- The body does not quote a spend figure: Aura tracks tokens, not cost.
+
 ## Period row
 
 **Renderer**: `AuraView::render_period_row` — `app.rs:298-336`.

@@ -2,13 +2,14 @@
 title: Configuration
 status: current
 version: 0.2.0
-last_updated: 2026-09-23
-last_verified: 2026-09-23
+last_updated: 2026-09-24
+last_verified: 2026-09-24
 source_refs:
   - crates/aura-core/src/config.rs
   - crates/aura-core/src/config_schema.rs
   - crates/aura-core/src/keymap.rs
   - crates/aura-core/src/state.rs
+  - crates/aura-core/src/sponsor.rs
   - crates/aura/src/cli/config.rs
   - crates/aura/src/runtime.rs
   - crates/aura/src/main.rs
@@ -69,16 +70,17 @@ for fine tuning.
 The generated `config.toml` starts with a link back to this tutorial and then
 documents each field above the value it controls. Repeatable `[[agents]]` and
 `[[plugins]]` blocks are ordinary TOML arrays of tables; scalar settings live
-under `[window]`, `[tray]`, `[content]`, `[update]`, and `[keybindings]`.
+under `[window]`, `[tray]`, `[content]`, `[update]`, `[keybindings]`, and
+`[sponsor]`.
 
 ## File locations
 
 | File | Path | What it holds | Edited by |
 |---|---|---|---|
-| Config | `~/.config/aura/config.toml` | Agents, plugins, `[window]`, `[tray]`, `[content]`, `[update]`, `[keybindings]` | You (CLI / editor) |
+| Config | `~/.config/aura/config.toml` | Agents, plugins, `[window]`, `[tray]`, `[content]`, `[update]`, `[keybindings]`, `[sponsor]` | You (CLI / editor) |
 | Theme | `~/.config/aura/theme.toml` | Color / font / spinner overrides | You (CLI / editor) |
 | Keybindings | `~/.config/aura/keybindings.toml` | Keyboard-shortcut overrides — see [keybindings.md](keybindings.md) | You (CLI / editor) |
-| State | `~/.local/share/aura/state.json` | Active profile selection | Aura (do not hand-edit) |
+| State | `~/.local/share/aura/state.json` | Active profile selection, modal height hint, first-run time, sponsor-nudge status | Aura (do not hand-edit) |
 | Plugins dir | `~/.config/aura/plugins/` | Auto-discovered plugin binaries | `aura plugin add` |
 
 Paths follow the XDG base-dir spec via the `dirs` crate, so the exact location
@@ -90,7 +92,7 @@ writes a fully-commented default `config.toml` on first run if none exists.
 Config flows through five layers, top (authoring) to bottom (consumption):
 
 1. **Typed structs** — `crates/aura-core/src/config.rs`. `AppConfig` is the
-   root (`agents`, `plugins`, `window`, `tray`, `content`, `update`, `keybindings`); each sub-struct derives
+   root (`agents`, `plugins`, `window`, `tray`, `content`, `update`, `keybindings`, `sponsor`); each sub-struct derives
    `Serialize`/`Deserialize` and a `Default`, so the whole tree round-trips
    through TOML and an empty/partial file still parses (missing fields fall back
    to `Default`). This is the **source of truth** — the shape of a config is
@@ -178,8 +180,8 @@ aura config edit               # open in $EDITOR (creates defaults if missing)
 aura config validate           # parse-check
 ```
 
-Keys are dotted paths into `[window]` / `[tray]` / `[content]` / `[update]`,
-e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. A key from an
+Keys are dotted paths into `[window]` / `[tray]` / `[content]` / `[update]` /
+`[keybindings]` / `[sponsor]`, e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. A key from an
 older layout (`display.anchor`) still resolves — `get`, `set` and `describe`
 answer with its current name and print a note. `set` rejects bad enums/booleans and
 suggests near-miss keys; pass `none` (or empty) to clear an optional field. The
@@ -248,6 +250,21 @@ in `keybindings.toml` — see [keybindings.md](keybindings.md).
 | Key | Type | Allowed | Default | Summary |
 |---|---|---|---|---|
 | `enabled` | bool | `true` \| `false` | `true` | Install the keymap (vim-style defaults + `keybindings.toml`). `false` leaves the modal mouse-only; Escape still closes it. |
+
+### `[sponsor]`
+
+Opt-out for the one-time sponsor card. Seven days after Aura first runs, the
+modal shows a small card under the header asking you to consider sponsoring,
+with **Sponsor on GitHub** (opens <https://github.com/sponsors/Rfluid>), **Pix
+(BRL)** (opens <https://livepix.gg/rfluid>) and a **×** to dismiss. The sponsor
+links leave the card open, so you can use both; only the × retires it for
+good. The first-run time and the "dismissed"
+flag live in `state.json`, not here — an install upgraded from a
+build without them starts its week on the first launch after the upgrade.
+
+| Key | Type | Allowed | Default | Summary |
+|---|---|---|---|---|
+| `nudge` | bool | `true` \| `false` | `true` | Show the one-time sponsor card a week after the first run. `false` never shows it. |
 
 ### `[[agents]]` (repeatable)
 
@@ -415,6 +432,10 @@ goblin_mode = false
 
 # Master mute: never render the update button, never call GitHub. Default false.
 dismiss_all = false
+
+[sponsor]
+# Show the one-time sponsor card a week after the first run. Default true.
+nudge = true
 ```
 
 ### Modal anchoring (`anchor`)
@@ -614,18 +635,26 @@ peak hour all work normally.
 
 ## State file
 
-Aura writes the active profile selection to
-`~/.local/share/aura/state.json`. This file is managed automatically —
-`toggle_window` reloads it each time the modal opens, so a profile change made
-in one session is visible the next time you click the tray icon. **Do not edit
-by hand**; use `aura state set-profile <name>` (validated against
+Aura writes the active profile selection — plus a few facts it records about
+itself (the modal's last settled height, when it first ran, and whether the
+sponsor card has been dismissed) — to `~/.local/share/aura/state.json`. This
+file is managed automatically — `toggle_window` reloads it each time the modal
+opens, so a profile change made in one session is visible the next time you
+click the tray icon. **Do not edit by hand**; use `aura state set-profile <name>` (validated against
 `config.agents`).
 
 ```json
 {
-  "active_profile": "Claude Code (Personal)"
+  "active_profile": "Claude Code (Personal)",
+  "modal_height": 409,
+  "first_run": "2026-09-01T12:00:00Z",
+  "sponsor_nudge_done": false
 }
 ```
+
+`aura state clear` resets only the profile selection; the first-run time and
+sponsor-card flag are kept. To silence the sponsor card, use
+`aura config set sponsor.nudge false` rather than editing this file.
 
 ## Themes
 
