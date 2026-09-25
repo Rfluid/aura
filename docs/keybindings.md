@@ -2,12 +2,14 @@
 title: Keybindings
 status: current
 version: 0.2.0
-last_updated: 2026-09-23
-last_verified: 2026-09-23
+last_updated: 2026-09-25
+last_verified: 2026-09-25
 source_refs:
   - crates/aura-core/src/keymap/mod.rs
   - crates/aura-core/src/keymap/file.rs
   - crates/aura-ui/src/keys.rs
+  - crates/aura-ui/src/hints.rs
+  - crates/aura-core/src/plugin/keys.rs
   - crates/aura-ui/src/app.rs
   - crates/aura-ui/src/lib.rs
   - crates/aura-cli/src/keys.rs
@@ -69,12 +71,74 @@ the body.
 | `t` | `open_theme` | Edit `theme.toml` |
 | `u` | `open_update` | Open the update instructions (when an update is shown) |
 | `U` | `dismiss_update` | Hide the update button (when shown) |
+| `f` | `hint_mode` | Label a plugin's buttons so you can press them by key. See [Hint mode](#hint-mode) |
 | — | `open_keybindings` | Edit `keybindings.toml` (unbound by default) |
 | — | `quit` | Quit Aura, tray icon included (unbound by default) |
 
 Escape works in layers. First it clears any selected text. If nothing is
-selected, it closes the open overlay. If no overlay is open, it closes the
-window. `q` always closes the window, even when an overlay is open.
+selected, it closes the open overlay. If no overlay is open, it disarms a
+plugin button waiting for its confirming press. Otherwise it closes the
+window. `q` closes the window even when an overlay is open, but it also
+disarms an armed button first.
+
+### Hint mode
+
+Plugin panels can have buttons (`controls` sections). To press one without
+the mouse, press `f`. Every button on the tab gets a short label, such as `a`,
+`s` or `d`. Type a label to press that button.
+
+- Labels use the letters `asdfjklghqwertyuiopzxcvbnm`, home row first. Up to
+  26 buttons get one letter each. Beyond that, every label is two letters.
+- Buttons that no longer match what you've typed fade out. `backspace`
+  deletes the last letter you typed. A letter that matches no label does
+  nothing.
+- A button that asks for confirmation (e.g. **Remove**) arms on the first
+  press of its label and fires when you type the label again. Typing a
+  different label disarms it.
+- `esc` or a click leaves hint mode. So does switching tabs, plugins or
+  mode, opening an overlay, or pressing a button.
+- While hint mode is on, your other shortcuts are paused, so labels can
+  reuse their letters.
+
+`f` does nothing outside a plugin tab that has buttons.
+
+### Plugin keys
+
+A plugin can give its actions their own shortcuts. They all start with the
+**leader**, `space` by default, so a plugin's `m` key is pressed as `space m`.
+Aura's own shortcuts never start with the leader, so a plugin can't take one
+of them over.
+
+- Plugin keys work only while the plugin tab that declares them is on screen.
+  Each tab (section) has its own keys.
+- Press the leader: a panel floats at the bottom right of the window with
+  the tab's keys. As you type, it narrows to the keys that still match and
+  shows what's left to press. `backspace` takes back a key. A key that
+  matches nothing is ignored.
+- The panel waits until you finish a shortcut or press `esc`. To have it
+  give up on its own, set `leader_timeout_ms` (below). Each key restarts
+  the wait.
+- If one key starts another (`d` and `d d`), the shorter one runs as soon
+  as it's typed, so the longer one can never be pressed. `aura plugin run`
+  warns about this.
+- The `?` overlay lists the tab's keys under **Plugin: \<name\>**.
+- A key for a button that asks for confirmation arms on the first press and
+  fires on the second, like a click. If that button isn't on screen, the
+  floating panel shows the prompt. `esc` disarms it.
+- Change the leader in `config.toml`, or turn plugin keys off:
+
+  ```toml
+  [keybindings]
+  plugin_leader = "ctrl-p"      # or "none"
+  leader_timeout_ms = 3000      # unset (the default): wait until esc
+  ```
+
+  Or run `aura config set keybindings.plugin_leader ctrl-p`.
+- Aura doesn't remap plugin keys. If a plugin lets you change its keys, it
+  does so in its own settings.
+- `aura keys validate` and `aura doctor` warn when the leader collides with a
+  `[global]` binding, e.g. a leader of `g` next to `g g`. `aura plugin run
+  <name>` prints each tab's keys and any problems with them on stderr.
 
 ## Customizing: `keybindings.toml`
 
@@ -274,5 +338,23 @@ wrote it.
   because GPUI dispatches key bindings from the focused element. No other
   element in the modal is focusable, and a click anywhere puts focus back on
   the root.
+- Hint mode (`aura-ui/src/hints.rs`) removes the `Aura` context from the root
+  element while it runs, so no binding matches. Typed letters then reach the
+  root's `key_down` listener, which matches them against the labels. Labels
+  follow the order buttons render in, and all labels have the same length,
+  so none is a prefix of another.
+- Plugin keys (`aura-core/src/plugin/keys.rs`) are resolved per section:
+  the leader goes in front, spellings are made canonical, and duplicates or
+  keys that start other keys are reported. Only the leader becomes a GPUI
+  binding, in a third context, `plugin`, between global and overlay. The
+  root carries `plugin` only while the section on screen has keys and no
+  overlay, hint mode, refresh or action is running. The leader opens leader
+  mode, which works like hint mode: the root drops its keymap contexts and
+  its `key_down` listener matches the typed strokes against the section's
+  keys with GPUI's own `KeyBinding::match_keystrokes`. Aura reads the
+  strokes itself rather than binding whole sequences because GPUI forgets a
+  pending sequence after a fixed second, and Escape during one would
+  replay into `dismiss`. The leader is reinstalled whenever the plugin,
+  section, mode or panel changes.
 - When shortcuts are on, Escape is an ordinary binding. The fallback Escape
   observer in `main.rs` only runs when they're off.

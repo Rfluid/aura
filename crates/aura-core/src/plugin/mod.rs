@@ -1,4 +1,5 @@
 pub mod discovery;
+pub mod keys;
 pub mod runner;
 
 pub use discovery::{
@@ -83,6 +84,26 @@ pub struct PluginControl {
     pub buttons: Vec<PluginButton>,
 }
 
+/// A keyboard shortcut a section declares. The host prefixes it with the
+/// leader (`[keybindings] plugin_leader`, default `space`), so `"keys": "s"`
+/// is pressed as `space s`. Pressing it does what clicking a button with
+/// this `action` id does: the host re-invokes the plugin as
+/// `<cmd> action <id> --period <p>`. See [`keys::resolve`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginKey {
+    /// Keystrokes after the leader, in `keybindings.toml` syntax (`s`,
+    /// `ctrl-x`, `d d`).
+    pub keys: String,
+    /// Action id sent back to the plugin, like a button `id`.
+    pub action: String,
+    /// What the key does, for the help overlay and the leader strip.
+    pub label: String,
+    /// Two-press confirmation, for actions with no button carrying one. A
+    /// visible button with the same id and its own `confirm` also counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+}
+
 /// What kind of content a section holds. Tagged on the wire as
 /// `{"type": "lines", ...}` / `{"type": "table", ...}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,6 +142,9 @@ pub struct PluginSection {
     /// Defaults to `true` for backwards compatibility.
     #[serde(default = "default_true")]
     pub uses_period: bool,
+    /// Shortcuts active while this section is on screen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<PluginKey>,
     #[serde(flatten)]
     pub content: PluginContent,
 }
@@ -196,6 +220,7 @@ impl From<LegacyPluginPanel> for PluginPanel {
                 id: "default".to_string(),
                 label: "Overview".to_string(),
                 uses_period: true,
+                keys: Vec::new(),
                 content: PluginContent::Lines {
                     lines: legacy.lines,
                 },
@@ -214,6 +239,7 @@ mod tests {
             id: "s".to_string(),
             label: "S".to_string(),
             uses_period,
+            keys: Vec::new(),
             content: PluginContent::default(),
         }
     }
@@ -253,6 +279,33 @@ mod tests {
         let back = serde_json::to_string(&section).unwrap();
         let again: PluginSection = serde_json::from_str(&back).unwrap();
         assert_eq!(section, again);
+    }
+
+    #[test]
+    fn section_keys_roundtrip_and_default_empty() {
+        let json = r#"{
+            "id": "s", "label": "S", "type": "text", "text": "",
+            "keys": [
+                {"keys": "s", "action": "mute:toggle", "label": "Toggle sound"},
+                {"keys": "d d", "action": "rm", "label": "Delete", "confirm": "Sure?"}
+            ]
+        }"#;
+        let section: PluginSection = serde_json::from_str(json).unwrap();
+        assert_eq!(section.keys.len(), 2);
+        assert_eq!(section.keys[0].action, "mute:toggle");
+        assert!(section.keys[0].confirm.is_none());
+        assert_eq!(section.keys[1].confirm.as_deref(), Some("Sure?"));
+        let back = serde_json::to_string(&section).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PluginSection>(&back).unwrap(),
+            section
+        );
+
+        let bare: PluginSection =
+            serde_json::from_str(r#"{"id": "s", "label": "S", "type": "text", "text": ""}"#)
+                .unwrap();
+        assert!(bare.keys.is_empty());
+        assert!(!serde_json::to_string(&bare).unwrap().contains("keys"));
     }
 
     #[test]

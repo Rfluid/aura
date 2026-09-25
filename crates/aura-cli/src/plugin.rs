@@ -202,5 +202,32 @@ fn run_plugin(name: &str, period: aura_core::reader::Period, action: Option<&str
         Some(id) => PluginRunner::run_action(plugin_cfg, id, period),
         None => PluginRunner::run_with_period(plugin_cfg, period),
     };
+    report_keys(&panel, &config.keybindings.plugin_leader);
     print_json(&panel)
+}
+
+/// Each section's keys as the modal would install them, and any problems
+/// with them, on stderr so stdout stays the panel JSON.
+fn report_keys(panel: &aura_core::plugin::PluginPanel, raw_leader: &str) {
+    use aura_core::plugin::keys;
+    let (leader, error) = keys::effective_leader(raw_leader);
+    if let Some(e) = error {
+        eprintln!("warning: {e}");
+    }
+    let Some(leader) = leader else {
+        if panel.sections.iter().any(|s| !s.keys.is_empty()) {
+            eprintln!("plugin keys are off (keybindings.plugin_leader = \"none\")");
+        }
+        return;
+    };
+    for section in panel.sections.iter().filter(|s| !s.keys.is_empty()) {
+        let (bindings, warnings) = keys::resolve(section, &leader);
+        eprintln!("keys in section `{}`:", section.id);
+        for b in &bindings {
+            eprintln!("  {:<14} {}  ({})", b.display, b.label, b.action);
+        }
+        for w in &warnings {
+            eprintln!("  warning: {w}");
+        }
+    }
 }

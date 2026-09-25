@@ -250,6 +250,8 @@ in `keybindings.toml` — see [keybindings.md](keybindings.md).
 | Key | Type | Allowed | Default | Summary |
 |---|---|---|---|---|
 | `enabled` | bool | `true` \| `false` | `true` | Install the keymap (vim-style defaults + `keybindings.toml`). `false` leaves the modal mouse-only; Escape still closes it. |
+| `plugin_leader` | string | keystroke(s) \| `none` | `"space"` | Key pressed before a plugin's own shortcuts: a plugin's `s` is `space s`. `none` turns plugin shortcuts off. See [keybindings.md](keybindings.md#plugin-keys). |
+| `leader_timeout_ms` | u32? | — | unset | How long the plugin key panel waits for the next key before closing. Unset: until the shortcut completes or Escape. |
 
 ### `[sponsor]`
 

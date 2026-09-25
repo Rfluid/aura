@@ -4,7 +4,10 @@ use aura_core::{
     config::{AgentConfig, AgentKind, AppConfig, PluginConfig},
     keymap::{ActionGroup, BindingContext, KeyAction, Keymap},
     lexicon::{self, Lexicon},
-    plugin::{PluginContent, PluginControl, PluginPanel, PluginRunner, PluginSection},
+    plugin::{
+        keys::{self as plugin_keys, PluginBinding, PluginKeyWarning},
+        PluginContent, PluginControl, PluginPanel, PluginRunner, PluginSection,
+    },
     quota::{
         forecast, AntigravityQuota, CodexQuota, ForecastSnapshot, ForecastStatus, ForecastWindow,
         GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
@@ -16,8 +19,9 @@ use aura_core::{
 };
 use chrono::{DateTime, Local, Timelike, Utc};
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, ElementId, FocusHandle,
-    Pixels, ScrollHandle, SharedString, Window,
+    div, prelude::*, px, rgb, size, svg, AnyElement, ClickEvent, Context, DummyKeyboardMapper,
+    ElementId, FocusHandle, KeyBinding, KeyDownEvent, MouseDownEvent, NoAction, Pixels,
+    ScrollHandle, SharedString, Window,
 };
 use gpui_selectable_text::{set_selection_theme, SelectableText, SelectionScope, SelectionStyle};
 
@@ -240,6 +244,24 @@ pub struct AuraView {
     /// (buttons with a `confirm` label need two clicks). Cleared by any
     /// other button click, by firing an action, and on refresh.
     armed_action: Option<String>,
+    /// Hint mode (`hint_mode`, see `crate::hints`): `Some` holds the label
+    /// characters typed so far. Only honoured while
+    /// [`Self::hints_available`]; anything that changes what's on screen
+    /// clears it.
+    hint_input: Option<String>,
+    /// Keys the plugin section on screen declares, resolved behind the
+    /// leader, exactly as last installed (see [`Self::sync_plugin_keys`]).
+    plugin_bindings: Vec<PluginBinding>,
+    /// Problems with those keys (and with `plugin_leader`), for the help
+    /// overlay. Each distinct set also goes to stderr once.
+    plugin_key_warnings: Vec<PluginKeyWarning>,
+    /// Leader mode (the plugin leader was pressed, see `keys::PluginLeader`):
+    /// `Some` holds the keystrokes typed after it so far. Only honoured while
+    /// [`Self::plugin_keys_active`]; cleared wherever `hint_input` is.
+    leader_input: Option<Vec<gpui::Keystroke>>,
+    /// Bumped on every leader keystroke, so a `leader_timeout_ms` timer only
+    /// ends leader mode if no key came after it was started.
+    leader_generation: u64,
     /// Index into `SPINNER_FRAMES`, advanced by a timer while `is_loading`.
     spinner_frame: usize,
     error: Option<String>,
@@ -358,6 +380,11 @@ impl AuraView {
             refresh_generation: 0,
             action_inflight: false,
             armed_action: None,
+            hint_input: None,
+            plugin_bindings: Vec::new(),
+            plugin_key_warnings: Vec::new(),
+            leader_input: None,
+            leader_generation: 0,
             spinner_frame: 0,
             error: None,
             last_window_height: Rc::new(Cell::new(Pixels::ZERO)),
@@ -480,9 +507,9 @@ impl AuraView {
         if let Some(theme) = result.theme {
             self.theme = theme;
         }
-        // Reinstall from the (possibly reloaded) config and keymap, so a
-        // Refresh picks up edits to either file, like it does for the theme.
-        crate::keys::install(cx, &result.keymap, self.config.keybindings.enabled);
+        // Reinstalled from the (possibly reloaded) config and keymap below,
+        // once the plugin panels are in, so a Refresh picks up edits to
+        // either file, like it does for the theme.
         self.keymap = result.keymap;
         if let Some(fallback) = result.fallback_profile {
             self.active_profile = fallback;
@@ -493,6 +520,8 @@ impl AuraView {
         self.plugin_panels = result.plugin_panels;
         self.error = result.error;
         self.armed_action = None;
+        self.hint_input = None;
+        self.leader_input = None;
 
         // Keep the tray icon in step with what the modal is showing. This is
         // the cheap half of the indicator: the quota snapshot was just loaded
@@ -537,6 +566,7 @@ impl AuraView {
         }
 
         self.is_loading = false;
+        self.sync_plugin_keys(true, cx);
         cx.notify();
     }
 
@@ -569,6 +599,8 @@ impl AuraView {
             return;
         }
         self.armed_action = None;
+        self.hint_input = None;
+        self.leader_input = None;
         let Some(name) = self.active_plugin.clone() else {
             return;
         };
@@ -599,12 +631,6 @@ impl AuraView {
         .detach();
     }
 
-    /// First click on a `confirm` button: arm it and wait for the second.
-    fn arm_plugin_action(&mut self, action_id: String, cx: &mut Context<Self>) {
-        self.armed_action = Some(action_id);
-        cx.notify();
-    }
-
     fn apply_action_result(&mut self, name: String, panel: PluginPanel, cx: &mut Context<Self>) {
         self.action_inflight = false;
         self.armed_action = None;
@@ -625,8 +651,345 @@ impl AuraView {
                 .find(|(n, _)| n == &name)
                 .and_then(|(_, panel)| panel.sections.first().map(|s| s.id.clone()));
         }
+        self.sync_plugin_keys(false, cx);
         cx.notify();
     }
+
+    /// The plugin section on screen: the selected one, or the panel's first.
+    /// `None` without a panel, or for an error panel.
+    fn current_plugin_section(&self) -> Option<&PluginSection> {
+        let panel = self.current_plugin_panel()?;
+        if panel.error.is_some() {
+            return None;
+        }
+        self.active_plugin_section
+            .as_deref()
+            .and_then(|id| panel.section(id))
+            .or_else(|| panel.sections.first())
+    }
+
+    /// Resolve the keys of the plugin section on screen and install them
+    /// with the keymap when they differ from what's installed (always, with
+    /// `force`). Runs whenever the plugin, section, mode or panel changes.
+    fn sync_plugin_keys(&mut self, force: bool, cx: &mut Context<Self>) {
+        let (bindings, warnings) = self.resolve_plugin_keys();
+        if !force && bindings == self.plugin_bindings {
+            return;
+        }
+        report_plugin_key_warnings(&warnings);
+        // Only the leader is a GPUI binding; leader mode matches the rest.
+        let leader = if bindings.is_empty() {
+            None
+        } else {
+            plugin_keys::effective_leader(&self.config.keybindings.plugin_leader)
+                .0
+                .map(|l| l.canonical)
+        };
+        crate::keys::install(
+            cx,
+            &self.keymap,
+            self.config.keybindings.enabled,
+            leader.as_deref(),
+        );
+        self.plugin_bindings = bindings;
+        self.plugin_key_warnings = warnings;
+    }
+
+    fn resolve_plugin_keys(&self) -> (Vec<PluginBinding>, Vec<PluginKeyWarning>) {
+        if !self.config.keybindings.enabled || self.mode != Mode::Plugin {
+            return (Vec::new(), Vec::new());
+        }
+        let raw_leader = &self.config.keybindings.plugin_leader;
+        let (leader, _) = plugin_keys::effective_leader(raw_leader);
+        let (Some(leader), Some(section)) = (leader, self.current_plugin_section()) else {
+            return (Vec::new(), Vec::new());
+        };
+        if section.keys.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let mut warnings: Vec<PluginKeyWarning> =
+            plugin_keys::leader_warnings(raw_leader, &self.keymap)
+                .into_iter()
+                .map(|message| PluginKeyWarning { message })
+                .collect();
+        let (bindings, section_warnings) = plugin_keys::resolve(section, &leader);
+        warnings.extend(section_warnings);
+        (bindings, warnings)
+    }
+
+    /// Whether the root carries the `plugin` key context: the section on
+    /// screen has keys and nothing covers it.
+    fn plugin_keys_active(&self) -> bool {
+        self.mode == Mode::Plugin
+            && !self.plugin_bindings.is_empty()
+            && !self.is_loading
+            && !self.action_inflight
+            && !self.overlay_open()
+            && !self.hint_mode_active()
+    }
+
+    /// A plugin key was completed in leader mode.
+    fn run_plugin_key(&mut self, action_id: String, cx: &mut Context<Self>) {
+        if !self.plugin_keys_active() {
+            return;
+        }
+        let confirm = self
+            .plugin_bindings
+            .iter()
+            .any(|b| b.action == action_id && b.confirm.is_some())
+            || self
+                .current_plugin_section()
+                .is_some_and(|s| plugin_keys::button_confirms(s, &action_id));
+        self.press_plugin_action(action_id, confirm, cx);
+    }
+
+    /// Press a plugin action the way a button click does — the one path for
+    /// clicks, hint labels and plugin keys. With `confirm`, the first press
+    /// only arms it and a second press fires; returns whether it armed.
+    fn press_plugin_action(&mut self, id: String, confirm: bool, cx: &mut Context<Self>) -> bool {
+        if confirm && self.armed_action.as_deref() != Some(id.as_str()) {
+            self.armed_action = Some(id);
+            cx.notify();
+            true
+        } else {
+            self.run_plugin_action(id, cx);
+            false
+        }
+    }
+
+    fn leader_mode_active(&self) -> bool {
+        self.leader_input.is_some() && self.plugin_keys_active()
+    }
+
+    /// The leader fired: start reading a plugin shortcut.
+    pub(crate) fn enter_leader_mode(&mut self, cx: &mut Context<Self>) {
+        if !self.plugin_keys_active() {
+            return;
+        }
+        self.leader_input = Some(Vec::new());
+        self.arm_leader_timeout(cx);
+        cx.notify();
+    }
+
+    /// With `leader_timeout_ms` set, leave leader mode that long after the
+    /// latest keystroke. Unset, leader mode lasts until a shortcut completes
+    /// or Escape.
+    fn arm_leader_timeout(&mut self, cx: &mut Context<Self>) {
+        self.leader_generation += 1;
+        let Some(ms) = self.config.keybindings.leader_timeout_ms else {
+            return;
+        };
+        let generation = self.leader_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(u64::from(ms)))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.leader_generation == generation && view.leader_input.take().is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The section's keys still reachable after `typed`, each with whether
+    /// `typed` completes it. Matching goes through GPUI's own keystroke
+    /// matcher, so shifted and IME-produced characters behave as in the
+    /// keymap.
+    fn leader_matches(&self, typed: &[gpui::Keystroke]) -> Vec<(&PluginBinding, bool)> {
+        self.plugin_bindings
+            .iter()
+            .filter_map(|b| {
+                let binding = KeyBinding::load(
+                    &b.own_keys,
+                    Box::new(NoAction),
+                    None,
+                    false,
+                    None,
+                    &DummyKeyboardMapper,
+                )
+                .ok()?;
+                binding.match_keystrokes(typed).map(|pending| (b, !pending))
+            })
+            .collect()
+    }
+
+    /// Root `key_down` listener in leader mode, where the root carries no
+    /// keymap context. A key that completes a shortcut runs it (the shorter
+    /// one wins when it also starts a longer one); a key that starts one
+    /// waits for more; any other key is ignored. Escape cancels.
+    fn leader_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if !self.leader_mode_active() {
+            return;
+        }
+        cx.stop_propagation();
+        let keystroke = &event.keystroke;
+        match keystroke.key.as_str() {
+            "escape" => self.leader_input = None,
+            "backspace" => {
+                if let Some(input) = &mut self.leader_input {
+                    input.pop();
+                }
+                self.arm_leader_timeout(cx);
+            }
+            _ => {
+                let mut typed = self.leader_input.clone().unwrap_or_default();
+                typed.push(keystroke.clone());
+                let matches = self.leader_matches(&typed);
+                let complete = matches
+                    .iter()
+                    .find(|(_, complete)| *complete)
+                    .map(|(b, _)| b.action.clone());
+                let pending = !matches.is_empty();
+                if let Some(action) = complete {
+                    self.leader_input = None;
+                    self.run_plugin_key(action, cx);
+                } else if pending {
+                    self.leader_input = Some(typed);
+                    self.arm_leader_timeout(cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The floating key panel at the right: the section's keys while leader
+    /// mode waits for them, or the confirm prompt for an action a key armed
+    /// whose button isn't on screen (its pill shows the prompt otherwise).
+    fn render_leader_panel(&self) -> Option<AnyElement> {
+        let colors = self.theme.colors;
+        let card = || {
+            div()
+                .absolute()
+                .right(px(12.0))
+                .bottom(px(12.0))
+                .w(px(210.0))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .bg(rgb(colors.surface))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(colors.border))
+                .shadow_lg()
+                .text_xs()
+        };
+        let chip = |text: String| {
+            div()
+                .flex_shrink_0()
+                .px_1()
+                .rounded_sm()
+                .bg(rgb(colors.surface_hi))
+                .text_color(rgb(colors.text))
+                .child(SharedString::from(text))
+        };
+
+        if self.leader_mode_active() {
+            let typed = self.leader_input.as_deref().unwrap_or_default();
+            let leader = plugin_keys::effective_leader(&self.config.keybindings.plugin_leader)
+                .0
+                .map(|l| l.display)
+                .unwrap_or_default();
+            let mut path = vec![leader];
+            path.extend(typed.iter().map(|k| k.unparse()));
+
+            let mut panel = card().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(rgb(colors.border))
+                    .text_color(rgb(colors.text_dim))
+                    .children(path.into_iter().map(|p| chip(p).into_any_element()))
+                    .child("…"),
+            );
+            for (b, _) in self.leader_matches(typed) {
+                // The strokes still to press.
+                let rest: Vec<&str> = b.key_display.split(' ').skip(typed.len()).collect();
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(chip(rest.join(" ")))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_color(rgb(colors.text_dim))
+                                .child(SharedString::from(b.label.clone())),
+                        ),
+                );
+            }
+            return Some(
+                panel
+                    .child(
+                        div()
+                            .pt_1()
+                            .text_color(rgb(colors.text_dim))
+                            .opacity(0.7)
+                            .child("esc to cancel"),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        let armed = self.armed_action.as_deref()?;
+        if self.mode != Mode::Plugin || self.action_inflight {
+            return None;
+        }
+        let on_screen = self
+            .hint_targets()
+            .iter()
+            .any(|(id, confirm)| id == armed && *confirm);
+        if on_screen {
+            return None;
+        }
+        let binding = self.plugin_bindings.iter().find(|b| b.action == armed)?;
+        let prompt = binding.confirm.as_deref().unwrap_or("Confirm?");
+        Some(
+            card()
+                .border_color(rgb(colors.error))
+                .child(
+                    div()
+                        .text_color(rgb(colors.error))
+                        .child(SharedString::from(prompt.to_string())),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(colors.text_dim))
+                        .child(SharedString::from(format!(
+                            "press {} again · esc to cancel",
+                            binding.display
+                        ))),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+/// Help overlay rows of one group: `(keys, description)`.
+type HelpRows = Vec<(Vec<String>, SharedString)>;
+
+/// Plugin key warnings go to stderr once per distinct set: syncing runs on
+/// every section switch and panel refresh.
+fn report_plugin_key_warnings(warnings: &[PluginKeyWarning]) {
+    static LAST: std::sync::Mutex<Vec<PluginKeyWarning>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut last) = LAST.lock() else {
+        return;
+    };
+    if last.as_slice() == warnings {
+        return;
+    }
+    for w in warnings {
+        eprintln!("aura: plugin keys: {w}");
+    }
+    *last = warnings.to_vec();
 }
 
 /// Pure background-thread refresh worker. All the heavy I/O (config reload,
@@ -832,6 +1195,9 @@ impl AuraView {
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         if self.mode != mode {
             self.mode = mode;
+            self.hint_input = None;
+            self.leader_input = None;
+            self.sync_plugin_keys(false, cx);
             cx.notify();
         }
     }
@@ -846,10 +1212,13 @@ impl AuraView {
     fn set_plugin(&mut self, name: String, cx: &mut Context<Self>) {
         if self.active_plugin.as_deref() != Some(name.as_str()) {
             self.active_plugin = Some(name);
+            self.hint_input = None;
+            self.leader_input = None;
             // Reset the active section to the new plugin's first section.
             self.active_plugin_section = self
                 .current_plugin_panel()
                 .and_then(|p| p.sections.first().map(|s| s.id.clone()));
+            self.sync_plugin_keys(false, cx);
             cx.notify();
         }
     }
@@ -857,6 +1226,9 @@ impl AuraView {
     fn set_plugin_section(&mut self, id: String, cx: &mut Context<Self>) {
         if self.active_plugin_section.as_deref() != Some(id.as_str()) {
             self.active_plugin_section = Some(id);
+            self.hint_input = None;
+            self.leader_input = None;
+            self.sync_plugin_keys(false, cx);
             cx.notify();
         }
     }
@@ -982,6 +1354,8 @@ impl AuraView {
         self.show_more_modal = false;
         self.show_settings_panel = false;
         self.show_help = false;
+        self.hint_input = None;
+        self.leader_input = None;
         if !was_open {
             match which {
                 Overlay::More => self.show_more_modal = true,
@@ -1053,9 +1427,15 @@ impl AuraView {
                 }
             }
             K::Dismiss => {
-                if !gpui_selectable_text::registry::clear_active_selection(window, cx) {
-                    crate::runtime::request_dismiss();
+                if gpui_selectable_text::registry::clear_active_selection(window, cx) {
+                    return;
                 }
+                // An armed confirm button is disarmed before anything closes.
+                if self.armed_action.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                crate::runtime::request_dismiss();
             }
             K::Quit => cx.quit(),
             K::OpenConfig => self.open_config(cx),
@@ -1071,7 +1451,91 @@ impl AuraView {
                     self.dismiss_update(cx);
                 }
             }
+            K::HintMode => self.toggle_hint_mode(cx),
         }
+    }
+
+    /// Whether hint mode can run: a plugin `controls` section with at least
+    /// one button is on screen, and nothing (overlay, refresh, action) is
+    /// covering it.
+    fn hints_available(&self) -> bool {
+        self.mode == Mode::Plugin
+            && !self.is_loading
+            && !self.action_inflight
+            && !self.overlay_open()
+            && !self.hint_targets().is_empty()
+    }
+
+    fn hint_mode_active(&self) -> bool {
+        self.hint_input.is_some() && self.hints_available()
+    }
+
+    /// The buttons of the plugin section on screen, in render order, as
+    /// `(action id, needs confirm)`. Hint labels are assigned by position in
+    /// this list, so it must walk controls exactly as
+    /// [`Self::render_plugin_controls`] does.
+    fn hint_targets(&self) -> Vec<(String, bool)> {
+        match self.current_plugin_section().map(|s| &s.content) {
+            Some(PluginContent::Controls { controls }) => controls
+                .iter()
+                .flat_map(|c| &c.buttons)
+                .map(|b| (b.id.clone(), b.confirm.is_some()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn toggle_hint_mode(&mut self, cx: &mut Context<Self>) {
+        self.hint_input = if self.hint_mode_active() || !self.hints_available() {
+            None
+        } else {
+            Some(String::new())
+        };
+        cx.notify();
+    }
+
+    /// Root `key_down` listener. Only claims keystrokes in hint mode, where
+    /// the root carries no keymap context and nothing else would see them.
+    fn hint_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if !self.hint_mode_active() {
+            return;
+        }
+        cx.stop_propagation();
+        let keystroke = &event.keystroke;
+        match keystroke.key.as_str() {
+            "escape" => {
+                self.hint_input = None;
+                self.leader_input = None;
+                self.armed_action = None;
+            }
+            "backspace" => {
+                if let Some(input) = &mut self.hint_input {
+                    input.pop();
+                }
+            }
+            key => {
+                let Some(c) = crate::hints::hint_char(key, &keystroke.modifiers) else {
+                    return;
+                };
+                let targets = self.hint_targets();
+                let labels = crate::hints::labels(targets.len());
+                let mut input = self.hint_input.clone().unwrap_or_default();
+                input.push(c);
+                match crate::hints::resolve(&labels, &input) {
+                    crate::hints::Match::Exact(i) => {
+                        let (id, confirm) = targets[i].clone();
+                        if self.press_plugin_action(id, confirm, cx) {
+                            // Armed: stay in hint mode, the same label again fires.
+                            self.hint_input = Some(String::new());
+                        }
+                    }
+                    crate::hints::Match::Prefix => self.hint_input = Some(input),
+                    // A typo: ignore the character, keep what was typed.
+                    crate::hints::Match::None => return,
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Scroll the help list while it is open, the body otherwise.
@@ -1289,7 +1753,27 @@ impl Render for AuraView {
         // `overlay` key context while one is open (see `keys`).
         let focus_root = div()
             .track_focus(&self.focus_handle)
-            .key_context(crate::keys::root_context(self.overlay_open()));
+            .key_context(crate::keys::root_context(
+                self.overlay_open(),
+                self.hint_mode_active() || self.leader_mode_active(),
+                self.plugin_keys_active(),
+            ))
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                if view.hint_mode_active() {
+                    view.hint_key_down(event, cx)
+                } else {
+                    view.leader_key_down(event, cx)
+                }
+            }))
+            // Any click leaves hint and leader mode; a click on a button
+            // still fires it.
+            .on_any_mouse_down(cx.listener(|view, _: &MouseDownEvent, _, cx| {
+                let hint = view.hint_input.take().is_some();
+                let leader = view.leader_input.take().is_some();
+                if hint || leader {
+                    cx.notify();
+                }
+            }));
         let mut root = crate::keys::listen(focus_root, cx)
             .flex()
             .flex_col()
@@ -1314,6 +1798,7 @@ impl Render for AuraView {
             })
             .child(self.render_tab_row(cx))
             .child(self.render_body(cx))
+            .children(self.render_leader_panel())
             // After children have been laid out, sum their vertical extent
             // and resize the window so it tightly fits the content. The body
             // is allowed to shrink below its content (overflow_y_scroll), so
@@ -2261,6 +2746,27 @@ impl AuraView {
         let accent = self.current_accent();
         let mut col = div().flex().flex_col().px_4().py_3().gap_1p5();
 
+        // Hint mode: one label per button, in the order `hint_targets` lists
+        // them, with the characters typed so far.
+        let hint_labels = self
+            .hint_mode_active()
+            .then(|| crate::hints::labels(controls.iter().map(|c| c.buttons.len()).sum()));
+        let typed = self.hint_input.as_deref().unwrap_or("");
+        let mut hint_index = 0;
+        if hint_labels.is_some() {
+            let status = if self.armed_action.is_some() {
+                "Press the label again to confirm · esc to cancel"
+            } else {
+                "Type a label to press its button · esc to cancel"
+            };
+            col = col.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.colors.text_dim))
+                    .child(status),
+            );
+        }
+
         for (ci, control) in controls.iter().enumerate() {
             let mut label_col = div().flex().flex_col().gap_0p5().min_w_0().child(
                 div()
@@ -2323,6 +2829,30 @@ impl AuraView {
                         d.bg(rgb(theme.colors.surface_hi))
                     })
                     .text_color(rgb(fg));
+                if let Some(labels) = &hint_labels {
+                    let label = &labels[hint_index];
+                    hint_index += 1;
+                    match label.strip_prefix(typed) {
+                        Some(rest) => {
+                            pill = pill.child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .px_1()
+                                    .rounded_sm()
+                                    .bg(rgb(theme.colors.accent))
+                                    .text_color(rgb(theme.colors.bg))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .when(!typed.is_empty(), |d| {
+                                        d.child(div().opacity(0.5).child(typed.to_string()))
+                                    })
+                                    .child(rest.to_string()),
+                            );
+                        }
+                        // Ruled out by what's been typed: fade it.
+                        None => pill = pill.opacity(0.35),
+                    }
+                }
                 if let Some(icon) = &button.icon {
                     pill = pill.child(svg_icon_dynamic(SharedString::from(icon.clone()), fg, 10.0));
                 }
@@ -2331,14 +2861,10 @@ impl AuraView {
                 }
 
                 let action_id = button.id.clone();
-                let needs_confirm = button.confirm.is_some() && !armed;
+                let confirm = button.confirm.is_some();
                 pills = pills.child(pill.on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
-                        if needs_confirm {
-                            view.arm_plugin_action(action_id.clone(), cx);
-                        } else {
-                            view.run_plugin_action(action_id.clone(), cx);
-                        }
+                        view.press_plugin_action(action_id.clone(), confirm, cx);
                     },
                 )));
             }
@@ -3679,8 +4205,53 @@ impl AuraView {
                 list = list.child(block);
             }
 
-            for group in ActionGroup::ALL {
-                let rows = self.help_rows(group);
+            if !self.plugin_key_warnings.is_empty() {
+                let mut block = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(colors.warning))
+                    .text_xs()
+                    .text_color(rgb(colors.warning))
+                    .child(sel(
+                        "help-plugin-warnings-title",
+                        "This plugin's keys have problems:",
+                    ));
+                for (i, w) in self.plugin_key_warnings.iter().enumerate() {
+                    block = block.child(sel(
+                        sid(format!("help-plugin-warning-{i}")),
+                        format!("• {}", w.message),
+                    ));
+                }
+                list = list.child(block);
+            }
+
+            let mut groups: Vec<(SharedString, HelpRows)> = ActionGroup::ALL
+                .into_iter()
+                .map(|group| {
+                    let rows = self
+                        .help_rows(group)
+                        .into_iter()
+                        .map(|(keys, description)| (keys, SharedString::from(description)))
+                        .collect();
+                    (SharedString::from(group.label()), rows)
+                })
+                .collect();
+            // The keys the plugin section on screen declares.
+            if self.mode == Mode::Plugin && !self.plugin_bindings.is_empty() {
+                let name = self.active_plugin.clone().unwrap_or_default();
+                let rows = self
+                    .plugin_bindings
+                    .iter()
+                    .map(|b| (vec![b.display.clone()], SharedString::from(b.label.clone())))
+                    .collect();
+                groups.push((SharedString::from(format!("Plugin: {name}")), rows));
+            }
+
+            for (label, rows) in groups {
                 if rows.is_empty() {
                     continue;
                 }
@@ -3688,7 +4259,7 @@ impl AuraView {
                     div()
                         .text_xs()
                         .text_color(rgb(colors.text_dim))
-                        .child(group.label()),
+                        .child(label),
                 );
                 for (keys, description) in rows {
                     let mut chips = div()
@@ -4019,6 +4590,7 @@ mod tests {
                 id: "s".to_string(),
                 label: "S".to_string(),
                 uses_period,
+                keys: Vec::new(),
                 content: PluginContent::default(),
             }],
             error: None,

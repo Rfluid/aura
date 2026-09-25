@@ -88,6 +88,7 @@ pub enum KeyAction {
     OpenKeybindings,
     OpenUpdate,
     DismissUpdate,
+    HintMode,
 }
 
 /// How the help overlay and `aura keys list` group actions.
@@ -248,6 +249,12 @@ const ACTIONS: &[ActionInfo] = &[
         "dismiss_update",
         Commands,
         "Hide the update button",
+    ),
+    info(
+        A::HintMode,
+        "hint_mode",
+        Commands,
+        "Label plugin buttons to press them by key",
     ),
 ];
 
@@ -666,6 +673,7 @@ const DEFAULTS: &[(BindingContext, &str, KeyAction)] = {
         (G, "t", A::OpenTheme),
         (G, "u", A::OpenUpdate),
         (G, "U", A::DismissUpdate),
+        (G, "f", A::HintMode),
         (O, "escape", A::CloseOverlay),
     ]
 };
