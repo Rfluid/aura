@@ -467,7 +467,7 @@ mod tests {
     fn default_matches_legacy_constants() {
         let t = Theme::default();
         // These are the exact values the binary used to hard-code in
-        // `crates/aura/src/app.rs` (see `.design/customization.md`).
+        // `crates/aura-ui/src/app.rs` (see `.design/customization.md`).
         assert_eq!(t.colors.bg, 0x0e0e10);
         assert_eq!(t.colors.surface, 0x1a1a1f);
         assert_eq!(t.colors.surface_hi, 0x252530);

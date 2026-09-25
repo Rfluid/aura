@@ -4,7 +4,7 @@ status: current
 version: 0.1.0
 last_updated: 2026-09-24
 last_verified: 2026-09-24
-source_refs: ["crates/aura/src/cli/"]
+source_refs: ["crates/aura-cli/src/"]
 owner: "@rfluid"
 tags: [cli, docs]
 ---

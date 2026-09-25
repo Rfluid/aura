@@ -8,6 +8,7 @@
 ## Phase 1 — Cargo workspace & CI ✓
 
 - [x] Create `Cargo.toml` workspace at repo root with members: `crates/aura`, `crates/aura-core`, `plugins/rtk-gains`
+  - Later split: `crates/aura` is now a thin master binary over `crates/aura-cli` (headless subcommands) and `crates/aura-ui` (GPUI app)
 - [x] `crates/aura-core` — library crate (data layer, plugin runner, config, state); no UI deps
 - [x] `crates/aura` — binary crate (GPUI app, tray icon, modal); depends on `aura-core`
 - [x] `plugins/rtk-gains` — standalone binary crate (the RTK Gains plugin)

@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "crates/aura",
+    "crates/aura-cli",
     "crates/aura-core",
+    "crates/aura-ui",
     "plugins/hello",
     "plugins/rtk-gains",
 ]
@@ -21,7 +23,9 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates — versions kept in sync by scripts/prepare-release.sh
+aura-cli         = { path = "crates/aura-cli",    version = "0.1.0" }
 aura-core        = { path = "crates/aura-core",   version = "0.1.21" }
+aura-ui          = { path = "crates/aura-ui",     version = "0.1.0" }
 aura-plugin-rtk  = { path = "plugins/rtk-gains",  version = "0.1.2" }
 
 # External

@@ -2,7 +2,7 @@
 
 **Status**: implemented. The schema below is the source of truth; the runtime
 loader lives at `crates/aura-core/src/theme.rs`, with the AuraView wiring in
-`crates/aura/src/app.rs`. Built-in defaults are baked into
+`crates/aura-ui/src/app.rs`. Built-in defaults are baked into
 `Theme::default()` and the seed file `crates/aura-core/src/theme_default.toml`.
 
 The goal: let users override **any** token from `tokens.md` and any agent's
@@ -110,7 +110,7 @@ with no extra UI work.
 
 ## Implementation notes
 
-- Add `crates/aura/src/theme.rs` exporting a `Theme` struct mirroring the TOML
+- Add `crates/aura-ui/src/theme.rs` exporting a `Theme` struct mirroring the TOML
   schema, with `Theme::default()` returning the current `COLOR_*` constants.
 - Replace direct `COLOR_*` references in `app.rs` with reads from
   `self.theme.colors.bg`, etc. (`u32` values, same `rgb(...)` wrapping).

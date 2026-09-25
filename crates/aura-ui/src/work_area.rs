@@ -8,7 +8,7 @@
 //!
 //! 1. `app.rs` resize callback: caps the auto-grown modal height so it
 //!    can't extend past the top of a bottom taskbar.
-//! 2. `main.rs` `toggle_window`: anchors the modal at the bottom-right
+//! 2. `lib.rs` `toggle_window`: anchors the modal at the bottom-right
 //!    corner of the work area so it appears where the tray icon lives.
 //!
 //! Per-platform sources, in order of preference:

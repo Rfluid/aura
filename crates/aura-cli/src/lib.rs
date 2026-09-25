@@ -1,7 +1,7 @@
 //! Clap-driven CLI surface for `aura`.
 //!
 //! With no subcommand `aura` falls through to the tray entry point in
-//! `main.rs`. Every other invocation is headless: each subcommand variant
+//! `aura-ui`. Every other invocation is headless: each subcommand variant
 //! routes to a `run()` on its argument struct and exits without spinning
 //! up GPUI.
 //!
@@ -25,7 +25,7 @@ mod update;
 mod usage;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -91,7 +91,27 @@ pub enum Command {
     SetupConfig,
 }
 
+impl Cli {
+    /// Parse `std::env::args`, reporting `version` for `--version`. The
+    /// `aura` binary passes its own `CARGO_PKG_VERSION` so the flag tracks
+    /// the release tag rather than this library crate's version.
+    pub fn parse_with_version(version: &'static str) -> Self {
+        let matches = Self::command().version(version).get_matches();
+        Self::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+    }
+}
+
 pub fn dispatch(command: Command) -> Result<()> {
+    // Rust ignores SIGPIPE, which turns `aura keys describe | head` into
+    // a "failed printing to stdout" panic. A CLI should just stop quietly
+    // when its reader goes away, as every Unix tool does.
+    #[cfg(unix)]
+    // SAFETY: restoring the default disposition of a signal, before any
+    // other thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     match command {
         Command::Config(args) => args.run(),
         Command::State(args) => args.run(),

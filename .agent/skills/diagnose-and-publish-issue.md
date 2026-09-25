@@ -80,10 +80,10 @@ before composing a public issue.
 | Report area | Sources to check |
 | --- | --- |
 | Install/update/uninstall | `README.md` installation/update sections, `install.sh`, `uninstall.sh`, `scripts/install.ps1`, `scripts/uninstall.ps1`, `justfile` |
-| Tray icon/click behavior | `README.md` "Making the tray icon always visible" and "Compatibility", `docs/platform-tray-icon.md`, `crates/aura/src/tray.rs`, `crates/aura/src/tray_status.rs`, `crates/aura/src/main.rs` |
-| Modal placement/resize/focus | `README.md` "Modal placement on Wayland", `docs/configuration.md` modal/backend sections, `docs/platform-tray-icon.md`, `docs/troubleshooting/modal-stretches-on-resize-kde.md`, `crates/aura/src/app.rs`, `crates/aura/src/placement.rs`, `crates/aura/src/platform.rs` |
+| Tray icon/click behavior | `README.md` "Making the tray icon always visible" and "Compatibility", `docs/platform-tray-icon.md`, `crates/aura-ui/src/tray.rs`, `crates/aura-ui/src/tray_status.rs`, `crates/aura-ui/src/lib.rs` |
+| Modal placement/resize/focus | `README.md` "Modal placement on Wayland", `docs/configuration.md` modal/backend sections, `docs/platform-tray-icon.md`, `docs/troubleshooting/modal-stretches-on-resize-kde.md`, `crates/aura-ui/src/app.rs`, `crates/aura-ui/src/placement.rs`, `crates/aura-ui/src/platform.rs` |
 | Config/theme/state | `docs/configuration.md`, `docs/cli.md`, `crates/aura-core/src/config*.rs`, `crates/aura-core/src/state.rs`, `.agent/skills/add-or-change-config.md` |
-| Usage/quota/agent data | `README.md`, `docs/cli.md`, `.agent/context/stack.md`, relevant `crates/aura-core` and `crates/aura/src/cli` sources |
+| Usage/quota/agent data | `README.md`, `docs/cli.md`, `.agent/context/stack.md`, relevant `crates/aura-core` and `crates/aura-ui/src/cli` sources |
 | Plugins | `README.md` plugin section, `docs/plugin-system.md`, `docs/plugin-authoring.md`, `plugins/*/README.md`, relevant plugin/core sources |
 | Issue publishing | `.github/ISSUE_TEMPLATE/bug_report.yml`, `.github/ISSUE_TEMPLATE/config.yml`, `CONTRIBUTING.md` |
 

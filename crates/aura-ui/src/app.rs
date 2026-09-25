@@ -3304,7 +3304,7 @@ impl AuraView {
         let lex = lexicon::pick(self.config.content.goblin_mode);
         // Append the running version so users can confirm the build they're
         // on without trawling stderr or `aura --version`.
-        let updates_label = (lex.check_updates_fmt)(env!("CARGO_PKG_VERSION"));
+        let updates_label = (lex.check_updates_fmt)(crate::app_version());
         let items: [(&'static str, &'static str, String, ModalAction); 5] = [
             (
                 "modal-updates",
@@ -3869,7 +3869,7 @@ fn rgba(value: u32) -> gpui::Rgba {
     gpui::Rgba { r, g, b, a }
 }
 
-// `work_area` lives at `crate::work_area`; both this module and `main.rs`
+// `work_area` lives at `crate::work_area`; both this module and `lib.rs`
 // use it. See `work_area.rs` for the parsing rationale.
 
 /// Pure form of `AuraView::show_update_button`. Returns true when there

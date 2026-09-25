@@ -2,7 +2,7 @@
 //!
 //! Aura ships from GitHub releases. There is no in-app downloader (see
 //! `docs/plans/update-button.md` for the rationale): we just compare the
-//! local `CARGO_PKG_VERSION` against `releases/latest` from the GitHub
+//! running `aura` version against `releases/latest` from the GitHub
 //! REST API and, when a newer tag is out, surface a header button that
 //! opens the README's `### Updating` anchor.
 //!
@@ -36,11 +36,11 @@ pub struct UpdateInfo {
     pub latest: Version,
 }
 
-/// `env!("CARGO_PKG_VERSION")` parsed into a `semver::Version`. Panics at
-/// compile-time-determined-string-parse only if Aura's own version
-/// somehow fails to parse, which would be a build-script bug.
+/// The `aura` binary's version (see `crate::app_version`) parsed into a
+/// `semver::Version`. Panics only if Aura's own version somehow fails to
+/// parse, which would be a manifest bug.
 pub fn current_version() -> Version {
-    Version::parse(env!("CARGO_PKG_VERSION")).expect("aura version is valid semver")
+    Version::parse(crate::app_version()).expect("aura version is valid semver")
 }
 
 /// Synchronous network call. Spawned on the background executor by
@@ -58,7 +58,7 @@ pub fn fetch_latest() -> Result<Option<UpdateInfo>> {
         .into();
 
     // GitHub requires a User-Agent on every API request.
-    let ua = format!("aura/{}", env!("CARGO_PKG_VERSION"));
+    let ua = format!("aura/{}", crate::app_version());
     let mut response = agent
         .get(RELEASES_API_URL)
         .header("User-Agent", ua.as_str())

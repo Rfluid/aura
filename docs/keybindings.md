@@ -7,10 +7,10 @@ last_verified: 2026-09-23
 source_refs:
   - crates/aura-core/src/keymap/mod.rs
   - crates/aura-core/src/keymap/file.rs
-  - crates/aura/src/keys.rs
-  - crates/aura/src/app.rs
-  - crates/aura/src/main.rs
-  - crates/aura/src/cli/keys.rs
+  - crates/aura-ui/src/keys.rs
+  - crates/aura-ui/src/app.rs
+  - crates/aura-ui/src/lib.rs
+  - crates/aura-cli/src/keys.rs
 owner: "@rfluid"
 tags: [keybindings, configuration, docs]
 ---

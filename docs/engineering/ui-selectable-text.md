@@ -4,9 +4,9 @@ status: active
 version: 0.1.0
 last_updated: 2026-08-23
 source_refs:
-    - crates/aura/Cargo.toml
-    - crates/aura/src/app.rs
-    - crates/aura/src/main.rs
+    - crates/aura-ui/Cargo.toml
+    - crates/aura-ui/src/app.rs
+    - crates/aura-ui/src/lib.rs
     - scripts/check-selectable-text.sh
 owner: "@rfluid"
 tags: [ui, selection, clipboard, gpui]
@@ -32,7 +32,7 @@ hit-testing, gesture, and clipboard code in the application.
 ## The rule
 
 **This is the only sanctioned way to render copyable read-only text.** Do not
-construct `gpui::StyledText` / `InteractiveText` anywhere in `crates/aura/src`
+construct `gpui::StyledText` / `InteractiveText` anywhere in `crates/aura-ui/src`
 and do not repurpose a text input for display.
 
 `scripts/check-selectable-text.sh` grep-enforces this and runs in

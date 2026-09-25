@@ -5,12 +5,12 @@ version: 0.1.0
 last_updated: 2026-09-13
 last_verified: 2026-09-13
 source_refs:
-  - crates/aura/src/tray.rs
-  - crates/aura/src/tray_status.rs
-  - crates/aura/src/placement.rs
-  - crates/aura/src/main.rs
-  - crates/aura/src/platform.rs
-  - crates/aura/src/work_area.rs
+  - crates/aura-ui/src/tray.rs
+  - crates/aura-ui/src/tray_status.rs
+  - crates/aura-ui/src/placement.rs
+  - crates/aura-ui/src/lib.rs
+  - crates/aura-ui/src/platform.rs
+  - crates/aura-ui/src/work_area.rs
 owner: "@rfluid"
 tags: [architecture, platform, docs]
 ---

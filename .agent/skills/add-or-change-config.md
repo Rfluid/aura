@@ -8,8 +8,8 @@ source_refs:
   - crates/aura-core/src/config.rs
   - crates/aura-core/src/config_migrate.rs
   - crates/aura-core/src/config_schema.rs
-  - crates/aura/src/runtime.rs
-  - crates/aura/src/cli/config.rs
+  - crates/aura-ui/src/runtime.rs
+  - crates/aura-cli/src/config.rs
   - docs/configuration.md
 owner: "@rfluid"
 tags: [skill, config, cli]
@@ -35,9 +35,9 @@ that's by design, not an obstacle. Work *with* it.
 | Typed struct | `crates/aura-core/src/config.rs` | always (the field itself) |
 | Field registry | `crates/aura-core/src/config_schema.rs` | always (describe + get/set) |
 | Migration registry | `crates/aura-core/src/config_migrate.rs` | you move, rename, or remove an existing key |
-| Runtime mirror | `crates/aura/src/runtime.rs` | the field must reach the tray loop *and* modal |
-| Consumer | `crates/aura/src/app.rs`, `main.rs`, … | the field actually does something |
-| CLI handler | `crates/aura/src/cli/config.rs` | almost never — it's registry-driven |
+| Runtime mirror | `crates/aura-ui/src/runtime.rs` | the field must reach the tray loop *and* modal |
+| Consumer | `crates/aura-ui/src/app.rs`, `main.rs`, … | the field actually does something |
+| CLI handler | `crates/aura-cli/src/config.rs` | almost never — it's registry-driven |
 | Docs | `docs/configuration.md`, `docs/cli.md`, `README.md` | always |
 
 The CLI (`describe` / `get` / `set` / `wizard` / `init` / `document`) and the

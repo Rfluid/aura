@@ -54,8 +54,10 @@ A first build pulls a lot of GPUI dependencies — give it a few minutes.
 ```
 aura/
 ├── crates/
-│   ├── aura/           # Binary crate — GPUI app, tray, modal UI
-│   └── aura-core/      # Library — config, readers, plugin runner, quota logic
+│   ├── aura/           # Master binary crate — `aura` entry point, routes to cli or ui
+│   ├── aura-cli/       # Library — headless `aura <subcommand>` surface (clap)
+│   ├── aura-core/      # Library — config, readers, plugin runner, quota logic
+│   └── aura-ui/        # Library — GPUI app, tray, modal UI
 ├── plugins/
 │   └── rtk-gains/      # First-party plugin: RTK token savings panel
 ├── docs/               # User & architecture docs (see "Documentation index" below)
@@ -131,7 +133,7 @@ cargo test --workspace
 - Add the dep to `[workspace.dependencies]` in the root `Cargo.toml` if it is
   used by more than one crate, then reference it as `foo = { workspace = true }`
   in each member's `Cargo.toml`.
-- Keep internal crate versions (`aura-core`, `aura-plugin-rtk`) in sync — they
+- Keep internal crate versions (`aura-cli`, `aura-core`, `aura-ui`, `aura-plugin-rtk`) in sync — they
   are managed by `scripts/prepare-release.sh`.
 
 ### Working on the UI

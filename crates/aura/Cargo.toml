@@ -4,83 +4,9 @@ version           = "0.1.36"
 edition.workspace = true
 license.workspace = true
 
-# gpui drives the in-app modal on all platforms.
-# The crates.io 0.2.2 snapshot panicked on macOS 26 (Tahoe) because it
-# subclassed NSApplication via ClassDecl; Tahoe calls +sharedApplication
-# before the #[ctor] registers the subclass. We vendor gpui and patch that
-# ivar out (see vendor/gpui and the [patch.crates-io] in the root Cargo.toml).
+# Master crate: the `aura` binary. Headless subcommands go to `aura-cli`;
+# no subcommand launches the tray app from `aura-ui`.
 [dependencies]
-aura-core.workspace     = true
-anyhow.workspace        = true
-chrono.workspace        = true
-clap.workspace          = true
-clap_complete.workspace = true
-dirs.workspace          = true
-gpui                    = { version = "0.2", features = ["runtime_shaders"] }
-gpui-selectable-text    = "0.1"
-raw-window-handle       = "0.6"
-resvg                   = { version = "0.48", default-features = false }
-semver.workspace        = true
-serde.workspace         = true
-serde_json.workspace    = true
-ureq.workspace          = true
-tiny-skia               = "0.12"
-toml.workspace          = true
-
-# Tray backend split by OS:
-#
-# * Linux/BSD use `ksni`, a direct StatusNotifierItem implementation.
-#   Plasma / GNOME / other desktops call `Activate()` over D-Bus on a
-#   primary-click, which gives us the wifi/volume single-click UX that
-#   libayatana-appindicator (via tray-icon's `gtk` feature) refuses to
-#   surface. ksni also runs its own D-Bus event loop, so we drop the
-#   dedicated GTK thread the tray-icon backend required.
-#
-# * macOS / Windows keep using `tray-icon`, whose AppKit / Win32 backends
-#   handle clicks natively.
-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
-# ksni runs its D-Bus event loop on its own thread and we drain events
-# with `try_recv`. `blocking` enables the synchronous `spawn()` entry
-# point; `async-io` is the smol-style backend it uses under the hood
-# (lighter than the default `tokio` feature).
-ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
-# Reposition the modal after the auto-fit resize on X11 (`anchor = "bottom"`).
-# GPUI exposes no move API, so we issue a ConfigureWindow ourselves against the
-# XCB window id (see platform::set_window_origin). Already in the tree via gpui.
-# No-op on Wayland, where the compositor owns surface placement.
-x11rb = "0.14"
-
-[target.'cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))'.dependencies]
-tray-icon = { version = "0.24", default-features = false }
-
-[target.'cfg(unix)'.dependencies]
-# flock-based single-instance guard. See `platform::acquire_single_instance`.
-libc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-block = "0.1"
-cocoa = "=0.27.0"
-objc  = "0.2"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Dwm",
-    # MonitorFromPoint, for the per-monitor DPI lookup that converts
-    # tray-icon's physical click coordinates to logical pixels.
-    "Win32_Graphics_Gdi",
-    # GetDpiForMonitor / GetDpiForSystem + GetSystemMetricsForDpi — that same
-    # conversion, plus picking the tray icon's raster size from SM_CXSMICON at
-    # the current DPI instead of letting Shell_NotifyIcon downscale for us.
-    "Win32_UI_HiDpi",
-    "Win32_UI_Shell",
-    "Win32_System_Pipes",
-    "Win32_Storage_FileSystem",
-] }
-
-[lints.rust]
-# objc 0.2 macros (msg_send!, class!, sel_impl!) emit #[cfg(cargo-clippy)]
-# internally. Register it as expected so the unexpected_cfgs lint stays quiet.
-unexpected_cfgs = "allow"
+anyhow.workspace   = true
+aura-cli.workspace = true
+aura-ui.workspace  = true

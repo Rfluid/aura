@@ -1,4 +1,4 @@
-//! Cross-cutting runtime state shared by `main.rs` (tray poll loop) and
+//! Cross-cutting runtime state shared by `lib.rs` (tray poll loop) and
 //! `app.rs` (the view's refresh task).
 //!
 //! The poll loop in `main()` and the in-modal "Refresh" task each reload
@@ -21,7 +21,7 @@ use aura_core::config::AppConfig;
 /// the user clicks the refresh icon.
 static DISMISS_ON_FOCUS_LOSS: AtomicBool = AtomicBool::new(true);
 
-/// Mirrors `AppConfig.window.show_in_app_switcher`. Used by main.rs
+/// Mirrors `AppConfig.window.show_in_app_switcher`. Used by lib.rs
 /// when opening the modal (picks `WindowKind`) and as the source of
 /// truth for the macOS process-wide NSApp activation policy applied at
 /// startup and on every refresh.
@@ -117,7 +117,7 @@ pub fn take_dismiss_request() -> bool {
 
 /// Whether the keymap is installed (`keybindings.enabled`). While it is, Escape
 /// is an ordinary binding the user can remap or unbind; while it isn't, the
-/// fallback Escape observer in `main.rs` keeps Escape closing the modal.
+/// fallback Escape observer in `lib.rs` keeps Escape closing the modal.
 static KEYBINDINGS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// See [`KEYBINDINGS_ACTIVE`].
