@@ -310,6 +310,31 @@ pub fn fields() -> &'static [FieldDescriptor] {
                 keybindings.toml.",
             example: "true",
         },
+        FieldDescriptor {
+            key: "keybindings.plugin_leader",
+            type_label: "string",
+            allowed: &[],
+            default: "\"space\"",
+            summary: "Key pressed before a plugin's own shortcuts.",
+            description: "Plugins can declare shortcuts for their buttons and actions. Every one \
+                sits behind this leader, so with the default \"space\" a plugin's `s` key is \
+                pressed as `space s`, and no plugin key can take over one of Aura's own \
+                shortcuts. Use keybindings.toml syntax (`space`, `ctrl-p`, `g p`). Set \"none\" \
+                to turn plugin shortcuts off. An invalid value falls back to \"space\".",
+            example: "space",
+        },
+        FieldDescriptor {
+            key: "keybindings.leader_timeout_ms",
+            type_label: "u32?",
+            allowed: &[],
+            default: "unset (wait until Escape)",
+            summary: "How long to wait for a plugin key after the leader.",
+            description: "After the plugin leader, the key panel waits for the rest of a \
+                plugin shortcut. Unset (the default), it waits until you finish the shortcut \
+                or press Escape. Set a number of milliseconds to give up after that long \
+                without a key instead; each key restarts the wait. `none` unsets it.",
+            example: "3000",
+        },
         // ── [sponsor] ──
         FieldDescriptor {
             key: "sponsor.nudge",
@@ -533,6 +558,12 @@ pub fn get_value(cfg: &AppConfig, key: &str) -> Result<String, SchemaError> {
             .unwrap_or_else(|| "(unset)".to_string()),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
+        "keybindings.plugin_leader" => cfg.keybindings.plugin_leader.clone(),
+        "keybindings.leader_timeout_ms" => cfg
+            .keybindings
+            .leader_timeout_ms
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "(unset)".to_string()),
         "sponsor.nudge" => cfg.sponsor.nudge.to_string(),
         _ => return Err(unknown_key(key)),
     };
@@ -568,6 +599,10 @@ pub fn set_value(cfg: &mut AppConfig, key: &str, raw: &str) -> Result<(), Schema
         "update.dismissed_version" => cfg.update.dismissed_version = parse_opt_string(raw),
         "update.dismiss_all" => cfg.update.dismiss_all = parse_bool(key, raw)?,
         "keybindings.enabled" => cfg.keybindings.enabled = parse_bool(key, raw)?,
+        "keybindings.plugin_leader" => cfg.keybindings.plugin_leader = parse_leader(key, raw)?,
+        "keybindings.leader_timeout_ms" => {
+            cfg.keybindings.leader_timeout_ms = parse_opt_u32(key, raw)?
+        }
         "sponsor.nudge" => cfg.sponsor.nudge = parse_bool(key, raw)?,
         _ => return Err(unknown_key(key)),
     }
@@ -585,6 +620,18 @@ fn parse_enum(
             key: key.to_string(),
             value: raw.to_string(),
             allowed: allowed.to_vec(),
+        }),
+    }
+}
+
+fn parse_leader(key: &str, raw: &str) -> Result<String, SchemaError> {
+    match crate::plugin::keys::parse_leader(raw) {
+        Ok(Some(keys)) => Ok(keys.display),
+        Ok(None) => Ok("none".to_string()),
+        Err(_) => Err(SchemaError::InvalidType {
+            key: key.to_string(),
+            expected: "a keystroke such as `space` or `ctrl-p`, or `none`",
+            value: raw.to_string(),
         }),
     }
 }
@@ -744,6 +791,10 @@ fn toml_rhs(cfg: &AppConfig, key: &str) -> Option<String> {
         "update.dismissed_version" => return cfg.update.dismissed_version.as_deref().map(quote),
         "update.dismiss_all" => cfg.update.dismiss_all.to_string(),
         "keybindings.enabled" => cfg.keybindings.enabled.to_string(),
+        "keybindings.plugin_leader" => quote(&cfg.keybindings.plugin_leader),
+        "keybindings.leader_timeout_ms" => {
+            return cfg.keybindings.leader_timeout_ms.map(|n| n.to_string())
+        }
         "sponsor.nudge" => cfg.sponsor.nudge.to_string(),
         _ => return None,
     })
@@ -819,6 +870,7 @@ mod tests {
         cfg.window.auto_resize = Some(false);
         cfg.window.max_height = Some(500);
         cfg.update.dismissed_version = Some("0.0.0".to_string());
+        cfg.keybindings.leader_timeout_ms = Some(3000);
         cfg
     }
 
@@ -1003,7 +1055,10 @@ mod tests {
                 dismissed_version: Some("0.1.18".to_string()),
                 dismiss_all: true,
             },
-            keybindings: KeybindingsConfig { enabled: false },
+            keybindings: KeybindingsConfig {
+                enabled: false,
+                ..Default::default()
+            },
             sponsor: SponsorConfig { nudge: false },
         };
         assert_round_trips(&cfg);

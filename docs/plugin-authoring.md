@@ -1,8 +1,8 @@
 ---
 title: Plugin authoring
 status: stable
-version: 0.2.0
-last_updated: 2026-06-12
+version: 0.3.0
+last_updated: 2026-09-25
 source_refs:
   - crates/aura-core/src/plugin/mod.rs
   - crates/aura-core/src/plugin/runner.rs
@@ -167,12 +167,57 @@ Two differences from panel refreshes:
 - While the action runs, the focus-loss auto-dismiss is suspended, so a
   dialog your plugin opens can take focus without closing the modal.
 
+Keyboard users can press your buttons too: `f` puts every button on the
+tab in hint mode (see [Keybindings → Hint mode](keybindings.md#hint-mode)).
+Hint mode sends the same `action <id>` call as a click, and `confirm` still
+needs two presses.
+
 Action ids are opaque to the host: pick any encoding you like and parse
 it yourself. Test actions headlessly with:
 
 ```bash
 aura plugin run "My Plugin" --action "agent:Peh:off"
 ```
+
+### Keyboard shortcuts
+
+Any section (not only `controls`) can declare shortcuts for actions:
+
+```json
+{
+  "id": "agents", "label": "Agents", "type": "controls",
+  "keys": [
+    { "keys": "m",   "action": "mute:on", "label": "Mute sound" },
+    { "keys": "r 1", "action": "hooks:Peh:remove", "label": "Remove Peh's hooks" }
+  ],
+  "controls": [ ... ]
+}
+```
+
+**`PluginKey`** fields:
+
+| Field     | Type           | Default | Notes |
+| --------- | -------------- | ------- | ----- |
+| `keys`    | string         | —       | Keystrokes after the leader, in `keybindings.toml` syntax (`m`, `ctrl-x`, `r 1`) |
+| `action`  | string         | —       | Action id, sent back exactly like a button click |
+| `label`   | string         | —       | Shown in the leader strip and the `?` overlay |
+| `confirm` | string \| null | `null`  | Two-press confirm prompt, for actions without a button carrying `confirm` |
+
+- The user presses the leader first, `space` by default, so `"m"` is
+  `space m`. The leader is set by the user (`[keybindings] plugin_leader`),
+  so your keys can never collide with Aura's.
+- Keys are active only while their section is on screen. Repeat a key in
+  each section where it should work.
+- If a button on screen has the key's `action` as its id, its `confirm`
+  applies to the key too.
+- Pressing the leader opens a floating panel listing the section's keys and
+  labels, so keep labels short.
+- Aura doesn't remap keys. To let users choose their own keys, offer that
+  in your plugin and emit their choice.
+- Bad entries (an invalid keystroke, an empty action) are skipped. If two
+  entries use the same keys, the later one wins. If one key starts another
+  (`d` and `d d`), the shorter runs as soon as it's typed, so avoid that. `aura plugin run <name>`
+  prints the resolved keys and any warnings on stderr.
 
 ### Reporting errors
 

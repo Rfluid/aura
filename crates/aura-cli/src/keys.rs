@@ -470,7 +470,17 @@ fn run_get(path: &Path, keys: &str, context: BindingContext, format: OutputForma
 }
 
 fn run_validate(path: &Path, format: OutputFormat) -> Result<()> {
-    let keymap = Keymap::load(path);
+    let mut keymap = Keymap::load(path);
+    // `plugin_leader` lives in config.toml but only matters against the
+    // keymap, so it's checked here too.
+    let leader = aura_core::config::AppConfig::load(&aura_core::config::AppConfig::default_path())
+        .map(|c| c.keybindings.plugin_leader)
+        .unwrap_or_else(|_| aura_core::plugin::keys::DEFAULT_LEADER.to_string());
+    keymap.warnings.extend(
+        aura_core::plugin::keys::leader_warnings(&leader, &keymap)
+            .into_iter()
+            .map(|message| aura_core::keymap::KeymapWarning { message }),
+    );
     match format {
         OutputFormat::Json => print_json(&keymap.warnings)?,
         OutputFormat::Text => {
@@ -480,9 +490,9 @@ fn run_validate(path: &Path, format: OutputFormat) -> Result<()> {
                 println!("{}: OK", path.display());
             } else {
                 println!("{}:", path.display());
-                for w in &keymap.warnings {
-                    println!("  warning: {w}");
-                }
+            }
+            for w in &keymap.warnings {
+                println!("  warning: {w}");
             }
         }
     }

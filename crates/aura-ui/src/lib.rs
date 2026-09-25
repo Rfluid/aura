@@ -7,6 +7,7 @@
 mod app;
 mod assets;
 mod format;
+mod hints;
 mod keys;
 mod placement;
 mod platform;
@@ -669,7 +670,7 @@ fn toggle_window(
     // Same reasoning for the keymap: re-read `keybindings.toml` on every open
     // so an edit applies without a restart.
     let keymap = aura_core::keymap::Keymap::load(&aura_core::keymap::Keymap::default_path());
-    keys::install(cx, &keymap, config.keybindings.enabled);
+    keys::install(cx, &keymap, config.keybindings.enabled, None);
 
     let anchor = placement::Anchor::from_config(&config.window.anchor);
     // `display_id` rides along to `AuraView` so the auto-fit callback caps the

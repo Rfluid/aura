@@ -105,10 +105,12 @@ fn collect() -> DoctorReport {
     let keymap_path = Keymap::default_path();
     let plugins_dir = plugin::user_plugins_dir();
     let mut keybindings_enabled = true;
+    let mut plugin_leader = aura_core::plugin::keys::DEFAULT_LEADER.to_string();
 
     let (config_status, agents, plugins) = match AppConfig::load_with_discovery(&config_path) {
         Ok(cfg) => {
             keybindings_enabled = cfg.keybindings.enabled;
+            plugin_leader = cfg.keybindings.plugin_leader.clone();
             let agents: Vec<AgentRow> = cfg
                 .agents
                 .iter()
@@ -196,14 +198,17 @@ fn collect() -> DoctorReport {
         }
     };
 
+    let keymap = Keymap::load(&keymap_path);
+    let mut keymap_warnings: Vec<String> =
+        keymap.warnings.iter().map(|w| w.message.clone()).collect();
+    keymap_warnings.extend(aura_core::plugin::keys::leader_warnings(
+        &plugin_leader,
+        &keymap,
+    ));
     let keybindings = KeybindingsStatus {
         enabled: keybindings_enabled,
         exists: keymap_path.exists(),
-        warnings: Keymap::load(&keymap_path)
-            .warnings
-            .into_iter()
-            .map(|w| w.message)
-            .collect(),
+        warnings: keymap_warnings,
     };
 
     DoctorReport {

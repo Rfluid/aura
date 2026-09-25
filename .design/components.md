@@ -221,6 +221,41 @@ Optional bottom section. Hidden entirely when no plugins are configured.
 | Loading  | **Proposed**: title with trailing spinner (see `loading.md`), no rows. |
 | Error    | Title + single `text_xs` row in `#ff6b6b` containing `panel.error`. (`app.rs:815-821`) |
 
+### Hint labels
+
+**Renderer**: `AuraView::render_plugin_controls` (hint mode, `f`).
+
+While hint mode is on, each button in a `controls` section gets a label
+badge before its content, and a status line sits above the rows.
+
+- Badge: `px_1`, `rounded_sm`, bg `COLOR_ACCENT`, text `COLOR_BG`, bold.
+  Characters already typed render at 50% opacity before the rest.
+- Buttons the typed characters rule out: whole pill at 35% opacity.
+- Status line: `text_xs` / `COLOR_TEXT_DIM`.
+
+### Plugin key panel
+
+**Renderer**: `AuraView::render_leader_panel`.
+
+Floating card for plugin shortcuts, drawn over the content at the bottom
+right while leader mode is on (the plugin leader, default `space`, was
+pressed).
+
+- Position: `absolute`, `right 12px`, `bottom 12px`, width `210px`.
+- Card: bg `COLOR_SURFACE`, border `COLOR_BORDER`, `rounded_md`, `p_2`,
+  `gap_1`, `shadow_lg`, `text_xs`.
+- Header: the leader and the keys typed so far as chips, then `…`;
+  border-bottom `COLOR_BORDER`.
+- Rows: a chip with the strokes still to press, then the label in
+  `COLOR_TEXT_DIM`.
+- Chip: `px_1`, `rounded_sm`, bg `COLOR_SURFACE_HI`, text `COLOR_TEXT`.
+- Footer: "esc to cancel", `COLOR_TEXT_DIM` at 70% opacity.
+
+| State   | Rendering                                                                 |
+| ------- | ------------------------------------------------------------------------- |
+| Leader  | Header, one row per key still reachable, footer.                          |
+| Confirm | A key armed an action whose button isn't on screen: border and prompt in `COLOR_ERROR`, then "press … again · esc to cancel" in `COLOR_TEXT_DIM`. |
+
 ## Loading body
 
 **Renderer**: `render_loading` — `app.rs:426-435`.

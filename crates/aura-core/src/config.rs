@@ -454,11 +454,29 @@ pub struct KeybindingsConfig {
     /// mouse-only, apart from Escape closing it, which works either way.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Keystroke(s) in front of every plugin-declared key (see
+    /// [`crate::plugin::keys`]): with the default `"space"`, a plugin's `s`
+    /// key is pressed as `space s`. `"none"` turns plugin keys off.
+    #[serde(default = "default_plugin_leader")]
+    pub plugin_leader: String,
+    /// How long, in milliseconds, the host waits for the next plugin key
+    /// after the leader (or after a key that starts a longer one) before
+    /// giving up. `None` (the default) waits until Escape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_timeout_ms: Option<u32>,
+}
+
+fn default_plugin_leader() -> String {
+    crate::plugin::keys::DEFAULT_LEADER.to_string()
 }
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            plugin_leader: default_plugin_leader(),
+            leader_timeout_ms: None,
+        }
     }
 }
 
