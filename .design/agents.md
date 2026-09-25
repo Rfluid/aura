@@ -6,7 +6,7 @@ profile is the active one — active pills, progress-bar fills, the tab underlin
 — though that wiring is not yet built (it is the next step after the
 luminance-fallback below lands).
 
-Source: `crates/aura/src/app.rs:25-27` and `app.rs:848-862`.
+Source: `crates/aura-ui/src/app.rs:25-27` and `app.rs:848-862`.
 
 ## Canonical brand colors
 
@@ -45,7 +45,7 @@ saturated-but-dim brand greens.
 
 ## Helper signature
 
-Add to `crates/aura/src/app.rs` (or a new `crates/aura/src/theme.rs` once the
+Add to `crates/aura-ui/src/app.rs` (or a new `crates/aura-ui/src/theme.rs` once the
 file grows past comfort):
 
 ```rust
@@ -100,7 +100,7 @@ agent is selected (e.g. error state, no profiles configured).
 When you add a variant to `AgentKind`:
 
 1. Add a `COLOR_<NAME>` constant near `app.rs:26`.
-2. Add the icon SVG to `crates/aura/icons/<name>.svg`.
+2. Add the icon SVG to `assets/icons/<name>.svg`.
 3. Extend the match in `agent_icon` (`app.rs:853`).
 4. Update the **canonical brand colors** table above.
 5. If the brand color trips the `> 0.85` luminance threshold, no extra work —

@@ -10,10 +10,10 @@ source_refs:
   - crates/aura-core/src/keymap.rs
   - crates/aura-core/src/state.rs
   - crates/aura-core/src/sponsor.rs
-  - crates/aura/src/cli/config.rs
-  - crates/aura/src/runtime.rs
-  - crates/aura/src/main.rs
-  - crates/aura/src/app.rs
+  - crates/aura-cli/src/config.rs
+  - crates/aura-ui/src/runtime.rs
+  - crates/aura-ui/src/lib.rs
+  - crates/aura-ui/src/app.rs
 owner: "@rfluid"
 tags: [configuration, docs]
 ---
@@ -123,7 +123,7 @@ Config flows through five layers, top (authoring) to bottom (consumption):
    ones without disturbing existing edits. See
    [Migrating an older config](#migrating-an-older-config).
 
-5. **Runtime mirror** — `crates/aura/src/runtime.rs`. The tray poll loop in
+5. **Runtime mirror** — `crates/aura-ui/src/runtime.rs`. The tray poll loop in
    `main.rs` and the modal's async refresh task in `app.rs` each reload the
    config independently. To stop them drifting, a handful of `[window]` fields
    are mirrored into process atomics via `runtime::set_from_config`, and any

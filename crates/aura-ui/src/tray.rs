@@ -9,7 +9,7 @@
 //! macOS / Windows still use [`tray_icon`]: those backends already get
 //! single-click activation natively via AppKit / Win32.
 //!
-//! Both backends feed a unified [`TrayEvent`] stream that `main.rs` drains
+//! Both backends feed a unified [`TrayEvent`] stream that `lib.rs` drains
 //! from the GPUI side via [`try_recv_event`], and both accept live state
 //! pushes through [`set_status`] / [`apply_pending_status`] so the icon can
 //! act as a real indicator instead of a static launcher.
@@ -168,7 +168,7 @@ impl Default for TrayVisuals {
 }
 
 /// Live indicator state. Pushed from whatever loaded fresh usage data (the
-/// modal's refresh, or `main.rs`'s background poll) and applied to the icon on
+/// modal's refresh, or `lib.rs`'s background poll) and applied to the icon on
 /// the main thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayStatus {
@@ -257,7 +257,7 @@ impl TrayStatus {
 ///
 /// The indirection exists because AppKit requires `NSStatusItem` mutation on
 /// the main thread, and the callers that *have* fresh data (the refresh
-/// worker, the background poll) run off it. `main.rs`'s poll loop drains this
+/// worker, the background poll) run off it. `lib.rs`'s poll loop drains this
 /// on the GPUI main thread via [`apply_pending_status`].
 static PENDING_STATUS: Mutex<Option<TrayStatus>> = Mutex::new(None);
 

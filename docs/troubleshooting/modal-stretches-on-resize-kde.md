@@ -5,9 +5,9 @@ version: 0.1.0
 last_updated: 2026-05-29
 last_verified: 2026-05-29
 source_refs:
-  - crates/aura/src/app.rs
-  - crates/aura/src/platform.rs
-  - crates/aura/src/placement.rs
+  - crates/aura-ui/src/app.rs
+  - crates/aura-ui/src/platform.rs
+  - crates/aura-ui/src/placement.rs
   - vendor/gpui/src/platform/linux/x11/window.rs
 owner: "@rfluid"
 tags: [troubleshooting, linux, kde, docs]

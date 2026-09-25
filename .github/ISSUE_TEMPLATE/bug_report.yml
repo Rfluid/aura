@@ -169,7 +169,7 @@ body:
     attributes:
       label: Possible cause / hypothesis
       description: |
-        Optional. Only include if you have *evidence* — a stack trace pointing at a function, a `git bisect` result, a code path you read. Reference paths like `crates/aura/src/app.rs:274`. Speculation without evidence is fine to leave blank; the maintainers prefer "I don't know" over guesses.
+        Optional. Only include if you have *evidence* — a stack trace pointing at a function, a `git bisect` result, a code path you read. Reference paths like `crates/aura-ui/src/app.rs:274`. Speculation without evidence is fine to leave blank; the maintainers prefer "I don't know" over guesses.
     validations:
       required: false
 

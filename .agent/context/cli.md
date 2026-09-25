@@ -4,7 +4,7 @@ status: current
 version: 0.1.0
 last_updated: 2026-05-24
 last_verified: 2026-05-24
-source_refs: ["crates/aura/src/cli/", "docs/cli.md"]
+source_refs: ["crates/aura-cli/src/", "docs/cli.md"]
 owner: "@rfluid"
 tags: [context, cli, conventions]
 ---
@@ -22,7 +22,7 @@ under `aura <noun> <verb>` that prints a result or mutates state is
 enough. Read commands should accept `--format text|json` from day one
 so the feature works in `jq`/status-bar pipelines without scraping.
 
-Concrete examples already in tree (`crates/aura/src/cli/`):
+Concrete examples already in tree (`crates/aura-cli/src/`):
 
 | Module       | Pattern it demonstrates                                                 |
 | ------------ | ----------------------------------------------------------------------- |
@@ -47,22 +47,23 @@ Concrete examples already in tree (`crates/aura/src/cli/`):
    name = "setup-config")]` on a top-level variant that calls the
    canonical handler. Installer scripts and old muscle memory keep
    working; help output stays clean.
-4. **Profile resolution goes through `cli::resolve::resolve_profile`.**
+4. **Profile resolution goes through `crate::resolve::resolve_profile`.**
    `--profile` flag → `state.active_profile` → first agent in config.
    Don't reinvent this — `usage`, `quota`, and `plugin run` all use it.
-5. **Tray dispatch lives in `main.rs`.** The CLI is the entry point;
-   `main.rs` only falls through to the tray when `cli.command` is
-   `None`. Headless subcommands must never spin up GPUI.
+5. **Tray dispatch lives in `crates/aura/src/main.rs`.** The CLI is the
+   entry point; `main` only falls through to `aura_ui::run` when
+   `cli.command` is `None`. Headless subcommands must never spin up GPUI —
+   `aura-cli` has no UI deps, so keep it that way.
 
 ## Adding a new subcommand
 
-1. Create `crates/aura/src/cli/<noun>.rs` with a `<Noun>Cli` struct
+1. Create `crates/aura-cli/src/<noun>.rs` with a `<Noun>Cli` struct
    (`#[derive(Args)]`) and a `run(self) -> Result<()>` method.
 2. Wire it into `cli/mod.rs`: `mod <noun>;` plus a `Command::<Noun>`
    variant.
 3. If the subcommand reads data: take `--format` and route through
-   `cli::format::print_json` for the JSON arm.
-4. If it shells out to an editor: use `cli::theme::open_in_editor`.
+   `crate::format::print_json` for the JSON arm.
+4. If it shells out to an editor: use `crate::theme::open_in_editor`.
 5. Update `docs/cli.md` and the README CLI section.
 6. Add tests if the logic is non-trivial. Pure formatters can be tested
    inline in the module.

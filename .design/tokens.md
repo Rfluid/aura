@@ -1,13 +1,13 @@
 # Tokens
 
 Canonical design tokens for Aura. These mirror the `const COLOR_*` declarations
-in `crates/aura/src/app.rs:16-23` and the GPUI utilities used throughout the
+in `crates/aura-ui/src/app.rs:16-23` and the GPUI utilities used throughout the
 render code. Do not invent new tokens without adding them here first.
 
 ## Colors
 
 All colors are stored as `u32` literals (RGB, no alpha) and wrapped at the
-call-site with `gpui::rgb(...)`. Source of truth: `crates/aura/src/app.rs:16-27`.
+call-site with `gpui::rgb(...)`. Source of truth: `crates/aura-ui/src/app.rs:16-27`.
 
 ### Neutrals (surface stack)
 

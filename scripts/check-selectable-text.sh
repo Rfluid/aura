@@ -3,7 +3,7 @@
 #
 # All copyable read-only text in the modal must go through the
 # `gpui-selectable-text` crate. Constructing `gpui::StyledText` /
-# `InteractiveText` in `crates/aura/src` bypasses its selection behavior, so
+# `InteractiveText` in `crates/aura-ui/src` bypasses its selection behavior, so
 # it's a build failure.
 #
 # See docs/engineering/ui-selectable-text.md. Wired into scripts/pre-pr.sh.
@@ -12,7 +12,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SRC="crates/aura/src"
+SRC="crates/aura-ui/src"
 
 # Match `StyledText` or `InteractiveText` as whole identifiers, in any .rs file
 # under $SRC. Comments/strings are close enough — application code should not

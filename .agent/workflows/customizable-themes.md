@@ -8,7 +8,7 @@ source_refs:
   - .design/customization.md
   - .design/tokens.md
   - .design/agents.md
-  - crates/aura/src/app.rs
+  - crates/aura-ui/src/app.rs
   - crates/aura-core/src/config.rs
 owner: "@rfluid"
 tags: [theming, customization, plan]
@@ -22,7 +22,7 @@ source of truth for schema / precedence; this file is the work order.
 ## Scope
 
 Land `~/.config/aura/theme.toml` as an override layer on top of the
-hard-coded `COLOR_*` constants in `crates/aura/src/app.rs:19-31`.
+hard-coded `COLOR_*` constants in `crates/aura-ui/src/app.rs:19-31`.
 Defaults preserved; missing file → current look. Per-agent overrides
 reuse the existing `AgentConfig.color` plumbing (already implemented at
 `crates/aura-core/src/config.rs:29`), so this phase focuses on global
@@ -71,7 +71,7 @@ spaces.
 
 ## Step 2 — Wire `Theme` into `AuraView`
 
-`crates/aura/src/app.rs`:
+`crates/aura-ui/src/app.rs`:
 
 1. Add `theme: Theme` field to `AuraView` (after `config_path`),
    default-loaded in `new`.

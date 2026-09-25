@@ -12,7 +12,7 @@
 //! The [`Anchor`] (from `window.anchor` in the config) selects how the modal
 //! behaves as it auto-fits its content height. Two callers share the module:
 //!
-//! 1. [`modal_bounds`] — `main.rs::toggle_window` uses it for the initial
+//! 1. [`modal_bounds`] — `lib.rs::toggle_window` uses it for the initial
 //!    window bounds at open (size + origin for the height it opens at).
 //! 2. [`modal_origin`] — `app.rs`'s auto-fit callback uses it to recompute
 //!    where the (now shorter) window should sit after it shrinks to the
