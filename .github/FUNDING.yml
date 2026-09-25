@@ -1,2 +1,5 @@
 github: Rfluid
-custom: ["https://livepix.gg/rfluid"]
+custom:
+    - "https://livepix.gg/rfluid"
+    - "https://github.com/Rfluid/aura/blob/main/SPONSOR.md#bitcoin"
+    - "https://github.com/Rfluid/aura/blob/main/SPONSOR.md#lightning"
