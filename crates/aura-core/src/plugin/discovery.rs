@@ -195,7 +195,12 @@ pub fn add_plugin(plugins_dir: &Path, opts: AddOptions) -> Result<AddOutcome> {
     }
 
     if opts.symlink {
-        symlink_file(&opts.source, &dest)?;
+        // A symlink target resolves against the link's own directory, so a
+        // relative source (`target/release/foo`, as typed from a checkout)
+        // would dangle inside the plugins dir. Link to the absolute path.
+        let target = fs::canonicalize(&opts.source)
+            .with_context(|| format!("resolve {}", opts.source.display()))?;
+        symlink_file(&target, &dest)?;
     } else {
         fs::copy(&opts.source, &dest)
             .with_context(|| format!("copy {} -> {}", opts.source.display(), dest.display()))?;
@@ -554,6 +559,34 @@ icon = "icons/demo.svg"
         )
         .unwrap();
         assert!(outcome.sidecar.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_plugin_symlinks_to_the_absolute_source() {
+        let src_dir = tempdir().unwrap();
+        let plugins_dir = tempdir().unwrap();
+        let src = write_exec(src_dir.path(), "aura-plugin-linked", "echo {}\n");
+        fs::create_dir(src_dir.path().join("sub")).unwrap();
+        // A non-canonical spelling of the source must not leak into the link.
+        let indirect = src_dir.path().join("sub/../aura-plugin-linked");
+
+        let outcome = add_plugin(
+            plugins_dir.path(),
+            AddOptions {
+                source: indirect,
+                dest_name: None,
+                symlink: true,
+                name: None,
+                color: None,
+                icon: None,
+            },
+        )
+        .unwrap();
+        let target = fs::read_link(&outcome.installed).unwrap();
+        assert!(target.is_absolute());
+        assert_eq!(target, fs::canonicalize(&src).unwrap());
+        assert!(outcome.installed.is_file());
     }
 
     #[cfg(unix)]
