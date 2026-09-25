@@ -3,6 +3,15 @@
 Aura is a hobby project I share freely. If it's useful to you and you'd like
 to chip in, here's how — no recurring commitment, no expectations.
 
+## GitHub Sponsors
+
+Monthly or one-time, by card or PayPal:
+**[github.com/sponsors/Rfluid](https://github.com/sponsors/Rfluid)**
+
+## Pix (BRL)
+
+**[livepix.gg/rfluid](https://livepix.gg/rfluid)**
+
 ## Bitcoin
 
 ```

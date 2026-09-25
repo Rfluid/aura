@@ -2,8 +2,8 @@
 title: CLI reference
 status: current
 version: 0.1.0
-last_updated: 2026-09-23
-last_verified: 2026-09-23
+last_updated: 2026-09-24
+last_verified: 2026-09-24
 source_refs: ["crates/aura/src/cli/"]
 owner: "@rfluid"
 tags: [cli, docs]
@@ -78,8 +78,8 @@ aura config edit               # open in $EDITOR (creates defaults if missing)
 aura config validate           # parse-check
 ```
 
-Keys are dotted paths into the `[window]` / `[tray]` / `[content]` / `[update]`
-tables, e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. `set`
+Keys are dotted paths into the `[window]` / `[tray]` / `[content]` / `[update]` /
+`[keybindings]` / `[sponsor]` tables, e.g. `window.anchor`, `window.max_height`, `update.dismiss_all`. `set`
 validates the value (rejecting bad enums/booleans and suggesting near-miss
 keys); pass `none` to clear an optional field. The on-disk `config.toml` is
 written with a `#` comment above each key, so the file documents itself. The

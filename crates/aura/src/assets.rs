@@ -24,6 +24,7 @@ icon_assets! {
     (SLIDERS,          "sliders.svg"),
     (DOWNLOAD,         "download.svg"),
     (SPARKLE,          "sparkle.svg"),
+    (HEART,            "heart.svg"),
     (CIRCLE_HELP,      "circle_help.svg"),
     (GITHUB,           "github.svg"),
     (ARROW_UP_RIGHT,   "arrow_up_right.svg"),

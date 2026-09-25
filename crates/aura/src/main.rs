@@ -123,6 +123,20 @@ fn main() -> Result<()> {
     let mut persisted_modal_height = AppState::load().ok().and_then(|s| s.modal_height);
     runtime::seed_modal_height(persisted_modal_height);
 
+    // Start the sponsor nudge's one-week clock the first time the tray runs
+    // (including the first launch after upgrading from a build that never
+    // recorded it — see `sponsor::record_first_run`). Only written when the
+    // stamp is missing, and read-modify-write so nothing else is clobbered.
+    // A state file that fails to parse is left alone rather than overwritten
+    // with defaults; the nudge simply waits until it reads again.
+    if let Ok(mut state) = AppState::load() {
+        if aura_core::sponsor::record_first_run(&mut state, chrono::Utc::now()) {
+            if let Err(e) = state.save() {
+                eprintln!("aura: could not record the first run: {e}");
+            }
+        }
+    }
+
     // ── Install tray icon ─────────────────────────────────────────────────────
     //
     // Failure is not fatal, but it *is* serious: the tray icon is Aura's only

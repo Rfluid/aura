@@ -10,6 +10,7 @@ use aura_core::{
         GeminiQuota, QuotaApi, QuotaSnapshot, QuotaSource, QuotaWindow,
     },
     reader::{make_reader, Period, UsageSnapshot},
+    sponsor,
     state::AppState,
     theme::Theme,
 };
@@ -893,6 +894,31 @@ impl AuraView {
         cx.notify();
     }
 
+    /// Whether the one-time sponsor card should render. Thin wrapper around
+    /// [`sponsor::nudge_due`], which holds the (unit-tested) gating.
+    fn show_sponsor_nudge(&self) -> bool {
+        sponsor::nudge_due(&self.state, self.config.sponsor.nudge, Utc::now())
+    }
+
+    /// Retire the sponsor card for good — only the × lands here. The sponsor
+    /// buttons just open their page and leave the card up, so someone who
+    /// chipped in via Pix can still reach GitHub Sponsors (or vice versa).
+    ///
+    /// Written read-modify-write against the file rather than by saving
+    /// `self.state`: the tray loop records `modal_height` into the same file
+    /// while the modal is open, and this copy predates that write. A failed
+    /// save is only logged — the card is still hidden for this session, and
+    /// at worst it comes back once more on a later open.
+    fn dismiss_sponsor_nudge(&mut self, cx: &mut Context<Self>) {
+        self.state.sponsor_nudge_done = true;
+        let mut on_disk = AppState::load().unwrap_or_else(|_| self.state.clone());
+        on_disk.sponsor_nudge_done = true;
+        if let Err(e) = on_disk.save() {
+            eprintln!("aura: could not save the sponsor nudge dismissal: {e}");
+        }
+        cx.notify();
+    }
+
     fn toggle_more_modal(&mut self, cx: &mut Context<Self>) {
         self.show_more_modal = !self.show_more_modal;
         cx.notify();
@@ -1279,6 +1305,9 @@ impl Render for AuraView {
             ))
             .text_sm()
             .child(self.render_header(cx))
+            .when(self.show_sponsor_nudge(), |d| {
+                d.child(self.render_sponsor_nudge(cx))
+            })
             .child(self.render_selector_row(cx))
             .when(self.current_section_uses_period(), |d| {
                 d.child(self.render_period_row(cx))
@@ -1675,6 +1704,134 @@ impl AuraView {
             .child(label_btn)
             .child(divider)
             .child(dismiss_btn)
+            .into_any_element()
+    }
+
+    /// The one-time "consider sponsoring" card, a strip under the header.
+    ///
+    /// Warm but calm: the card is a faint accent wash (not a filled banner)
+    /// with an accent-tinted hairline, a heart + title header, the dim body
+    /// copy, and two sponsor buttons — a filled accent primary (GitHub
+    /// Sponsors) and an outlined secondary (Pix). Every color derives from
+    /// theme tokens via [`Theme::blend`], so it holds up under any
+    /// `theme.toml`. The sponsor buttons only open their page; the × is the
+    /// one way to retire the card — see [`Self::dismiss_sponsor_nudge`].
+    fn render_sponsor_nudge(&self, cx: &mut Context<Self>) -> AnyElement {
+        let lex = lexicon::pick(self.config.content.goblin_mode);
+        let colors = &self.theme.colors;
+        let accent = colors.accent;
+        let bg = colors.bg;
+
+        let card_bg = Theme::blend(accent, bg, 0.9);
+        let card_border = Theme::blend(accent, bg, 0.7);
+
+        // Primary: a slightly muted accent fill at rest that brightens to the
+        // full accent on hover, so hovering reads as "more", never as a
+        // downgrade. Text uses the same contrast rule as the active period
+        // pill.
+        let primary_bg = Theme::blend(accent, bg, 0.15);
+        let primary_text = self.theme.on_accent_text(accent);
+        let github_btn = div()
+            .id("sponsor-github")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .bg(rgb(primary_bg))
+            .text_color(rgb(primary_text))
+            .hover(move |d| d.bg(rgb(accent)))
+            .child(svg_icon("icons/github.svg", primary_text, 12.0))
+            .child(lex.sponsor_nudge_github)
+            .on_click(|_: &ClickEvent, _, _| open_url(sponsor::SPONSOR_URL));
+
+        // Secondary: outlined ghost on the card's wash; hover fills it with
+        // a slightly stronger wash and firms up the outline.
+        let pix_border = Theme::blend(accent, bg, 0.55);
+        let pix_hover_bg = Theme::blend(accent, bg, 0.8);
+        let pix_hover_border = Theme::blend(accent, bg, 0.3);
+        let pix_btn = div()
+            .id("sponsor-pix")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(pix_border))
+            .text_xs()
+            .text_color(rgb(colors.text))
+            .hover(move |d| d.bg(rgb(pix_hover_bg)).border_color(rgb(pix_hover_border)))
+            .child(lex.sponsor_nudge_pix)
+            .child(svg_icon("icons/arrow_up_right.svg", colors.text_dim, 12.0))
+            .on_click(|_: &ClickEvent, _, _| open_url(sponsor::PIX_URL));
+
+        // `hover` replaces `icon_button`'s own hover style, so its text
+        // color is restated alongside the wash.
+        let text = colors.text;
+        let dismiss_btn = icon_button("sponsor-dismiss", "icons/close.svg", &self.theme)
+            .rounded_md()
+            .hover(move |d| d.bg(rgb(pix_hover_bg)).text_color(rgb(text)))
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.dismiss_sponsor_nudge(cx)));
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(svg_icon("icons/heart.svg", accent, 14.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(rgb(colors.text))
+                    .child(sel("sponsor-nudge-title", lex.sponsor_nudge_title)),
+            )
+            .child(dismiss_btn);
+
+        let card = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap_2()
+            .px_3()
+            .py_3()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(card_border))
+            .bg(rgb(card_bg))
+            .child(header)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(colors.text_dim))
+                    .child(sel("sponsor-nudge-text", lex.sponsor_nudge)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .mt_1()
+                    .child(github_btn)
+                    .child(pix_btn),
+            );
+
+        div()
+            .flex_shrink_0()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(colors.border))
+            .child(card)
             .into_any_element()
     }
 

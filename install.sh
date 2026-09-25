@@ -19,6 +19,8 @@
 # Override detection with AURA_INSTALL_MODE=source|release or --mode.
 # Build a source checkout from a branch with AURA_BRANCH=name or --branch name.
 # Pin a specific release with AURA_VERSION=v1.2.3 or --version v1.2.3.
+# Skip the closing sponsor prompt with AURA_NO_SPONSOR_PROMPT=1 (also skipped
+# when CI is set or no terminal is attached).
 
 set -euo pipefail
 
@@ -75,6 +77,10 @@ Environment equivalents:
   AURA_INSTALL_MODE=source|release
   AURA_BRANCH=<name>
   AURA_VERSION=v1.2.3
+
+Other environment:
+  AURA_NO_SPONSOR_PROMPT=1  Skip the closing sponsor prompt (also skipped
+                            when CI is set or no terminal is attached).
 EOF
 }
 
@@ -600,3 +606,46 @@ case "$OS" in
     *)
         ;;
 esac
+
+# ── Sponsor prompt ────────────────────────────────────────────────────────────
+#
+# Aura is free and built by one person. Ask once, at the very end, whether the
+# user wants to open the sponsor page — opt-in, default No. Skipped when
+# AURA_NO_SPONSOR_PROMPT is set or under CI. `curl | bash` leaves stdin on the
+# pipe, so the answer is read from /dev/tty; with no terminal we just print the
+# URL and move on.
+
+SPONSOR_URL="https://github.com/sponsors/Rfluid"
+PIX_URL="https://livepix.gg/rfluid"
+
+prompt_sponsor() {
+    [ -z "${AURA_NO_SPONSOR_PROMPT:-}" ] || return 0
+    [ -z "${CI:-}" ] || return 0
+
+    echo ""
+    echo "Aura is free and built by one person. If it helps you, please consider"
+    echo "sponsoring: ${SPONSOR_URL}"
+    echo "Prefer Pix (BRL)? ${PIX_URL}"
+
+    # `[ -r /dev/tty ]` passes even without a controlling terminal, so try to
+    # actually open it (in a subshell, so a failure can't trip `set -e`).
+    ( exec </dev/tty ) 2>/dev/null || return 0
+
+    local answer=""
+    printf 'Open the sponsor page now? [y/N] ' >/dev/tty
+    read -r answer </dev/tty || answer=""
+    case "$answer" in
+        [yY]|[yY][eE][sS]) ;;
+        *) return 0 ;;
+    esac
+
+    if [ "$OS" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+        open "$SPONSOR_URL" >/dev/null 2>&1 &
+    elif [ "$OS" != "Darwin" ] && command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$SPONSOR_URL" >/dev/null 2>&1 &
+    else
+        echo "Open this link in your browser: ${SPONSOR_URL}"
+    fi
+}
+
+prompt_sponsor
