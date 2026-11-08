@@ -403,9 +403,20 @@ impl X11WindowState {
         appearance: WindowAppearance,
         parent_window: Option<xproto::Window>,
     ) -> anyhow::Result<Self> {
-        let x_screen_index = params
-            .display_id
-            .map_or(x_main_screen_index, |did| did.0 as usize);
+        let display = xcb
+            .setup()
+            .roots
+            .iter()
+            .enumerate()
+            .flat_map(|(root_index, _)| X11Display::for_screen(xcb, scale_factor, root_index))
+            .find(|display| Some(display.id()) == params.display_id)
+            .or_else(|| {
+                X11Display::for_screen(xcb, scale_factor, x_main_screen_index)
+                    .into_iter()
+                    .next()
+            })
+            .context("No X11 display available")?;
+        let x_screen_index = display.x_screen_index;
 
         let visual_set = find_visuals(xcb, x_screen_index);
 
@@ -671,7 +682,7 @@ impl X11WindowState {
                 BladeRenderer::new(gpu_context, &raw_window, config)?
             };
 
-            let display = Rc::new(X11Display::new(xcb, scale_factor, x_screen_index)?);
+            let display = Rc::new(display);
 
             Ok(Self {
                 client,
